@@ -14,6 +14,7 @@ It runs:
 - `make test-e2e`
 - `make test-codex-compat`
 - `make dogfood-mcp`
+- compliance report self-tests
 
 ## Current Result
 
@@ -25,13 +26,13 @@ Latest local report files:
 Current status in `latest.json`:
 
 - `passed`: `true`
-- `tests_run`: `29`
-- P0 required tools: all `passed`
+- `tests_run`: `43`
+- required tools, including `view_image`: all `passed`
 - `security`: `passed`
 - `e2e`: `passed`
 - `codex_dogfood`: `passed`
 
-Two tests are skipped in the default profile because `view_image` is P1 and not exposed unless explicitly enabled.
+There are no skipped tests in the current default profile.
 
 ## CI Evidence
 
@@ -50,11 +51,13 @@ Latest verified run:
 The suite verifies:
 
 - MCP initialize, tools/list, tools/call, schemas, structured success/failure output, unknown tool behavior, and stdout protocol cleanliness.
-- P0 tool golden cases for read/list/search/patch/exec/stdin/kill/git status/git diff.
-- Security cases for traversal, absolute paths, symlink escape, command workdir escape, shell attempts to read outside workspace, destructive command policy, network default policy, sensitive environment scrubbing, stdout JSON-RPC pollution, and concurrent read-only calls.
-- Deterministic E2E loops for JavaScript bugfix, Python function add, long-running stdin, and workspace escape denial.
-- Codex compatibility vectors for patch envelope and exec/session/stdin behavior.
+- Fresh-client `tools/list` discovery, stdio transport, unsupported HTTP protocol-version rejection, tool annotations, and mirrored structured/text tool results.
+- Tool golden cases for read/list/search/patch/exec/stdin/kill/git status/git diff/image.
+- Security cases for traversal, absolute paths, symlink escape, command workdir escape, direct and interpreter-mediated outside reads, destructive command policy, obfuscated network access, risky env rejection, session timeout enforcement, stdout JSON-RPC pollution, request-permission non-grants, and concurrent read-only calls.
+- Deterministic E2E loops for JavaScript bugfix, Python function add, long-running stdin, session close behavior, workspace escape denial, and image viewing.
+- Codex compatibility vectors for patch envelope, exec/session/stdin behavior, and image viewing.
 - MCP-only dogfood without direct filesystem or shell bypass during task execution.
+- Compliance report generation semantics.
 
 ## Running Individual Gates
 

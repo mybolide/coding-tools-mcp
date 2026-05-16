@@ -29,7 +29,7 @@ Implemented a stdlib-only Python MCP runtime server with:
   - `git_status`
   - `git_diff`
   - `request_permissions`
-- Optional P1 `view_image`, hidden unless `--enable-view-image` or `CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE=1` is set.
+- `view_image` image tool, enabled by default and disabled only with `CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE=0`.
 - Workspace path confinement with rejection of absolute paths, `..` traversal, and symlink escapes.
 - Codex-style `apply_patch` envelope support for add, update, delete, and move, with staged rollback on write failure.
 - Exec process management with bounded output, timeout handling, process-group termination, sessions, stdin, and kill.
@@ -45,10 +45,17 @@ Implemented a stdlib-only Python MCP runtime server with:
 - `exec_command` permits absolute argv[0] executables, because normal toolchains live outside the workspace, but blocks absolute or escaping data-path arguments.
 - Child environments are allowlisted and do not inherit compliance-injected secrets such as `AWS_SECRET_ACCESS_KEY` or `OPENAI_API_KEY`.
 - `request_permissions` is intentionally non-granting in this implementation and returns `ELICITATION_UNSUPPORTED` unless a future client approval path is added.
-- `view_image` is implemented and tested when explicitly enabled, but is not exposed by default to preserve the P0 profile behavior.
+- `view_image` is implemented, exposed by default, and remains workspace-confined.
 
 ## Validation Performed
 
+- Current-turn hardening validation:
+  - `python3 -m pip install -e .`
+  - `python3 -m py_compile codex_tool_runtime_mcp/*.py`
+  - `python3 -m tests.compliance.runner --suite mcp-contract`
+  - `python3 -m tests.compliance.runner --suite security`
+  - `python3 -m tests.compliance.runner --suite codex-compat`
+  - `python3 -m tests.compliance.runner --suite all`
 - `python -m py_compile codex_tool_runtime_mcp/*.py`
 - `python -m pip install -e .`
 - `make test-mcp-contract`
@@ -66,11 +73,22 @@ Implemented a stdlib-only Python MCP runtime server with:
 
 ## Current Results
 
+- Current-turn compliance runner: PASS
+  - Command: `make compliance`
+  - Tests: 44 run, 44 passed, 0 skipped.
+  - Report files regenerated under `reports/compliance/`.
+- Current-turn implementation hardening covered:
+  - JSON-RPC argument validation against the advertised tool schemas.
+  - Tool `outputSchema` compatibility with the structured outputs actually returned.
+  - Structured permission metadata for permission-required failures.
+  - Command policy coverage for risky loader/startup env vars, obfuscated network clients, destructive workspace mutations, command redirection paths, symlink path arguments, and interpreter-mediated absolute path reads.
+  - Batch JSON-RPC handling for HTTP and stdio transports.
+  - Truncation byte-cap behavior and staged+unstaged `git_diff` behavior.
 - Compliance: PASS
   - Report: `reports/compliance/latest.md`
   - JSON: `reports/compliance/latest.json`
-  - Tests: 29 run, 29 passed, 2 skipped because default profile does not expose P1 `view_image`.
-- P1 `view_image` enabled checks: PASS for e2e and Codex compatibility suites.
+  - Tests: 44 run, 44 passed, 0 skipped.
+  - `view_image` checks: PASS in default e2e and Codex compatibility suites.
 - stdio smoke: PASS.
 - Deterministic Codex-on-MCP dogfood runner: PASS.
   - Report: `reports/dogfood/codex-on-mcp.md`

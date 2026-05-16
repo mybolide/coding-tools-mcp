@@ -27,6 +27,7 @@ SUITES = {
     "e2e": ["tests.compliance.test_e2e"],
     "codex-compat": ["tests.compliance.test_codex_compat"],
     "dogfood": ["tests.compliance.test_dogfood"],
+    "compliance-report": ["tests.compliance.test_compliance_report"],
 }
 SUITES["all"] = [module for name in SUITES for module in SUITES[name]]
 

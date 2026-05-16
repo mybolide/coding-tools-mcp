@@ -15,6 +15,12 @@ Current pushed evidence before this report update:
 - CI conclusion: `success`
 - Release tag: `v0.1.0`
 
+Current local verification after this report update:
+
+- `make compliance`: `44` tests run, `44` passed, `0` skipped.
+- Required tools, including `view_image`: all passed.
+- The exact pushed commit and release tag for this update are recorded in the final assistant response after push.
+
 ## Implemented Tools
 
 Default P0 tools:
@@ -31,10 +37,10 @@ Default P0 tools:
 - `git_diff`
 - `request_permissions`
 
-P1:
+Additional tool:
 
 - `stdio` transport implemented.
-- `view_image` implemented behind `--enable-view-image`.
+- `view_image` implemented and enabled by default; set `CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE=0` to disable it.
 
 Forbidden product-layer tools are not exposed.
 
@@ -67,8 +73,8 @@ Evidence:
 - [reports/compliance/latest.json](compliance/latest.json)
 - [reports/compliance/latest.md](compliance/latest.md)
 - status: `passed=true`
-- tests: 29 run, 29 passed, 2 P1 image skips
-- required P0 tools: all passed
+- tests: 44 run, 44 passed, 0 skips
+- required tools: all passed, including `view_image`
 - security: passed
 - e2e: passed
 - Codex dogfood: passed
@@ -113,7 +119,7 @@ The official SWE-bench harness was not run because Docker and the `swebench` Pyt
 - Network-looking commands and destructive command patterns are blocked or permission-required, but shell string policy is not a complete isolation boundary.
 - `request_permissions` returns `ELICITATION_UNSUPPORTED` unless future client approval integration is added.
 - Workspace escape is not grantable.
-- `view_image` is P1 and disabled by default.
+- `view_image` is enabled by default and remains workspace-confined.
 
 ## Prompt-To-Artifact Checklist
 
@@ -126,7 +132,7 @@ The official SWE-bench harness was not run because Docker and the `swebench` Pyt
 | MCP profile written | `docs/profile-v0.1.md`, `docs/profile.md` |
 | P0 tools implemented | `codex_tool_runtime_mcp/server.py`, `tools/list` compliance tests |
 | Forbidden product tools absent | `test_tools_list_excludes_forbidden_product_layer_tools` |
-| `make compliance` passes | `reports/compliance/latest.json`, CI run `25957328972` |
+| `make compliance` passes | `reports/compliance/latest.json`, local 44-test run, CI run `25957328972` |
 | Dogfood complete | `reports/dogfood/codex-on-mcp.md` |
 | SWE-bench/benchmark report complete | `reports/benchmark/swebench-regression.md`, conclusion INCONCLUSIVE |
 | Docs complete | `README.md`, `SPEC.md`, `COMPLIANCE.md`, `SECURITY.md`, `BENCHMARK.md`, this report |

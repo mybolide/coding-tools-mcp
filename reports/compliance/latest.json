@@ -1,8 +1,8 @@
 {
   "codex_dogfood": "passed",
-  "commit": "8b6397d8d8e9cee9710420d67d8870e560466084",
+  "commit": "914f447018c07b89f487634a4c27285f75b512e2",
   "e2e": "passed",
-  "elapsed_seconds": 8.471,
+  "elapsed_seconds": 11.474,
   "failures": [],
   "passed": true,
   "profile": "codex-tool-runtime-mcp-v0.1",
@@ -17,14 +17,12 @@
     "read_file": "passed",
     "request_permissions": "passed",
     "search_text": "passed",
+    "view_image": "passed",
     "write_stdin": "passed"
   },
   "security": "passed",
-  "skipped": [
-    "tests.compliance.test_e2e.DeterministicE2ETests.test_view_image_optional_p1_contract_when_exposed",
-    "tests.compliance.test_codex_compat.CodexCompatibilityTests.test_view_image_semantics_when_p1_tool_is_present"
-  ],
+  "skipped": [],
   "suite": "all",
-  "tests_run": 29,
+  "tests_run": 44,
   "write_only": false
 }

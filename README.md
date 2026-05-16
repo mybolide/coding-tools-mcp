@@ -41,10 +41,10 @@ Stdio, implemented as P1:
 codex-tool-runtime-mcp --stdio --workspace /path/to/repo
 ```
 
-Optional P1 image support:
+Image viewing is enabled by default. To disable it for a constrained deployment:
 
 ```bash
-codex-tool-runtime-mcp --workspace /path/to/repo --enable-view-image
+CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE=0 codex-tool-runtime-mcp --workspace /path/to/repo
 ```
 
 Logs go to stderr. JSON-RPC protocol output is kept clean.
@@ -98,15 +98,15 @@ P0 tools exposed by default:
 - `git_diff`
 - `request_permissions`
 
-P1 optional tool:
+Additional image tool exposed by default:
 
-- `view_image`, only when explicitly enabled.
+- `view_image`
 
 ## Safety Boundary
 
 The runtime binds one workspace root per server process. Paths are workspace-relative by default. Absolute paths, `..` traversal, and symlink escapes are rejected. Recursive listing/search excludes `.git`, `.reference`, `node_modules`, `target`, `dist`, build outputs, virtualenvs, and common caches by default.
 
-`exec_command` runs under policy controls with workspace-bound cwd, timeout, output caps, sensitive environment scrubbing, destructive command checks, and network-looking command checks. This is not an OS/container sandbox; see [SECURITY.md](SECURITY.md).
+`exec_command` runs under policy controls with workspace-bound cwd, timeout, output caps, sensitive and loader/startup environment rejection, destructive command checks, network-looking command checks, indirect absolute-path checks, and session deadline enforcement. This is still not an OS/container sandbox; see [SECURITY.md](SECURITY.md).
 
 ## Compliance
 
@@ -119,11 +119,11 @@ Current local result:
 - report: [reports/compliance/latest.md](reports/compliance/latest.md)
 - JSON: [reports/compliance/latest.json](reports/compliance/latest.json)
 - status: `passed=true`
-- tests: 29 run, 29 passed, 2 P1 image skips in the default profile
+- tests: 44 run, 44 passed, 0 skips
 
 GitHub Actions also runs compliance:
 
-- latest verified run: https://github.com/ytagent/codex-tool-runtime-mcp/actions/runs/25957328972
+- latest verified run for the previous pushed commit: https://github.com/ytagent/codex-tool-runtime-mcp/actions/runs/25957328972
 
 ## Dogfood And Benchmark
 

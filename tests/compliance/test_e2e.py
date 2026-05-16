@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests.compliance.mcp_client import MCPError
 from tests.compliance.test_support import ComplianceTestCase
 
 
@@ -74,6 +75,39 @@ class DeterministicE2ETests(ComplianceTestCase):
             self.assertIn("echo:hello", self.tool_text(hello))
             bye = client.call_tool("write_stdin", {"session_id": session_id, "chars": "exit\n"})
             self.assertIn("bye", self.tool_text(bye))
+
+    def test_long_running_session_poll_exit_and_closed_stdin_error(self) -> None:
+        with self.session_for_fixture("long-running-project") as (_workspace, client):
+            started = client.call_tool(
+                "exec_command",
+                {"cmd": "python repl.py", "tty": True, "timeout_ms": 1000, "yield_time_ms": 0, "max_output_bytes": 4096},
+            )
+            payload = self.assert_tool_success(started)
+            session_id = payload.get("session_id")
+            self.assertIsInstance(session_id, str)
+
+            poll = client.call_tool(
+                "write_stdin",
+                {"session_id": session_id, "chars": "", "yield_time_ms": 500, "max_output_bytes": 4096},
+            )
+            self.assertIn("ready", self.tool_text(started) + self.tool_text(poll))
+
+            alpha = client.call_tool(
+                "write_stdin",
+                {"session_id": session_id, "chars": "alpha\n", "yield_time_ms": 1000, "max_output_bytes": 4096},
+            )
+            self.assertIn("echo:alpha", self.tool_text(alpha))
+
+            closed = client.call_tool(
+                "write_stdin",
+                {"session_id": session_id, "chars": "exit\n", "yield_time_ms": 1000, "max_output_bytes": 4096},
+            )
+            self.assertIn("bye", self.tool_text(closed))
+            try:
+                late = client.call_tool("write_stdin", {"session_id": session_id, "chars": "late\n"})
+            except MCPError:
+                return
+            self.assertTrue(late.get("isError"), f"write to naturally closed session must fail: {late!r}")
 
     def test_workspace_escape_flow_is_denied(self) -> None:
         self.assert_denied_or_permission_required("read_file", {"path": "../outside-secret.txt"})

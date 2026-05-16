@@ -7,7 +7,7 @@
       "--dataset_name",
       "princeton-nlp/SWE-bench_Lite",
       "--predictions_path",
-      "/root/codex-tool-mcp/benchmarks/swebench/predictions/baseline_native.jsonl",
+      "/root/workspace/benchmarks/swebench/predictions/baseline_native.jsonl",
       "--max_workers",
       "2",
       "--run_id",
@@ -15,7 +15,7 @@
     ],
     "count": 10,
     "errors": [],
-    "path": "/root/codex-tool-mcp/benchmarks/swebench/predictions/baseline_native.jsonl",
+    "path": "/root/workspace/benchmarks/swebench/predictions/baseline_native.jsonl",
     "placeholder": true,
     "resolved": null,
     "run": {
@@ -33,7 +33,7 @@
       "--dataset_name",
       "princeton-nlp/SWE-bench_Lite",
       "--predictions_path",
-      "/root/codex-tool-mcp/benchmarks/swebench/predictions/candidate_mcp.jsonl",
+      "/root/workspace/benchmarks/swebench/predictions/candidate_mcp.jsonl",
       "--max_workers",
       "2",
       "--run_id",
@@ -41,7 +41,7 @@
     ],
     "count": 10,
     "errors": [],
-    "path": "/root/codex-tool-mcp/benchmarks/swebench/predictions/candidate_mcp.jsonl",
+    "path": "/root/workspace/benchmarks/swebench/predictions/candidate_mcp.jsonl",
     "placeholder": true,
     "resolved": null,
     "run": {
@@ -117,5 +117,5 @@
     "candidate predictions: 10 rows, placeholder=True"
   ],
   "split": "test",
-  "subset_path": "/root/codex-tool-mcp/benchmarks/swebench/subsets/smoke-lite-10.json"
+  "subset_path": "/root/workspace/benchmarks/swebench/subsets/smoke-lite-10.json"
 }

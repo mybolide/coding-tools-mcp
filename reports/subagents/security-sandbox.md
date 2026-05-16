@@ -2,314 +2,196 @@
 
 ## Task Scope
 
-Define the security model for the Coding Tool Runtime MCP Server before implementation. This report covers:
+Audit the current Coding Tool Runtime MCP Server security posture without changing server implementation code. This pass covers:
 
-- Workspace root definition and confinement boundary.
-- Path traversal defenses for read, search, edit, patch, image, and git tools.
-- Symlink escape behavior.
-- Command execution policy.
-- Network and destructive-operation permission model.
-- Timeout and output truncation behavior.
-- Environment scrubbing.
-- Interactive session lifecycle.
-- Residual risks and implementation action items.
+- Workspace root handling and unsafe root rejection.
+- Path traversal checks for read, list, search, patch, image, git, and command cwd inputs.
+- Symlink escape handling for reads, recursive walks, and writes.
+- Command execution policy, including shell use, destructive commands, and outside-workspace access.
+- Network and environment permission controls.
+- Timeout, session lifecycle, and output truncation behavior.
+- Destructive command protections.
+- Security-focused compliance coverage.
 
-This is a design report only. No implementation files were changed.
+Allowed edits for this audit were limited to `SECURITY.md`, `reports/subagents/security-sandbox.md`, and security-focused tests in `tests/compliance/test_security.py`. No intentional server implementation edits were made by this audit.
 
-## Sources
+## Sources Read/Referenced
 
-- `CODEX_GOAL_MODE_MCP_RUNTIME_TASK.md`
-- Repository state in `/root/codex-tool-mcp` as of 2026-05-16: no runtime implementation files exist yet.
-
-No external sources were consulted for this report.
+- `CODEX_GOAL_MODE_MCP_RUNTIME_TASK.md`: task requirements for the security-sandbox subagent and required report sections.
+- `SECURITY.md`: existing security policy and target posture.
+- `SPEC.md`: public runtime profile and workspace model.
+- `codex_tool_runtime_mcp/server.py`: `Workspace`, path resolution, `apply_patch`, `exec_command`, `write_stdin`, `kill_session`, git helpers, tool schemas, HTTP and stdio dispatch.
+- `tests/compliance/test_security.py`: existing and newly added security regression coverage.
+- `tests/compliance/test_tool_golden.py`: golden behavior for read/list/search/patch/exec/git/session tools.
+- `tests/compliance/test_e2e.py`: deterministic coding-loop and workspace escape coverage.
+- `tests/compliance/test_support.py`: denial assertion helpers and structured payload parsing.
+- `tests/compliance/mcp_client.py`: server startup environment, fixture secret injection, and transport behavior.
+- `tests/compliance/fixtures.py`: fixture materialization, outside secret, symlink escape fixture, and git setup.
+- Local verification:
+  - Baseline before adding new tests: `make test-security` passed 5 tests.
+  - First run after adding new regressions: `make test-security` failed, confirming command policy, network policy, environment policy, and returned-session timeout gaps in the active runtime.
+  - Latest no-report run after concurrent workspace changes: `PYTHONDONTWRITEBYTECODE=1 python3 -m tests.compliance.runner --suite security` ran 12 tests and failed 6 failure records. The remaining observed failures were interpreter-mediated outside reads, risky environment variables, and returned-session timeout enforcement. The destructive-command and `http.client` network regression cases passed in that latest run, but command/network controls are still pattern-based rather than sandbox-enforced.
 
 ## Key Findings
 
-1. The project currently has no implemented MCP runtime, so security must be expressed as hard acceptance criteria for the first implementation rather than as a patch to existing behavior.
-2. Workspace confinement is the central invariant. Every filesystem and process primitive must resolve through one shared path policy instead of each tool implementing its own checks.
-3. Path traversal protection must handle existing paths, not-yet-existing write targets, symlinked parents, symlinked files, case-insensitive filesystems, and time-of-check/time-of-use races.
-4. Shell execution cannot be made safe through command-string parsing alone. It needs layered controls: workspace-bound cwd, sandboxing, permission classes, environment scrubbing, timeout limits, output caps, and audit logging.
-5. Network access and destructive operations should be denied by default for untrusted clients and require explicit policy grants.
-6. Interactive sessions create longer-lived risk than one-shot commands. They need ownership, idle cleanup, strict stdin routing, bounded output buffering, and process-tree termination.
+### Critical: `exec_command` Can Read Outside The Workspace
+
+`Workspace.resolve_existing` and `resolve_for_write` provide a reasonable centralized path boundary for direct tool path inputs. Direct `read_file`, `apply_patch`, command `workdir`, and simple command path escapes are covered by existing tests.
+
+The boundary does not hold for command execution. `exec_command` starts a normal host process with `shell=True` and only classifies the command string before launch. A command such as:
+
+```text
+python -c "from pathlib import Path; print(Path('/outside/path').read_text())"
+```
+
+is allowed because the absolute path is embedded inside interpreter source rather than exposed as a standalone shell token. The added regression `test_exec_command_rejects_interpreter_mediated_outside_reads` demonstrated leakage of the outside fixture secret.
+
+This is the top security issue. Command parsing cannot prove that arbitrary shells, interpreters, build tools, or test runners stay inside the workspace.
+
+### High: Network Denial Is Still Pattern-Based
+
+The current network policy searches the raw command string for URLs and common tokens such as `curl`, `wget`, `socket`, `urllib.request`, and `requests.`. That blocks simple cases, but it is not enforcement.
+
+The first added regression run showed that a Python `http.client.HTTPConnection` command executed instead of being denied. A later no-report run passed that specific regression after concurrent implementation changes expanded the pattern list. That is useful coverage, but the control is still a finite string classifier around a host process.
+
+Network isolation needs a process-level control, not a string pattern.
+
+### High: Destructive Command Protection Is Still A Classifier
+
+Existing tests blocked `rm -rf /`, `git reset --hard`, and `chmod -R 777 /`. The first added regression run showed these destructive variants executing:
+
+- `rm -rf src`
+- `git -C . reset --hard`
+- `find . -maxdepth 1 -type f -delete`
+
+A later no-report run passed those specific cases after concurrent implementation changes. The remaining risk is architectural: destructive protection still relies on recognizing command text before launching a shell. Interpreter-mediated deletion, build scripts, package scripts, and alternate command spellings remain in scope unless the process runs inside a sandbox and write/destructive grants are enforced below the shell.
+
+### High: Returned Sessions Outlive Their Timeout
+
+`exec_command` calculates a deadline before spawning, but once it returns a running session, that deadline is not stored on the `ExecSession` and is not enforced by `write_stdin`. A command launched with `timeout_ms=100` and `yield_time_ms=0` remains `running` after the deadline.
+
+The added regression `test_exec_command_timeout_is_enforced_after_running_session_is_returned` confirmed this behavior. This creates resource exhaustion risk and undermines timeout guarantees for long-running commands and `tty=True` sessions.
+
+### High: Environment Scrubbing Allows Risky User-Supplied Variables
+
+The inherited server environment is mostly allowlisted, and fixture secrets such as `AWS_SECRET_ACCESS_KEY` are not leaked to child processes. However, user-supplied `env` entries are accepted unless their key matches the sensitive-name regex.
+
+The added regression `test_exec_command_rejects_shell_startup_and_loader_environment` confirmed that `BASH_ENV`, `ENV`, `LD_PRELOAD`, and `PYTHONPATH` are accepted. These variables can alter shell startup, dynamic loading, or interpreter import behavior and should be denied by default or require an explicit grant.
+
+### High: Output Buffers Are Not Bounded Internally
+
+Tool responses apply `max_output_bytes` at snapshot time, but `ExecSession.stdout` and `ExecSession.stderr` are unbounded `bytearray` buffers. A process that writes continuously can consume server memory even when each response is truncated.
+
+The policy should require per-session ring buffers, dropped-byte accounting, max session count, and cleanup for orphaned or idle sessions.
+
+### Medium: Workspace Path Resolver Is Strong For Direct Tool Inputs But Still Has Gaps
+
+Positive observations:
+
+- The workspace root is canonicalized.
+- `/` and the current home directory are rejected as roots.
+- Direct absolute tool paths are denied in the current profile.
+- `..` path components are rejected.
+- Existing paths resolve symlinks before containment checks.
+- New write targets validate the nearest existing parent.
+- `apply_patch` rejects writes through final-path symlinks.
+- Recursive listing/search do not follow unsafe symlinked files.
+
+Remaining gaps:
+
+- Other unsafe roots such as `/tmp`, `/var`, `/etc`, or drive roots are not fully rejected.
+- Files are opened after path validation with ordinary path operations, leaving symlink race exposure for attackers who can mutate the workspace concurrently.
+- `list_dir` may expose raw symlink target metadata, including host absolute paths.
+- Future support for absolute paths inside the workspace would need careful component-based containment checks; the current implementation simply rejects them.
+
+### Medium: Request Limits Are Mostly Schema Hints, Not Hard Server Validation
+
+Tool schemas define maximums, but `tools/call` does not validate input schemas before dispatch. Handlers cast values directly from `args`, so malicious clients can request very large file reads, search result counts, output sizes, or JSON bodies unless each handler clamps them independently.
+
+Additional issues:
+
+- `read_file` reads the whole file before applying `max_bytes`.
+- `search_text` reads whole files and can run unbounded regular expressions.
+- HTTP request body size and JSON depth are not bounded before parsing.
+
+### Medium: HTTP Exposure Depends On Operator Discipline
+
+The default host is loopback, which is good. If an operator binds a non-loopback host, the server has no authentication. Origin checks help against some browser contexts, but non-browser clients can omit `Origin`.
+
+The HTTP transport should remain local by default, and non-loopback binding should require explicit authentication and request size limits.
 
 ## Concrete Recommendations
 
-### Workspace Root
+1. Treat `exec_command` as unsafe until it runs inside a real sandbox.
 
-The server must establish a single canonical workspace root before exposing tools.
+   Use container, namespace, chroot, Landlock, seccomp, pledge/unveil, job-object, or equivalent platform controls. Mount only the workspace and runtime temp directory. Deny access to host home, cloud credentials, SSH material, package credentials, and sibling directories.
 
-- Prefer explicit configuration: `workspace_root` supplied at server startup or session creation.
-- If no explicit root is supplied, use the server launch cwd only after canonicalization.
-- Resolve the root with filesystem canonicalization, store it as `workspace_root_real`, and use that value for all containment checks.
-- Reject unsafe roots unless an operator explicitly overrides them:
-  - `/`
-  - user home directory
-  - system directories such as `/tmp`, `/var`, `/etc`, `/usr`, `/bin`, `/sbin`
-  - Windows drive roots such as `C:\`
-- Treat the root as immutable for a session. Changing root requires a new session.
-- Return user-facing paths as workspace-relative paths to avoid leaking host layout unnecessarily.
+2. Enforce network denial below the process.
 
-Containment rule:
+   Disable egress with network namespaces, firewall rules, container policy, or a broker. Treat loopback as network unless explicitly granted. Keep regex classification only for early permission prompts.
 
-```text
-resolved_target must be equal to workspace_root_real
-or must be a descendant of workspace_root_real by path components.
-String-prefix checks are not sufficient.
-```
+3. Replace command-string safety assumptions with permission classes.
 
-### Path Traversal Protection
+   Prefer structured argv for allowed built-ins. Put all shell-string execution behind a permission gate. Require explicit grants for file-modifying commands, package installs, long-running servers, git history mutation, and destructive operations.
 
-All tools that accept paths must call one shared resolver. This includes file read, directory listing, search, patch application, image view, git diff helpers, fixture access, and command cwd.
+4. Block destructive workspace mutations by default.
 
-Required resolver behavior:
+   Deny or require grants for `rm -r`, `find -delete`, `git -C ... reset --hard`, `git clean`, checkout/restore discards, branch deletion, force push, recursive chmod/chown, and equivalent interpreter-mediated deletion. The sandbox should prevent outside-workspace deletion even if classification misses a case.
 
-- Accept relative workspace paths by default.
-- Allow absolute paths only if the resolved path remains inside `workspace_root_real`; otherwise reject.
-- Reject NUL bytes, empty path components where invalid, and platform-specific alternate path syntaxes that bypass normal resolution.
-- Normalize `.` and `..`, then verify containment after resolving symlinks.
-- For existing paths, resolve the full path with canonicalization and verify containment.
-- For new write targets, canonicalize the nearest existing parent directory, verify that parent is inside the root, then validate the final basename.
-- Reject paths whose normalized display form escapes the workspace, even if later components would re-enter it.
-- Enforce a maximum path length and maximum component count to avoid pathological inputs.
-- Do not special-case `.git`; tools may read git metadata only through approved git commands or explicit read tools subject to the same policy.
+5. Harden environment handling.
 
-For recursive operations:
+   Start from a fixed allowlist and reject risky user-supplied variables by default. Deny `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`, package registry auth variables, proxy variables without network permission, and language-specific loader hooks unless an explicit policy grants them.
 
-- Walk with APIs that expose file type metadata.
-- Never follow a symlink before checking the resolved target.
-- Apply maximum file count, byte count, and depth limits.
-- Skip ignored or configured-excluded directories consistently for search and listing.
+6. Store and enforce session deadlines.
 
-### Symlink Escape Behavior
+   Add deadline, idle deadline, max lifetime, and permission state to `ExecSession`. Enforce them in `write_stdin`, polling, and a background reaper. Kill the process group when a deadline expires even if the client stops polling.
 
-Symlinks are allowed only when they do not escape the workspace.
+7. Bound session output in memory.
 
-Read behavior:
+   Replace unbounded bytearrays with per-stream ring buffers. Report dropped bytes and truncation. Enforce max sessions per client and globally.
 
-- A symlink inside the workspace may be read only if its final target resolves inside `workspace_root_real`.
-- A symlink to a parent directory, sibling repository, home directory, temporary directory, or system path must be rejected.
-- Broken symlinks may be listed as metadata but not opened as files.
+8. Enforce schemas and hard clamps server-side.
 
-Write and patch behavior:
+   Validate `tools/call` arguments against input schemas or duplicate hard clamps inside handlers. Clamp `max_bytes`, `max_results`, `max_entries`, `timeout_ms`, `yield_time_ms`, and request body sizes regardless of client behavior.
 
-- Do not write through symlinks by default.
-- `apply_patch` must operate on regular files inside the workspace.
-- Creating, deleting, or replacing symlinks should be denied unless a future explicit symlink tool is introduced with a higher permission level.
-- Directory symlinks may be traversed for read/search only when their final target remains inside the workspace and recursive limits still apply.
+9. Make file operations race-resistant.
 
-Race protection:
+   Use anchored and no-follow filesystem operations where available. Re-check opened file metadata before reading or writing sensitive paths. Keep `apply_patch` transactional, but do not rely only on pre-open canonicalization.
 
-- Use anchored filesystem operations where available, such as opening relative to a workspace directory handle.
-- For final file opens, prefer no-follow semantics where supported.
-- Re-check resolved metadata after opening sensitive files.
-- Treat detected path changes during operation as an error.
+10. Harden HTTP exposure.
 
-### Command Execution Policy
-
-Command execution is necessary for a coding runtime but must be policy-gated.
-
-Default execution constraints:
-
-- Commands run with cwd resolved and confined inside the workspace.
-- If no cwd is supplied, use the workspace root.
-- Spawn processes in a new process group so timeout cancellation can kill descendants.
-- Capture stdout and stderr separately.
-- Disable stdin unless an interactive session was explicitly requested.
-- Use non-TTY execution by default; allocate a TTY only for tools that require it and only after policy allows it.
-- Limit concurrent commands per session and per server.
-
-Command input:
-
-- Prefer structured argv over shell strings for internal tools.
-- If a public exec tool accepts shell strings, mark it as higher risk and subject it to the permission model.
-- Do not attempt to guarantee safety by parsing command text. Pattern detection can raise permission level, but sandbox and policy are the enforcement boundary.
-
-Default allowed command class:
-
-- Local read-only inspection commands such as `pwd`, `ls`, `find`, `rg`, `sed -n`, `git status`, `git diff`, `git show`, language format checks, and test commands that do not require network.
-
-Permission-required command class:
-
-- Commands that install dependencies, modify the repository, modify git history, start long-running servers, open network sockets, or access package registries.
-- Examples: `npm install`, `pip install`, `cargo publish`, `git push`, `git clean`, `git reset --hard`, `rm -rf`, `chmod -R`, `docker`, `sudo`, package-manager commands, and cloud CLIs.
-
-Denied command class:
-
-- Privilege escalation commands.
-- Host account management.
-- Direct writes outside the workspace.
-- Mount, kernel, firewall, and service-manager operations.
-- Commands that intentionally disable sandboxing or exfiltrate secrets.
-
-### Network and Destructive Permission Model
-
-Use deny-by-default policy for risky capabilities.
-
-Permission dimensions:
-
-- `filesystem_read`: read/list/search inside workspace.
-- `filesystem_write`: edit/create/delete regular files inside workspace.
-- `command_readonly`: run local inspection commands.
-- `command_write`: run commands expected to change files.
-- `network`: make outbound network connections.
-- `destructive`: delete files, rewrite git history, discard changes, or remove ignored artifacts.
-- `credential_access`: read environment variables, config files, SSH keys, tokens, package credentials, or cloud credentials.
-
-Default policy for untrusted MCP clients:
-
-| Capability | Default |
-| --- | --- |
-| Workspace file read | Allow |
-| Workspace file write | Require explicit grant |
-| Read-only local commands | Allow with timeout |
-| File-modifying commands | Require explicit grant |
-| Network | Deny |
-| Destructive commands | Require explicit grant and confirmation |
-| Credential access | Deny |
-| Outside-workspace access | Deny |
-
-Approval decisions must be auditable:
-
-- Record requested tool, arguments after redaction, cwd, permission class, decision, timestamp, and requester identity if available.
-- Approval should be scoped to one operation by default.
-- Broader grants must be time-limited and workspace-scoped.
-
-Destructive operations:
-
-- Never infer approval from natural language alone.
-- Require structured permission state.
-- Before running destructive commands, surface the current git status and the exact command or file operation.
-- Do not permit irreversible deletion outside the workspace under any mode.
-
-Network:
-
-- Network access should be disabled in the sandbox by default.
-- If enabled, prefer allowlisted domains or package registries instead of unrestricted egress.
-- Treat package installation as both `network` and `command_write`.
-- Redact credentials from network-related logs and outputs.
-
-### Timeout and Output Truncation
-
-Every operation needs bounded resource usage.
-
-Recommended defaults:
-
-| Operation | Default timeout | Hard max | Output cap |
-| --- | ---: | ---: | ---: |
-| File read | 5s | 30s | 1 MiB per file |
-| Search | 15s | 60s | 512 KiB or 2,000 matches |
-| Patch apply | 10s | 60s | 256 KiB |
-| One-shot command | 30s | 10m | 1 MiB stdout + 1 MiB stderr |
-| Interactive session idle | 10m | 60m | Ring buffer per stream |
-| Git diff/status | 10s | 60s | 1 MiB |
-
-Output truncation requirements:
-
-- Preserve beginning and end of output when truncating where feasible.
-- Report truncation explicitly with original byte count if known.
-- Keep stdout and stderr truncation markers separate.
-- Avoid splitting invalid UTF-8 in returned text; replace invalid bytes safely.
-- Provide a follow-up read mechanism for active sessions, not unbounded tool responses.
-
-Timeout behavior:
-
-- On timeout, terminate the process group.
-- Wait briefly for graceful shutdown, then force kill.
-- Return timeout status, elapsed time, exit signal if available, and truncated output.
-- Clean up temporary files created by the runtime itself.
-
-### Environment Scrubbing
-
-Commands must run with a scrubbed environment by default.
-
-Allowed by default:
-
-- Minimal runtime variables such as `PATH`, `HOME` pointing to a sandbox-safe home, `TMPDIR` inside a runtime temp directory, `LANG`, `LC_ALL`, and toolchain variables needed by configured tests.
-- Workspace-specific variables explicitly set by the server policy.
-
-Denied by default:
-
-- API keys and tokens.
-- Cloud credentials.
-- SSH agent and private key paths.
-- Package registry credentials.
-- Git credential helper variables.
-- Host proxy variables unless network permission is granted.
-- Shell startup file injection variables.
-
-Implementation notes:
-
-- Use an allowlist, not a denylist.
-- Set `HOME` to an isolated per-session directory where feasible.
-- Set temp directories inside a controlled runtime area, not global host temp when possible.
-- Redact secret-looking values from tool output and audit logs as a defense-in-depth measure.
-- Avoid loading user shell profiles for non-interactive commands.
-
-### Session Lifecycle
-
-The MCP runtime should distinguish one-shot tool calls from persistent exec sessions.
-
-Session creation:
-
-- Associate each session with a workspace root, permission state, environment policy, timeout limits, and client identity if available.
-- Assign an opaque session id.
-- Start with no running process unless a command is explicitly launched.
-
-Interactive stdin:
-
-- `write_stdin` must require a valid live session id.
-- Stdin must be routed only to the process that owns that session.
-- Reject stdin after process exit, timeout, cancellation, or session close.
-- Bound bytes per write and total bytes per session.
-
-Output buffering:
-
-- Maintain bounded ring buffers for stdout and stderr.
-- Return incremental output with sequence numbers or cursors to avoid duplicates and unbounded payloads.
-- Mark dropped output clearly.
-
-Cleanup:
-
-- Close sessions on process exit after a short retention window for final output.
-- Reap child processes.
-- Kill process groups on timeout, cancellation, client disconnect, or server shutdown.
-- Remove runtime-owned temp directories.
-- Enforce max session count per client and global max session count.
-
-Audit:
-
-- Log session start, command, cwd, permission class, approval decision, timeout, exit status, and cleanup result.
-- Redact arguments and output fragments that match configured secret patterns.
-
-### Git and Patch Safety
-
-Git operations are frequent in coding loops and need explicit policy.
-
-- `git status`, `git diff`, `git show`, and read-only history inspection are `command_readonly`.
-- `git add`, `commit`, `merge`, `rebase`, `reset`, `clean`, `checkout`, `switch`, `push`, and tag operations are write or destructive depending on effect.
-- `git reset --hard`, `git clean -fdx`, force push, and branch deletion are destructive.
-- Patch application must validate every touched path before applying changes.
-- Patch application must reject absolute paths and any target outside the workspace.
-- Patch application should not change file mode, owner, group, xattrs, or symlinks in P0.
+    Keep loopback as the default. Require authentication and explicit operator opt-in for non-loopback binds. Add content-length, content-type, and JSON-depth limits. Do not treat `Mcp-Session-Id` as authentication.
 
 ## Risks
 
-- Path checks can be bypassed if each tool implements its own resolver. The resolver must be centralized and heavily tested.
-- Symlink race protection is platform-dependent. Even with canonicalization, an attacker with write access can swap paths between check and open unless anchored/no-follow operations are used.
-- Shell commands can perform indirect writes or network access that static command classification will miss.
-- Dependency installers and test runners may execute arbitrary package scripts.
-- Secret redaction is best effort and can miss encoded, split, or transformed secrets.
-- Sandboxing behavior differs across Linux, macOS, and Windows. Cross-platform support needs separate test coverage.
-- Long-running interactive sessions can accumulate hidden state and consume resources if lifecycle cleanup is incomplete.
-- MCP clients may not provide reliable requester identity, limiting audit attribution.
+- Current `exec_command` can escape the intended workspace boundary through ordinary interpreter code. Do not expose it to untrusted MCP clients in its current form.
+- Current network denial and destructive-command controls are bypassable because they rely on raw command string matching.
+- Current returned sessions can exceed their configured timeout and can buffer unbounded output in server memory.
+- The new security regressions intentionally fail until implementation hardening lands.
+- Real sandboxing is platform-dependent and needs Linux, macOS, and Windows-specific design.
+- Symlink race resistance cannot be solved completely with `Path.resolve()` checks alone.
+- Test runners and package tools execute arbitrary project code and must be treated as command execution, not as safe read-only inspection.
+- Existing worktree modifications outside this audit's allowed files were observed and were not reverted or edited by this pass.
 
 ## Action Items
 
-1. Implement a single workspace path resolver and require all file-facing tools to use it.
-2. Add compliance tests for `..`, absolute paths, symlink-to-outside, broken symlink, symlinked parent, new-file parent resolution, and prefix confusion such as `/repo` versus `/repo2`.
-3. Add command policy tests for cwd escape, timeout kill, output truncation, environment scrubbing, network denial, and destructive command approval.
-4. Add session lifecycle tests for stdin after exit, idle timeout, process-tree cleanup, output cursoring, and max-session enforcement.
-5. Add audit-log tests with secret redaction fixtures.
-6. Document operator configuration for trusted versus untrusted clients.
-7. Treat security policy failures as `make compliance` blockers.
+1. Make the added security regressions pass:
+   - `test_exec_command_rejects_interpreter_mediated_outside_reads`
+   - `test_exec_command_rejects_destructive_workspace_mutations`
+   - `test_exec_command_rejects_obfuscated_network_access`
+   - `test_exec_command_rejects_shell_startup_and_loader_environment`
+   - `test_exec_command_timeout_is_enforced_after_running_session_is_returned`
 
+2. Implement an execution sandbox before advertising `exec_command` to untrusted clients.
+
+3. Add an explicit permission state model and make `permission_grant_id` meaningful, or remove it from the schema until grants are implemented.
+
+4. Add server-side schema validation and hard request clamps.
+
+5. Add session deadline storage, a session reaper, process-group cleanup on server shutdown, max session counts, and bounded ring buffers.
+
+6. Expand path tests for broken symlinks, symlinked parents, root prefix confusion, unsafe roots such as `/tmp`, and concurrent symlink swaps.
+
+7. Add tests for HTTP request body limits, non-loopback binding behavior, and Origin/header assumptions.
+
+8. Re-run the full `make compliance` gate only after security hardening is implemented. The current expanded security suite is expected to fail against the present server implementation.

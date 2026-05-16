@@ -20,10 +20,18 @@ ADD_FIX_PATCH = """*** Begin Patch
 class ReadFileGoldenTests(ComplianceTestCase):
     def test_read_file_normal_line_range_truncation_binary_and_escape(self) -> None:
         result = self.client.call_tool("read_file", {"path": "src/math.js"})
+        payload = self.assert_tool_success(result)
+        self.assertEqual(payload.get("path"), "src/math.js")
+        self.assertEqual(payload.get("encoding"), "utf-8")
+        self.assertEqual(payload.get("start_line"), 1)
+        self.assertEqual(payload.get("total_lines"), 7)
+        self.assertIs(payload.get("truncated"), False)
         self.assertIn("return a - b", self.tool_text(result))
-        self.assert_tool_success(result)
 
         result = self.client.call_tool("read_file", {"path": "src/math.js", "start_line": 1, "end_line": 3})
+        payload = self.assert_tool_success(result)
+        self.assertEqual(payload.get("start_line"), 1)
+        self.assertEqual(payload.get("end_line"), 3)
         text = self.tool_text(result)
         self.assertIn("function add", text)
         self.assertNotIn("multiply", text)
@@ -65,6 +73,9 @@ class ListAndSearchGoldenTests(ComplianceTestCase):
             {"query": "function add", "path": ".", "glob": "**/*.js", "context_lines": 1, "max_results": 10},
         )
         payload = self.assert_tool_success(result)
+        self.assertEqual(payload.get("query"), "function add")
+        self.assertEqual(payload.get("total_matches"), 1)
+        self.assertIs(payload.get("truncated"), False)
         text = self.tool_text(result)
         self.assertIn("src/math.js", text)
         self.assertIn("return a - b", text)

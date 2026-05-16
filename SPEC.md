@@ -8,12 +8,19 @@ The server exposes coding runtime primitives over MCP. It is intentionally lower
 
 ## Protocol
 
-- MCP protocol version: `2025-06-18`
+- MCP profile target: `2025-06-18`
+- Latest upstream MCP specification checked during contract review: `2025-11-25`
 - P0 transport: Streamable HTTP at `/mcp`
-- P1 transport: stdio with newline-delimited JSON-RPC
+- stdio transport: newline-delimited JSON-RPC via `--stdio`
 - Initialize response advertises tools and logging only.
 - `tools/list` returns a stable default P0 tool set.
 - `tools/call` returns MCP `content`, `structuredContent`, and `isError`.
+
+The implementation is a hand-rolled JSON-RPC MCP server rather than a Python MCP SDK
+server. Its wire shape should remain compatible with the Python SDK `Tool` and
+`CallToolResult` models: tools expose `name`, `title`, `description`,
+`inputSchema`, `outputSchema`, and `annotations`; tool results expose `content`,
+optional `structuredContent`, and optional `isError`.
 
 ## Workspace Model
 
@@ -43,7 +50,7 @@ Default P0 tools:
 
 P1:
 
-- `view_image`: feature-gated image data output.
+- `view_image`: image data output. The current implementation enables it by default and can disable it with `CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE=0`.
 
 ## Forbidden Capabilities
 
@@ -78,9 +85,28 @@ Tool execution failures return `isError: true` and structured content:
 
 Unknown JSON-RPC methods and malformed protocol-level requests use JSON-RPC errors.
 
+## Contract Status
+
+Contract verification on 2026-05-16 covers the current implementation with
+compliance tests for:
+
+- `initialize`, repeated/fresh-client `tools/list`, and all required tools.
+- Tool `inputSchema`, permissive `outputSchema`, annotations, structured
+  success/error results, unknown-tool errors, and text mirrors of
+  `structuredContent`.
+- Streamable HTTP and stdio happy paths, including clean stdout for stdio and
+  rejection of unsupported `MCP-Protocol-Version` headers on HTTP.
+- Central argument validation against each advertised `inputSchema`.
+- `view_image` returning both structured image metadata/data URL and MCP image
+  content when `output: "mcp_image"`.
+
+Known protocol limitation: `request_permissions` uses a structured
+`ELICITATION_UNSUPPORTED` fallback because MCP elicitation support varies across
+clients and is not implemented in this server yet. It never silently grants
+dangerous permissions.
+
 ## Implementation Notes
 
 - Runtime implementation: [codex_tool_runtime_mcp/server.py](codex_tool_runtime_mcp/server.py)
 - Test profile: [tests/compliance](tests/compliance)
 - Current profile document: [docs/profile-v0.1.md](docs/profile-v0.1.md)
-

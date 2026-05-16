@@ -8,6 +8,7 @@ import signal
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -30,6 +31,7 @@ REQUIRED_TOOLS = (
     "git_status",
     "git_diff",
     "request_permissions",
+    "view_image",
 )
 
 FORBIDDEN_TOOL_NAMES = {
@@ -77,9 +79,13 @@ def free_port() -> int:
 def default_server_command(workspace: Path, port: int) -> list[str]:
     template = os.environ.get(
         "CODEX_TOOL_RUNTIME_SERVER_CMD",
-        "codex-tool-runtime-mcp --workspace {workspace} --host 127.0.0.1 --port {port}",
+        "{python} -m codex_tool_runtime_mcp --workspace {workspace} --host 127.0.0.1 --port {port}",
     )
-    rendered = template.format(workspace=shlex.quote(str(workspace)), port=port)
+    rendered = template.format(
+        python=shlex.quote(sys.executable),
+        workspace=shlex.quote(str(workspace)),
+        port=port,
+    )
     return shlex.split(rendered)
 
 

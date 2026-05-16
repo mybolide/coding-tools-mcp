@@ -1,5 +1,49 @@
 # Test Harness Subagent Report
 
+## 2026-05-16 Acceptance Test Update
+
+Scope for this pass was limited to `tests/compliance/**` and this report. I did not edit server implementation, release docs, commits, or pushes.
+
+### Test Gaps Fixed
+
+- Added a deterministic HTTP MCP client discovery assertion: a fresh client connected to the same server must complete `initialize`, call `tools/list`, and retrieve the same stable tool catalog as the original client.
+- Kept stdio discovery covered through the current newline-delimited JSON-RPC stdio contract test, so clients that use stdio can catch the reported "cannot retrieve tools" failure mode.
+- Added compliance report self-tests that patch report paths to a temporary directory and assert JSON/Markdown contents, category status, skipped tests, failures, and required-tool status without writing repo report artifacts.
+- Strengthened golden assertions for `read_file` and `search_text` structured payloads, including stable path, encoding, line counts, query, match count, and truncation flags.
+- Extended the deterministic MCP-only dogfood loop so the scripted agent retrieves the tool catalog before calling coding tools.
+- Added E2E stdin/session coverage for polling a running process, natural exit, and structured error behavior on writes after session closure.
+- Added security fixture coverage that read-only tools do not follow the malicious symlink escape and that `request_permissions` cannot silently grant dangerous access.
+
+### Commands Run
+
+- `python3 -m unittest tests.compliance.test_compliance_report`
+  - Result: passed, 2 tests.
+- `python3 -m py_compile tests/compliance/test_compliance_report.py tests/compliance/test_mcp_contract.py tests/compliance/test_tool_golden.py tests/compliance/test_security.py tests/compliance/test_e2e.py tests/compliance/test_dogfood.py tests/compliance/runner.py`
+  - Result: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m tests.compliance.runner --suite mcp-contract`
+  - Result: failed, 11 tests run, 2 errors.
+  - Passing coverage included fresh HTTP tool discovery and stdio `tools/list`.
+  - Current blocker: every `tools/call` path hit JSON-RPC `-32603` with `name 'validate_arguments' is not defined`.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m tests.compliance.runner --suite all`
+  - Result: failed, 43 tests run, 10 failures, 30 errors.
+  - Dominant blocker: runtime `tools/call` errors with `name 'validate_arguments' is not defined`, so golden, security, E2E, Codex compatibility, and dogfood tool behavior cannot pass yet.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest tests.compliance.test_mcp_contract.MCPContractTests.test_fresh_http_clients_can_retrieve_stable_tool_catalog tests.compliance.test_mcp_contract.MCPContractTests.test_stdio_transport_uses_newline_delimited_json_rpc_only tests.compliance.test_compliance_report`
+  - Result: passed, 4 tests. Python emitted non-fatal `ResourceWarning` messages for stdio subprocess streams.
+
+### Changed Test Files
+
+- `tests/compliance/runner.py`
+- `tests/compliance/test_compliance_report.py`
+- `tests/compliance/test_dogfood.py`
+- `tests/compliance/test_e2e.py`
+- `tests/compliance/test_mcp_contract.py`
+- `tests/compliance/test_security.py`
+- `tests/compliance/test_tool_golden.py`
+
+### Current Handoff
+
+The harness now catches the reported client tool-discovery failure independently of tool execution. The next implementation blocker is in the runtime: `tools/call` currently references undefined `validate_arguments`, causing structured tool behavior tests to fail before individual tool semantics are reached.
+
 ## Task Scope
 
 - Role: `test-harness-engineer`.

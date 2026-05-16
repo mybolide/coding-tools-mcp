@@ -45,14 +45,27 @@ DEFAULT_EXCLUDED_NAMES = {
     "__pycache__",
 }
 SENSITIVE_ENV_RE = re.compile(r"(token|secret|credential|api[_-]?key|password|passwd|private)", re.I)
+RISKY_ENV_NAMES = {
+    "BASH_ENV",
+    "ENV",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "DYLD_INSERT_LIBRARIES",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "NODE_OPTIONS",
+    "RUBYOPT",
+    "PERL5OPT",
+}
 NETWORK_RE = re.compile(
-    r"(https?://|urllib\.request|requests\.|socket\.|curl\b|wget\b|nc\b|netcat\b|ssh\b|scp\b|ftp\b)",
+    r"(https?://|urllib\.request|urllib3|requests\.|http\.client|HTTPConnection|HTTPSConnection|socket\.|aiohttp|httpx|curl\b|wget\b|nc\b|netcat\b|ssh\b|scp\b|ftp\b)",
     re.I,
 )
 DESTRUCTIVE_RE = re.compile(
-    r"(^|\s)(sudo|su|chmod\s+-R|chown\s+-R|git\s+reset\s+--hard|git\s+clean\s+-fdx|mkfs|mount|umount)\b",
+    r"(^|\s)(sudo|su|chmod\s+-R|chown\s+-R|mkfs|mount|umount|find\b[^;&|]*\s-delete\b|git\b[^;&|]*\breset\s+--hard\b|git\b[^;&|]*\bclean\s+-[^\s]*[fx][^\s]*|rm\s+-[^\s]*r[^\s]*f|rm\s+-[^\s]*f[^\s]*r)\b",
     re.I,
 )
+ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w])/(?:[A-Za-z0-9._+@%=-]+/)*[A-Za-z0-9._+@%=-]+")
 
 
 class ToolFailure(Exception):
@@ -77,7 +90,7 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def json_response_payload(payload: dict[str, Any]) -> bytes:
+def json_response_payload(payload: Any) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -86,10 +99,12 @@ def truncate_bytes(data: bytes, limit: int) -> tuple[str, bool]:
         limit = 1
     truncated = len(data) > limit
     if truncated:
-        if limit > 64:
-            head = max(1, limit // 2)
-            tail = max(1, limit - head)
-            data = data[:head] + b"\n... output truncated ...\n" + data[-tail:]
+        marker = b"\n... output truncated ...\n"
+        if limit > len(marker) + 2:
+            remaining = limit - len(marker)
+            head = max(1, remaining // 2)
+            tail = max(1, remaining - head)
+            data = data[:head] + marker + data[-tail:]
         else:
             data = data[:limit]
     return data.decode("utf-8", errors="replace"), truncated
@@ -110,6 +125,22 @@ def is_relative_to(path: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def terminate_process_group(process: subprocess.Popen[bytes], signum: signal.Signals) -> None:
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        return
+    except Exception:
+        process.terminate()
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except Exception:
+            process.kill()
 
 
 @dataclass
@@ -227,6 +258,7 @@ class Workspace:
 class ExecSession:
     session_id: str
     process: subprocess.Popen[bytes]
+    timeout_at: float | None = None
     stdout: bytearray = field(default_factory=bytearray)
     stderr: bytearray = field(default_factory=bytearray)
     stdout_cursor: int = 0
@@ -236,6 +268,7 @@ class ExecSession:
     closed: bool = False
     exit_code: int | None = None
     signal_name: str | None = None
+    timed_out: bool = False
 
     def append_stdout(self, chunk: bytes) -> None:
         with self.lock:
@@ -254,12 +287,16 @@ class ExecSession:
             self.stderr_cursor = len(self.stderr)
         stdout, stdout_truncated = truncate_bytes(stdout_bytes, max_output_bytes)
         stderr, stderr_truncated = truncate_bytes(stderr_bytes, max_output_bytes)
-        status = "running" if self.process.poll() is None else "exited"
+        if self.timed_out:
+            status = "timeout"
+        else:
+            status = "running" if self.process.poll() is None else "exited"
         return {
             "session_id": self.session_id,
             "status": status,
             "exit_code": self.exit_code,
             "signal": self.signal_name,
+            "timed_out": self.timed_out,
             "stdout": stdout,
             "stderr": stderr,
             "stdout_truncated": stdout_truncated,
@@ -269,6 +306,14 @@ class ExecSession:
         }
 
     def refresh_status(self) -> None:
+        if (
+            self.timeout_at is not None
+            and not self.timed_out
+            and self.process.poll() is None
+            and time.time() >= self.timeout_at
+        ):
+            self.timed_out = True
+            terminate_process_group(self.process, signal.SIGTERM)
         code = self.process.poll()
         if code is None:
             return
@@ -279,7 +324,7 @@ class ExecSession:
 
 
 class Runtime:
-    def __init__(self, workspace: Path, *, enable_view_image: bool = False) -> None:
+    def __init__(self, workspace: Path, *, enable_view_image: bool = True) -> None:
         self.workspace = Workspace(workspace)
         self.enable_view_image = enable_view_image
         self.sessions: dict[str, ExecSession] = {}
@@ -337,10 +382,20 @@ class Runtime:
         handler = handlers.get(name)
         if handler is None:
             raise JsonRpcError(-32602, f"Unknown tool: {name}", {"reason": "unknown_tool"})
+        validate_arguments(name, args)
         try:
             payload = handler(args)
             payload.setdefault("ok", True)
-            return tool_result(payload, is_error=False)
+            content = None
+            if name == "view_image" and args.get("output", "mcp_image") == "mcp_image":
+                content = [
+                    {
+                        "type": "image",
+                        "data": str(payload.get("base64", "")),
+                        "mimeType": str(payload.get("mime_type", "application/octet-stream")),
+                    }
+                ]
+            return tool_result(payload, is_error=payload.get("ok") is False, content=content)
         except ToolFailure as exc:
             payload = {
                 "ok": False,
@@ -352,6 +407,16 @@ class Runtime:
                     "details": exc.details,
                 },
             }
+            if exc.code == "PERMISSION_REQUIRED":
+                permission = exc.details.get("permission")
+                payload["permission_request"] = {
+                    "tool_name": name,
+                    "permission": permission or "unknown",
+                    "status": "required",
+                    "retryable": True,
+                }
+            if exc.code == "ELICITATION_UNSUPPORTED":
+                payload["status"] = "unsupported"
             return tool_result(payload, is_error=True)
         except Exception as exc:  # noqa: BLE001 - tool failures must stay structured
             payload = {
@@ -514,7 +579,10 @@ class Runtime:
         matches: list[dict[str, Any]] = []
         total = 0
         flags = 0 if case_sensitive else re.IGNORECASE
-        compiled = re.compile(query, flags) if regex else None
+        try:
+            compiled = re.compile(query, flags) if regex else None
+        except re.error as exc:
+            raise ToolFailure("INVALID_ARGUMENT", f"Invalid regex: {exc}", category="validation") from exc
 
         roots = [resolved.path] if resolved.path.is_file() else walk_files(resolved.path)
         for path in roots:
@@ -606,6 +674,8 @@ class Runtime:
                 updated = apply_update_hunks(content, op.hunks)
                 if op.move_to:
                     dest = self.workspace.resolve_for_write(op.move_to)
+                    if dest.existed and dest.display != source.display:
+                        raise ToolFailure("PATCH_FAILED", "Cannot move over an existing file.", category="validation")
                     staged[source.display] = None
                     staged[dest.display] = updated
                     affected.append({"path": dest.display, "old_path": source.display, "operation": "move"})
@@ -679,6 +749,7 @@ class Runtime:
         stdin_text = str(args.get("stdin", ""))
         env = self._command_env(args.get("env", {}))
         start = time.time()
+        deadline = start + (timeout_ms / 1000.0)
         process = subprocess.Popen(
             cmd,
             cwd=str(workdir.path),
@@ -689,15 +760,22 @@ class Runtime:
             env=env,
             start_new_session=True,
         )
-        session = self._make_session(process)
+        session = self._make_session(process, timeout_at=deadline)
         start_reader_threads(session)
-        if stdin_text and process.stdin is not None:
-            process.stdin.write(stdin_text.encode("utf-8"))
-            process.stdin.flush()
-            if not tty:
-                process.stdin.close()
+        if process.stdin is not None:
+            try:
+                if stdin_text:
+                    process.stdin.write(stdin_text.encode("utf-8"))
+                    process.stdin.flush()
+            except BrokenPipeError:
+                pass
+            finally:
+                if not tty:
+                    try:
+                        process.stdin.close()
+                    except OSError:
+                        pass
         initial_wait = max(0, min(yield_ms, 30000)) / 1000.0
-        deadline = start + (timeout_ms / 1000.0)
         while True:
             if process.poll() is not None:
                 session.refresh_status()
@@ -737,12 +815,12 @@ class Runtime:
 
     def _check_command_policy(self, cmd: str, args: dict[str, Any]) -> None:
         env = args.get("env", {})
-        if isinstance(env, dict) and any(SENSITIVE_ENV_RE.search(str(key)) for key in env):
+        if isinstance(env, dict) and any(SENSITIVE_ENV_RE.search(str(key)) or str(key).upper() in RISKY_ENV_NAMES for key in env):
             raise ToolFailure(
                 "PERMISSION_REQUIRED",
-                "Sensitive environment variables require explicit permission.",
+                "Sensitive or loader/startup environment variables require explicit permission.",
                 category="permission",
-                details={"permission": "sensitive_env"},
+                details={"permission": "sensitive_env", "env_keys": sorted(str(key) for key in env)},
             )
         self._check_command_paths(cmd)
         compact = " ".join(cmd.split()).lower()
@@ -751,21 +829,21 @@ class Runtime:
                 "PERMISSION_REQUIRED",
                 "Destructive commands are blocked without explicit permission.",
                 category="permission",
-                details={"permission": "destructive_command"},
+                details={"permission": "destructive_command", "command": compact},
             )
         if DESTRUCTIVE_RE.search(cmd):
             raise ToolFailure(
                 "PERMISSION_REQUIRED",
                 "Destructive commands are blocked without explicit permission.",
                 category="permission",
-                details={"permission": "destructive_command"},
+                details={"permission": "destructive_command", "command": compact},
             )
         if NETWORK_RE.search(cmd):
             raise ToolFailure(
                 "PERMISSION_REQUIRED",
                 "Network access is denied by default.",
                 category="permission",
-                details={"permission": "network"},
+                details={"permission": "network", "command": compact},
             )
 
     def _check_command_paths(self, cmd: str) -> None:
@@ -773,30 +851,40 @@ class Runtime:
             tokens = shlex_split(cmd)
         except ValueError:
             tokens = cmd.split()
+        executable = strip_redirection_prefix(tokens[0]) if tokens else ""
         for index, token in enumerate(tokens):
             if not token or token.startswith("-"):
                 continue
-            if index == 0 and token.startswith("/") and os.access(token, os.X_OK):
+            if index == 0 and token.startswith("/") and os.access(strip_redirection_prefix(token), os.X_OK):
                 continue
-            if token.startswith("/") or token.startswith("~") or "../" in token or token == "..":
-                raise ToolFailure(
-                    "PERMISSION_REQUIRED",
-                    "Command path escapes the workspace and is blocked.",
-                    category="permission",
-                    details={"path": token},
-                )
-            if "/" not in token and "." not in token:
-                continue
-            try:
-                self.workspace.resolve_existing(token)
-            except ToolFailure as exc:
-                if exc.code in {"PATH_OUTSIDE_WORKSPACE", "ABSOLUTE_PATH_DENIED", "SYMLINK_ESCAPE"}:
+            for candidate in command_path_candidates(token):
+                if candidate.startswith("/") or candidate.startswith("~") or "../" in candidate or candidate == "..":
                     raise ToolFailure(
                         "PERMISSION_REQUIRED",
                         "Command path escapes the workspace and is blocked.",
                         category="permission",
-                        details={"path": token},
-                    ) from exc
+                        details={"permission": "filesystem_escape", "path": candidate},
+                    )
+                try:
+                    self.workspace.resolve_existing(candidate)
+                except ToolFailure as exc:
+                    if exc.code in {"PATH_OUTSIDE_WORKSPACE", "ABSOLUTE_PATH_DENIED", "SYMLINK_ESCAPE"}:
+                        raise ToolFailure(
+                            "PERMISSION_REQUIRED",
+                            "Command path escapes the workspace and is blocked.",
+                            category="permission",
+                            details={"permission": "filesystem_escape", "path": candidate},
+                        ) from exc
+        for match in ABSOLUTE_PATH_RE.finditer(cmd):
+            candidate = match.group(0).rstrip("')\"]},.;")
+            if not candidate or candidate == executable:
+                continue
+            raise ToolFailure(
+                "PERMISSION_REQUIRED",
+                "Absolute command paths are blocked unless they are the command executable.",
+                category="permission",
+                details={"permission": "filesystem_escape", "path": candidate},
+            )
 
     def _command_env(self, extra: Any) -> dict[str, str]:
         env: dict[str, str] = {}
@@ -809,13 +897,13 @@ class Runtime:
         if isinstance(extra, dict):
             for key, value in extra.items():
                 key_text = str(key)
-                if SENSITIVE_ENV_RE.search(key_text):
+                if SENSITIVE_ENV_RE.search(key_text) or key_text.upper() in RISKY_ENV_NAMES:
                     continue
                 env[key_text] = str(value)
         return env
 
-    def _make_session(self, process: subprocess.Popen[bytes]) -> ExecSession:
-        return ExecSession(session_id=secrets.token_urlsafe(18), process=process)
+    def _make_session(self, process: subprocess.Popen[bytes], *, timeout_at: float | None = None) -> ExecSession:
+        return ExecSession(session_id=secrets.token_urlsafe(18), process=process, timeout_at=timeout_at)
 
     def write_stdin(self, args: dict[str, Any]) -> dict[str, Any]:
         session_id = str(args.get("session_id", ""))
@@ -827,10 +915,13 @@ class Runtime:
                 raise ToolFailure("SESSION_CLOSED", "Session is closed; stdin write blocked.", category="runtime")
             return session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
         if chars:
-            if session.process.stdin is None:
+            if session.process.stdin is None or session.process.stdin.closed:
                 raise ToolFailure("SESSION_CLOSED", "Session stdin is closed.", category="runtime")
-            session.process.stdin.write(chars.encode("utf-8"))
-            session.process.stdin.flush()
+            try:
+                session.process.stdin.write(chars.encode("utf-8"))
+                session.process.stdin.flush()
+            except (BrokenPipeError, ValueError) as exc:
+                raise ToolFailure("SESSION_CLOSED", "Session stdin is closed.", category="runtime") from exc
         wait_until = time.time() + (int(args.get("yield_time_ms", 1000)) / 1000.0)
         while time.time() < wait_until and session.process.poll() is None:
             time.sleep(0.02)
@@ -866,19 +957,7 @@ class Runtime:
         return session
 
     def _terminate_process_group(self, process: subprocess.Popen[bytes], signum: signal.Signals) -> None:
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            return
-        except Exception:
-            process.terminate()
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except Exception:
-                process.kill()
+        terminate_process_group(process, signum)
 
     def git_status(self, args: dict[str, Any]) -> dict[str, Any]:
         resolved = self.workspace.resolve_existing(str(args.get("path", ".")))
@@ -952,8 +1031,27 @@ class Runtime:
             self.workspace.resolve_for_write(path)
         if not is_git_repo(self.workspace.root):
             return self._fallback_diff(path_filters, max_bytes)
+        chunks: list[bytes] = []
+        if unstaged:
+            chunks.append(self._run_git_diff(git, context, path_filters, cached=False))
+        if staged:
+            chunks.append(self._run_git_diff(git, context, path_filters, cached=True))
+        combined = b""
+        for chunk in chunks:
+            if combined and chunk and not combined.endswith(b"\n"):
+                combined += b"\n"
+            combined += chunk
+        diff_text, truncated = truncate_bytes(combined, max_bytes)
+        return {
+            "diff": diff_text,
+            "files": parse_diff_files(diff_text),
+            "truncated": truncated,
+            "warnings": ["diff truncated"] if truncated else [],
+        }
+
+    def _run_git_diff(self, git: str, context: int, path_filters: list[str], *, cached: bool) -> bytes:
         cmd = [git, "-C", str(self.workspace.root), "diff", f"--unified={context}"]
-        if staged and not unstaged:
+        if cached:
             cmd.append("--cached")
         if path_filters:
             cmd.append("--")
@@ -961,13 +1059,7 @@ class Runtime:
         completed = subprocess.run(cmd, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
         if completed.returncode not in {0, 1}:
             raise ToolFailure("GIT_ERROR", completed.stderr.decode("utf-8", errors="replace"), category="runtime")
-        diff_text, truncated = truncate_bytes(completed.stdout, max_bytes)
-        return {
-            "diff": diff_text,
-            "files": parse_diff_files(diff_text),
-            "truncated": truncated,
-            "warnings": ["diff truncated"] if truncated else [],
-        }
+        return completed.stdout
 
     def _fallback_diff(self, path_filters: list[str], max_bytes: int) -> dict[str, Any]:
         selected = set(path_filters)
@@ -1005,12 +1097,19 @@ class Runtime:
         }
 
     def request_permissions(self, args: dict[str, Any]) -> dict[str, Any]:
-        raise ToolFailure(
-            "ELICITATION_UNSUPPORTED",
-            "Permission elicitation is not available for this client.",
-            category="permission",
-            details={"status": "unsupported", "requested": args},
-        )
+        return {
+            "ok": False,
+            "status": "unsupported",
+            "grant_id": None,
+            "expires_at": None,
+            "error": {
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Permission elicitation is not available for this client.",
+                "category": "permission",
+                "retryable": False,
+                "details": {"requested": args},
+            },
+        }
 
     def view_image(self, args: dict[str, Any]) -> dict[str, Any]:
         resolved = self.workspace.resolve_existing(str(args.get("path", "")))
@@ -1028,6 +1127,7 @@ class Runtime:
             "bytes": len(data),
             "width": width,
             "height": height,
+            "base64": encoded,
             "data_url": f"data:{mime_type};base64,{encoded}",
             "warnings": [],
         }
@@ -1167,6 +1267,24 @@ def find_literal(line: str, query: str, case_sensitive: bool) -> Any:
 
 def shlex_split(command: str) -> list[str]:
     return shlex.split(command, posix=True)
+
+
+def strip_redirection_prefix(token: str) -> str:
+    return re.sub(r"^\d*(?:>>?|<<?|<>|&>>?|[<>]&)", "", token, count=1)
+
+
+def command_path_candidates(token: str) -> list[str]:
+    if token in {"|", "||", "&", "&&", ";", "(", ")"}:
+        return []
+    stripped = strip_redirection_prefix(token)
+    if not stripped or stripped in {"-", "--"}:
+        return []
+    candidates = [stripped]
+    if "=" in stripped and not stripped.startswith("="):
+        _key, value = stripped.split("=", 1)
+        if value:
+            candidates.append(value)
+    return list(dict.fromkeys(candidates))
 
 
 def entry_for_path(path: Path, root: Path) -> dict[str, Any]:
@@ -1310,6 +1428,10 @@ class JsonRpcError(Exception):
         self.data = data
 
 
+def invalid_request_response() -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}
+
+
 def tool_result(payload: dict[str, Any], *, is_error: bool, content: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     text = json.dumps(payload, sort_keys=True)
     result_content = content or []
@@ -1324,6 +1446,105 @@ def object_schema(properties: dict[str, Any] | None = None, required: list[str] 
         "required": required or [],
         "additionalProperties": False,
     }
+
+
+def tool_output_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean"},
+            "error": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string"},
+                    "message": {"type": "string"},
+                    "category": {"type": "string"},
+                    "retryable": {"type": "boolean"},
+                    "details": {"type": "object", "additionalProperties": True},
+                },
+                "required": ["code", "message", "category", "retryable", "details"],
+                "additionalProperties": True,
+            },
+        },
+        "required": ["ok"],
+        "additionalProperties": True,
+    }
+
+
+def validate_arguments(tool_name: str, args: dict[str, Any]) -> None:
+    schema = input_schemas()[tool_name]
+    try:
+        validate_schema_value(args, schema, path="arguments")
+    except ToolFailure as exc:
+        raise JsonRpcError(-32602, exc.message, {"reason": "invalid_arguments", "code": exc.code}) from exc
+
+
+def validate_schema_value(value: Any, schema: dict[str, Any], *, path: str) -> None:
+    expected_type = schema.get("type")
+    if expected_type is not None and not schema_type_matches(value, expected_type):
+        raise ToolFailure("INVALID_ARGUMENT", f"{path} must be {schema_type_name(expected_type)}.", category="validation")
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            raise ToolFailure("INVALID_ARGUMENT", f"{path} is shorter than {min_length}.", category="validation")
+        if "enum" in schema and value not in schema["enum"]:
+            raise ToolFailure("INVALID_ARGUMENT", f"{path} must be one of {schema['enum']!r}.", category="validation")
+
+    if isinstance(value, int) and not isinstance(value, bool):
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            raise ToolFailure("INVALID_ARGUMENT", f"{path} must be >= {minimum}.", category="validation")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            raise ToolFailure("INVALID_ARGUMENT", f"{path} must be <= {maximum}.", category="validation")
+
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        item_schema = schema["items"]
+        for index, item in enumerate(value):
+            validate_schema_value(item, item_schema, path=f"{path}[{index}]")
+
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        for key in required:
+            if key not in value:
+                raise ToolFailure("INVALID_ARGUMENT", f"{path}.{key} is required.", category="validation")
+        additional = schema.get("additionalProperties", True)
+        for key, item in value.items():
+            child_path = f"{path}.{key}"
+            if key in properties:
+                validate_schema_value(item, properties[key], path=child_path)
+            elif additional is False:
+                raise ToolFailure("INVALID_ARGUMENT", f"{child_path} is not a recognized argument.", category="validation")
+            elif isinstance(additional, dict):
+                validate_schema_value(item, additional, path=child_path)
+
+
+def schema_type_matches(value: Any, expected_type: str | list[str]) -> bool:
+    if isinstance(expected_type, list):
+        return any(schema_type_matches(value, item) for item in expected_type)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "string":
+        return isinstance(value, str)
+    return False
+
+
+def schema_type_name(expected_type: str | list[str]) -> str:
+    if isinstance(expected_type, list):
+        return " or ".join(expected_type)
+    return expected_type
 
 
 def tool_definition(name: str) -> dict[str, Any]:
@@ -1348,7 +1569,7 @@ def tool_definition(name: str) -> dict[str, Any]:
         "title": annotations["title"],
         "description": descriptions[name],
         "inputSchema": schemas[name],
-        "outputSchema": object_schema({"ok": {"type": "boolean"}}, ["ok"]),
+        "outputSchema": tool_output_schema(),
         "annotations": annotations,
     }
 
@@ -1526,8 +1747,23 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self) -> None:
-        if posixpath.normpath(self.path) != "/mcp":
+        request_path = self.path.split("?", 1)[0]
+        if posixpath.normpath(request_path) != "/mcp":
             self.send_json({"jsonrpc": "2.0", "error": {"code": -32601, "message": "Unknown endpoint"}}, status=404)
+            return
+        protocol_version = self.headers.get("MCP-Protocol-Version")
+        if protocol_version and protocol_version != PROTOCOL_VERSION:
+            self.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Unsupported MCP protocol version",
+                        "data": {"supported": [PROTOCOL_VERSION], "received": protocol_version},
+                    },
+                },
+                status=400,
+            )
             return
         origin = self.headers.get("Origin")
         if origin and not (origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")):
@@ -1539,6 +1775,25 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             request = json.loads(body.decode("utf-8"))
         except json.JSONDecodeError:
             self.send_json({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}}, status=400)
+            return
+        if isinstance(request, list):
+            if not request:
+                self.send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}, status=400)
+                return
+            responses: list[dict[str, Any]] = []
+            for item in request:
+                if not isinstance(item, dict):
+                    responses.append({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}})
+                    continue
+                response = self.handle_rpc(item)
+                if response is not None:
+                    responses.append(response)
+            if not responses:
+                self.send_response(202)
+                self.send_header("Mcp-Session-Id", self.runtime.http_session_id)
+                self.end_headers()
+                return
+            self.send_json(responses)
             return
         if not isinstance(request, dict):
             self.send_json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}}, status=400)
@@ -1590,7 +1845,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 response["id"] = request_id
             return response
 
-    def send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
+    def send_json(self, payload: Any, *, status: int = 200) -> None:
         body = json_response_payload(payload)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -1631,7 +1886,14 @@ def run_stdio(args: argparse.Namespace) -> int:
         try:
             request = json.loads(line)
             fake = StdioDispatcher(runtime)
-            response = fake.handle_rpc(request)
+            if isinstance(request, list) and request:
+                response = [item for item in (fake.handle_rpc(part) if isinstance(part, dict) else invalid_request_response() for part in request) if item is not None]
+            elif isinstance(request, list):
+                response = invalid_request_response()
+            elif isinstance(request, dict):
+                response = fake.handle_rpc(request)
+            else:
+                response = invalid_request_response()
             if response is not None:
                 sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
                 sys.stdout.flush()
@@ -1661,7 +1923,10 @@ class StdioDispatcher:
             elif method == "tools/call":
                 if not isinstance(params, dict) or not isinstance(params.get("name"), str):
                     raise JsonRpcError(-32602, "tools/call requires a tool name")
-                result = self.runtime.call_tool(params["name"], params.get("arguments") or {})
+                arguments = params.get("arguments") or {}
+                if not isinstance(arguments, dict):
+                    raise JsonRpcError(-32602, "tools/call arguments must be an object")
+                result = self.runtime.call_tool(params["name"], arguments)
             else:
                 raise JsonRpcError(-32601, f"Unknown method: {method}")
             if request_id is None:
@@ -1686,7 +1951,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-view-image",
         action="store_true",
-        default=os.environ.get("CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE") == "1",
+        default=os.environ.get("CODEX_TOOL_RUNTIME_ENABLE_VIEW_IMAGE", "1") != "0",
         help="enable the P1 view_image tool",
     )
     return parser

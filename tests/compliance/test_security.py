@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from tests.compliance.mcp_client import MCPClient
@@ -54,6 +55,97 @@ class SecurityComplianceTests(ComplianceTestCase):
             },
         )
 
+    def test_exec_command_rejects_interpreter_mediated_outside_reads(self) -> None:
+        outside_secret = repr(str(self.workspace.outside_secret))
+        self.assert_denied_or_permission_required(
+            "exec_command",
+            {
+                "cmd": (
+                    "python -c "
+                    f"\"from pathlib import Path; print(Path({outside_secret}).read_text())\""
+                ),
+                "timeout_ms": 5000,
+                "max_output_bytes": 4096,
+            },
+        )
+
+    def test_exec_command_rejects_destructive_workspace_mutations(self) -> None:
+        dangerous_commands = [
+            "rm -rf src",
+            "git -C . reset --hard",
+            "find . -maxdepth 1 -type f -delete",
+        ]
+        for cmd in dangerous_commands:
+            with self.subTest(cmd=cmd):
+                with self.session_for_fixture("tiny-js-project") as (_workspace, client):
+                    result = client.call_tool(
+                        "exec_command",
+                        {"cmd": cmd, "timeout_ms": 5000, "max_output_bytes": 4096},
+                    )
+                    self.assertTrue(result.get("isError", False), f"destructive command must be denied: {result!r}")
+
+    def test_exec_command_rejects_obfuscated_network_access(self) -> None:
+        result = self.client.call_tool(
+            "exec_command",
+            {
+                "cmd": (
+                    "python -c "
+                    "\"import http.client; "
+                    "c=http.client.HTTPConnection('127.0.0.1', 9, timeout=0.2); "
+                    "c.request('GET', '/')\""
+                ),
+                "timeout_ms": 3000,
+                "max_output_bytes": 4096,
+            },
+        )
+        self.assertTrue(result.get("isError", False), f"network command must be denied before execution: {result!r}")
+
+    def test_exec_command_rejects_shell_startup_and_loader_environment(self) -> None:
+        risky_env = {
+            "BASH_ENV": "malicious-startup.sh",
+            "ENV": "malicious-startup.sh",
+            "LD_PRELOAD": "malicious-loader.so",
+            "PYTHONPATH": ".",
+        }
+        for key, value in risky_env.items():
+            with self.subTest(env=key):
+                result = self.client.call_tool("exec_command", {"cmd": "true", "env": {key: value}})
+                self.assertTrue(result.get("isError", False), f"{key} must require permission or be denied: {result!r}")
+
+    def test_exec_command_timeout_is_enforced_after_running_session_is_returned(self) -> None:
+        started = self.client.call_tool(
+            "exec_command",
+            {
+                "cmd": "python -c \"import time; time.sleep(5)\"",
+                "timeout_ms": 100,
+                "yield_time_ms": 0,
+                "max_output_bytes": 4096,
+            },
+        )
+        payload = self.assert_tool_success(started)
+        session_id = payload.get("session_id")
+        self.assertIsInstance(session_id, str, f"running command should expose a session id: {payload!r}")
+
+        try:
+            time.sleep(0.35)
+            polled = self.client.call_tool(
+                "write_stdin",
+                {"session_id": session_id, "chars": "", "yield_time_ms": 0, "max_output_bytes": 4096},
+            )
+            poll_payload = self.assert_tool_success(polled)
+            self.assertNotEqual(
+                poll_payload.get("status"),
+                "running",
+                f"command should have timed out after the configured deadline: {poll_payload!r}",
+            )
+            self.assertTrue(
+                poll_payload.get("timed_out") or poll_payload.get("status") in {"timeout", "exited"},
+                f"timeout should be explicit after deadline: {poll_payload!r}",
+            )
+        finally:
+            if isinstance(session_id, str):
+                self.client.call_tool("kill_session", {"session_id": session_id, "signal": "KILL"})
+
     def test_sensitive_environment_is_not_leaked_to_child_processes(self) -> None:
         result = self.client.call_tool(
             "exec_command",
@@ -66,6 +158,44 @@ class SecurityComplianceTests(ComplianceTestCase):
         payload = self.assert_tool_success(result)
         self.assertEqual(payload.get("exit_code"), 0)
         self.assertNotIn("COMPLIANCE_SHOULD_NOT_LEAK", self.tool_text(result))
+
+    def test_read_only_tools_do_not_follow_symlink_escape_fixture(self) -> None:
+        listed = self.client.call_tool("list_dir", {"path": ".", "include_hidden": True})
+        self.assert_tool_success(listed)
+        self.assertNotIn("TOP_SECRET_DO_NOT_READ", self.tool_text(listed))
+
+        files = self.client.call_tool("list_files", {"glob": "**/*", "include_hidden": True})
+        payload = self.assert_tool_success(files)
+        paths = {entry.get("path") for entry in payload.get("files", []) if isinstance(entry, dict)}
+        self.assertNotIn("outside-link.txt", paths)
+        self.assertNotIn("TOP_SECRET_DO_NOT_READ", self.tool_text(files))
+
+        search = self.client.call_tool("search_text", {"query": "TOP_SECRET_DO_NOT_READ", "path": "."})
+        payload = self.assert_tool_success(search)
+        self.assertEqual(payload.get("matches"), [])
+        self.assertEqual(payload.get("total_matches"), 0)
+
+    def test_request_permissions_does_not_silently_grant_dangerous_operations(self) -> None:
+        result = self.client.call_tool(
+            "request_permissions",
+            {
+                "tool_name": "exec_command",
+                "permission": "network",
+                "reason": "verify compliance denial shape",
+                "arguments": {"cmd": "curl https://example.com"},
+            },
+        )
+        self.assertTrue(result.get("isError"), f"permission request must not silently grant access: {result!r}")
+        payload = self.assert_denied_or_permission_required(
+            "request_permissions",
+            {
+                "tool_name": "exec_command",
+                "permission": "destructive_command",
+                "reason": "verify compliance denial shape",
+                "arguments": {"cmd": "git reset --hard"},
+            },
+        )
+        self.assertFalse(payload.get("ok", True))
 
     def test_stdout_json_rpc_pollution_is_absent(self) -> None:
         stdout = self.client.stdout_snapshot()

@@ -2,93 +2,78 @@
 
 ## Task Scope
 
-Define the MCP tool surface, input schemas, output schemas, error model, annotations/hints, transport expectations, protocol behavior, and forbidden product-layer capabilities for a coding-agent runtime MCP server.
+Verify the current MCP protocol contract for `/root/workspace` against:
 
-Required output:
+- The local task brief and repository docs.
+- The current `codex_tool_runtime_mcp/server.py` behavior.
+- The compliance harness under `tests/compliance`.
+- Current official MCP and Python MCP SDK expectations for tools, structured output, annotations, Streamable HTTP, and stdio JSON-RPC.
 
+No server implementation changes were made. Contract edits were limited to:
+
+- `SPEC.md`
 - `reports/subagents/mcp-contract.md`
+- `tests/compliance/test_mcp_contract.py`
+
+Observed unrelated working-tree edits in `codex_tool_runtime_mcp/server.py`, `tests/compliance/mcp_client.py`, and generated report files were left untouched.
+
+## Sources Read/Referenced
+
+Local repository files:
+
+- `CODEX_GOAL_MODE_MCP_RUNTIME_TASK.md`
+- `codex_tool_runtime_mcp/server.py`
+- `SPEC.md`
+- `COMPLIANCE.md`
 - `docs/profile-v0.1.md`
+- `tests/compliance/test_mcp_contract.py`
+- `tests/compliance/mcp_client.py`
+- `tests/compliance/test_support.py`
+- `tests/compliance/test_tool_golden.py`
+- `tests/compliance/test_security.py`
+- `tests/compliance/test_e2e.py`
+- `tests/compliance/test_codex_compat.py`
+- `tests/compliance/test_dogfood.py`
 
-Implementation files were intentionally not created.
+Official upstream references:
 
-## References Consulted
+- MCP 2025-06-18 tools: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+- MCP 2025-06-18 lifecycle: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+- MCP 2025-06-18 transports: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+- MCP 2025-06-18 schema: https://modelcontextprotocol.io/specification/2025-06-18/schema
+- MCP latest checked, 2025-11-25 tools: https://modelcontextprotocol.io/specification/2025-11-25/server/tools
+- MCP latest checked, 2025-11-25 lifecycle: https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
+- MCP latest checked, 2025-11-25 transports: https://modelcontextprotocol.io/specification/2025-11-25/basic/transports
+- MCP latest checked, 2025-11-25 schema: https://modelcontextprotocol.io/specification/2025-11-25/schema
+- Official Python SDK README: https://github.com/modelcontextprotocol/python-sdk
+- Official Python SDK API reference: https://modelcontextprotocol.github.io/python-sdk/api/
 
-- Project task brief: `CODEX_GOAL_MODE_MCP_RUNTIME_TASK.md`
-- MCP tools specification: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
-- MCP lifecycle: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
-- MCP transports: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
-- MCP schema reference: https://modelcontextprotocol.io/specification/2025-06-18/schema
-- MCP elicitation: https://modelcontextprotocol.io/specification/2025-06-18/client/elicitation
-
-The official MCP 2025-06-18 pages establish that tools are model-controlled capabilities with `inputSchema`, optional `outputSchema`, optional annotations, and `tools/list`/`tools/call` JSON-RPC methods. They also define lifecycle initialization, Streamable HTTP, stdio constraints, image content, structured content, and elicitation for user-mediated approval.
-
-## Contract Decision Summary
-
-The authoritative profile is in `docs/profile-v0.1.md`.
-
-Key decisions:
-
-- Target protocol is MCP `2025-06-18`.
-- P0 transport is Streamable HTTP; P1 transport is stdio.
-- All P0 tools are included: `read_file`, `list_dir`, `list_files`, `search_text`, `apply_patch`, `exec_command`, `write_stdin`, `kill_session`, `git_status`, `git_diff`, and `request_permissions`.
-- `view_image` is P1 and may be feature-gated.
-- Every tool returns MCP `content` plus `structuredContent`; the text content mirrors structured JSON for compatibility.
-- Every tool has an `outputSchema`, even though MCP marks it optional, because compliance tests need stable structured results.
-- Tool execution failures use `isError: true` with `structuredContent.ok: false`.
-- Unknown tools and malformed arguments use JSON-RPC errors instead of tool-level errors.
-- Workspace escape is never grantable in v0.1.
-- Permission grants can use MCP elicitation when the client supports it; otherwise unsupported approval returns structured failure unless the server was explicitly started in a documented non-default permission mode.
-- The profile forbids high-level Codex/product-layer wrappers and unrelated personal/account/network/model tools.
+Local Python environment note: the `mcp` package is not installed in this workspace, so SDK verification used official docs and API references rather than importing SDK types locally.
 
 ## Tool Surface
 
-P0 tools:
+The implementation advertises these coding runtime tools:
 
-| Tool | Purpose | Annotation posture |
-| --- | --- | --- |
-| `read_file` | Read a text slice inside the workspace | read-only, idempotent, closed-world |
-| `list_dir` | List directory entries | read-only, idempotent, closed-world |
-| `list_files` | List files by glob/ignore rules | read-only, idempotent, closed-world |
-| `search_text` | Search text with bounded results | read-only, idempotent, closed-world |
-| `apply_patch` | Apply Codex-style patch envelope | write-capable, destructive, non-idempotent |
-| `exec_command` | Run bounded commands in the workspace | write-capable, destructive, non-idempotent, open-world when permissions allow network |
-| `write_stdin` | Send input to a managed exec session | write-capable, non-idempotent |
-| `kill_session` | Terminate a managed exec session | write-capable, destructive |
-| `git_status` | Report git working tree status | read-only, idempotent |
-| `git_diff` | Report unified git diff | read-only, idempotent |
-| `request_permissions` | Request scoped approval for dangerous operations | workspace-read-only, non-idempotent approval flow |
+- `read_file`
+- `list_dir`
+- `list_files`
+- `search_text`
+- `apply_patch`
+- `exec_command`
+- `write_stdin`
+- `kill_session`
+- `git_status`
+- `git_diff`
+- `request_permissions`
+- `view_image` when image support is enabled
 
-P1 tool:
+The surface correctly excludes product-layer capabilities such as Codex login, account/keyring management, cloud tasks, memory, web search, image generation, plugin marketplace/connector installation, model routing, and high-level `codex(prompt)` wrappers.
 
-| Tool | Purpose | Annotation posture |
-| --- | --- | --- |
-| `view_image` | Return workspace image content | read-only, idempotent, closed-world |
+Current working-tree note: an unowned server edit makes `view_image` enabled by default and an unowned test-harness edit adds it to `REQUIRED_TOOLS`. This differs from the older profile language that treated `view_image` as P1/feature-gated.
 
-Forbidden tools and aliases:
+## Input/Output Schema
 
-- memory, personalization, or profile storage
-- ChatGPT/Codex login, account, token, or keyring management
-- Codex cloud tasks or remote queues
-- web search or arbitrary network fetch as a direct tool
-- image generation
-- subagent spawning or orchestration
-- model selection or paid account routing
-- plugin marketplace or connector installation
-- high-level `codex(prompt)`, `codex-reply`, or equivalent agent wrappers
-
-## Protocol Behavior
-
-### initialize
-
-The server must respond with protocol version `2025-06-18`, `capabilities.tools`, `serverInfo`, and short runtime instructions. It must not advertise prompts, resources, sampling, or product capabilities unless future profile versions define and test them.
-
-The profile sets `tools.listChanged` to `false` because the tool list is fixed for a server process. A future feature-gated implementation may set it to `true` only if it sends `notifications/tools/list_changed` when the set changes.
-
-### tools/list
-
-`tools/list` returns all P0 tools. `view_image` appears only when P1 image support is enabled. Results may be unpaginated because the list is small; if pagination is implemented, cursors must be opaque and invalid cursors return JSON-RPC `-32602`.
-
-Each tool entry must include:
+`tools/list` entries include the Python SDK-compatible fields:
 
 - `name`
 - `title`
@@ -97,131 +82,106 @@ Each tool entry must include:
 - `outputSchema`
 - `annotations`
 
-### tools/call
+Input schemas are JSON Schema object shapes and broadly match the local profile. The implementation does not centrally validate all calls against those schemas. Practical effects:
 
-The server validates:
+- Current dirty-tree blocker: `Runtime.call_tool` now calls `validate_arguments(name, args)`, but that function is not defined, causing valid `tools/call` requests to fail with JSON-RPC `-32603`.
+- `additionalProperties: false` is advertised but not consistently enforced.
+- Numeric min/max constraints are mostly enforced only where handler code casts and checks them.
+- Some malformed arguments become structured tool errors rather than JSON-RPC `-32602`.
 
-1. The JSON-RPC request shape.
-2. Tool name.
-3. Arguments against the tool `inputSchema`.
-4. Workspace/path/session/permission policy.
+The most important contract gap is `outputSchema`: every tool currently advertises the same minimal schema with only `ok` and `additionalProperties: false`. Actual `structuredContent` returns tool-specific fields such as `content`, `entries`, `matches`, `stdout`, `stderr`, `diff`, `error`, and `warnings`. MCP 2025-06-18 says that when a tool provides an output schema, structured results must conform to it, and the Python SDK validates structured results against output schemas. The current implementation therefore should either:
 
-Valid calls return MCP tool results. Success has `isError: false`; execution failure has `isError: true`. Both include `structuredContent`.
-
-Unknown tool names return JSON-RPC `-32602` with `error.data.reason = "unknown_tool"`. Invalid arguments return `-32602`. Unexpected pre-result failures return `-32603`.
-
-## Input and Output Schemas
-
-The full schema contract is in `docs/profile-v0.1.md`.
-
-Schema highlights:
-
-- Path parameters are workspace-relative strings.
-- Absolute paths are rejected by default.
-- `read_file` supports `start_line`, `end_line`, `max_bytes`, and UTF-8 text only.
-- `list_dir` and `list_files` expose bounded `max_entries`/`max_results` controls and ignore large/generated directories by default.
-- `search_text` supports literal or regex search, glob filters, bounded context, and truncation.
-- `apply_patch` accepts only the Codex-style `*** Begin Patch` / `*** End Patch` envelope and supports add, update, delete, and move.
-- `exec_command` requires bounded timeout/output controls and returns either final process output or a server-managed `session_id`.
-- `write_stdin` and `kill_session` operate only on sessions created by this server.
-- `git_status` and `git_diff` expose structured git metadata with bounded output.
-- `request_permissions` returns a grant, denial, unsupported status, or structured error.
-- `view_image` returns MCP image content or a data URL, subject to image type and size limits.
+- publish real per-tool output schemas that include success and error fields, or
+- remove/relax `outputSchema` until the schemas are accurate.
 
 ## Error Model
 
-The contract separates protocol errors from tool execution errors.
+The intended split is correct:
 
-Protocol errors:
+- Protocol errors for malformed JSON-RPC, unknown methods, invalid `tools/call` shape, and unknown tools.
+- Tool execution errors as `tools/call` results with `isError: true`, `structuredContent.ok: false`, and structured `error`.
 
-- `-32601`: unknown JSON-RPC method
-- `-32602`: invalid request params, invalid schema, invalid cursor, or unknown tool name inside `tools/call`
-- `-32603`: unexpected internal failure before the server can construct a tool result
+Verified behavior:
 
-Tool execution errors:
+- Unknown tool names return JSON-RPC `-32602` with `error.data.reason = "unknown_tool"`.
+- Tool execution failures include `content`, `structuredContent`, `isError: true`, `error.code`, `error.message`, `error.category`, `error.retryable`, and `error.details`.
+- Text content mirrors JSON serialization of `structuredContent`, matching the MCP structured-output backward-compatibility recommendation.
 
-- Returned as `tools/call` results with `isError: true`
-- `structuredContent.ok` is `false`
-- `structuredContent.error` includes `code`, `message`, `category`, `retryable`, optional `details`, and optional `permission_request`
+Gaps:
 
-Primary tool error codes:
+- `run_stdio` maps parse and invalid-shape failures to generic `-32603` in some cases rather than precise JSON-RPC errors such as `-32700` or `-32600`.
+- Stdio `tools/call` does not validate that `arguments` is an object before dispatching.
+- `request_permissions` always returns `ELICITATION_UNSUPPORTED` as a tool error and does not yet implement MCP elicitation or the full profile-level `status: "unsupported"` structured response.
 
-- `INVALID_ARGUMENT`
-- `PATH_OUTSIDE_WORKSPACE`
-- `ABSOLUTE_PATH_DENIED`
-- `SYMLINK_ESCAPE`
-- `NOT_FOUND`
-- `NOT_A_DIRECTORY`
-- `IS_DIRECTORY`
-- `BINARY_FILE`
-- `UNSUPPORTED_ENCODING`
-- `OUTPUT_TOO_LARGE`
-- `TIMEOUT`
-- `SESSION_NOT_FOUND`
-- `SESSION_CLOSED`
-- `COMMAND_REJECTED`
-- `PERMISSION_REQUIRED`
-- `PERMISSION_DENIED`
-- `ELICITATION_UNSUPPORTED`
-- `PATCH_FAILED`
-- `GIT_ERROR`
-- `INTERNAL_ERROR`
+## Annotations
 
-## Security and Permission Contract
+The implementation emits the standard MCP `ToolAnnotations` hint keys:
 
-The server binds one workspace root at startup. All path-bearing tools canonicalize candidate paths and verify the result remains inside that root. Symlink escapes are rejected. Listing may show a symlink but must not follow it outside the workspace.
+- `title`
+- `readOnlyHint`
+- `destructiveHint`
+- `idempotentHint`
+- `openWorldHint`
 
-`exec_command` must run in a workspace-contained working directory with timeouts and output caps. It must deny or permission-gate network use, destructive commands, broad permission changes, sensitive environment access, and long timeouts.
+The annotation posture is consistent with the runtime:
 
-`request_permissions` is the only P0 approval tool. If a client advertises MCP elicitation, the server may use `elicitation/create` to ask for user approval. If not, it returns `ELICITATION_UNSUPPORTED` unless the process was explicitly started in a non-default permissive mode for disposable environments. The default must not silently open dangerous permissions.
+- Read-only/idempotent/closed-world: `read_file`, `list_dir`, `list_files`, `search_text`, `git_status`, `git_diff`, and `view_image`.
+- Write/destructive/non-idempotent: `apply_patch`, `exec_command`, and `kill_session`.
+- Write/non-destructive/non-idempotent: `write_stdin`.
+- Permission workflow hint: `request_permissions` is read-only but non-idempotent.
+- `exec_command` is correctly marked `openWorldHint: true`.
 
-Workspace escape is not grantable. This keeps path safety independent from the permission model.
+Risk reminder: MCP annotations are hints only. They must not be treated as the security boundary.
 
-## Transport Expectations
+## Transports
 
-Streamable HTTP is required for P0:
+Streamable HTTP:
 
-- single endpoint, default `/mcp`
-- POST for client messages
-- optional GET SSE stream or `405`
-- `MCP-Protocol-Version` after initialization
-- optional `Mcp-Session-Id`
-- Origin validation
-- loopback bind by default
-- no debug output outside JSON-RPC/SSE frames
+- Endpoint is `/mcp`.
+- POST accepts JSON-RPC requests and notifications.
+- Notifications return `202`.
+- GET returns `405`, which is allowed when no SSE stream is provided.
+- Responses are JSON objects rather than SSE.
+- Server binds to loopback by default and validates `Origin` for loopback origins.
+- Logs go to stderr; HTTP response bodies are not polluted with debug output.
 
-stdio is P1:
+HTTP gaps:
 
-- newline-delimited JSON-RPC over stdin/stdout
-- stdout contains only MCP messages
-- stderr is for logs
+- The server emits `Mcp-Session-Id`, but does not require it on later requests.
+- The server does not reject invalid or unsupported `MCP-Protocol-Version` headers after initialization.
+- `tools/list` ignores pagination cursors; this is acceptable for the small fixed list only if documented as unpaginated.
 
-## Compliance Hooks
+stdio:
 
-Contract tests should assert:
+- `--stdio` reads newline-delimited JSON-RPC from stdin.
+- stdout responses are single-line JSON-RPC messages.
+- `notifications/initialized` produces no response.
+- stdout remains MCP-message-only on the verified happy path.
 
-- `initialize` succeeds.
-- `tools/list` includes every P0 tool.
-- `tools/list` excludes forbidden product-layer tools.
-- Each listed tool has valid JSON Schema for `inputSchema` and `outputSchema`.
-- Tool annotations match the profile.
-- `tools/call` success returns `content`, `structuredContent`, and `isError: false`.
-- Tool execution errors return `isError: true` with structured error content.
-- Unknown tool names return JSON-RPC error.
-- stdout/HTTP response bodies are not polluted by logs.
-- Path traversal, absolute paths, symlink escape, unsafe commands, session abuse, and network-by-default cases fail or require permission.
+stdio gaps:
+
+- Parse errors and non-object JSON request shapes need stricter JSON-RPC error mapping.
+- There is no SDK transport adapter; behavior is implemented directly in `run_stdio`/`StdioDispatcher`.
 
 ## Risks
 
-- MCP `ToolAnnotations` are hints, not a security boundary. The server must enforce policy independently.
-- Static annotations cannot perfectly describe `exec_command`; the contract marks it destructive and open-world because permissions may allow network or side effects.
-- Elicitation support is client-dependent. The fallback path must be tested so permission-required cases are explicit rather than silently allowed.
-- Atomic patch application is a hard requirement. If direct application cannot be guaranteed atomic, the implementation should stage changes and swap them into place only after validation.
-- Shell command safety cannot rely on deny lists alone. The P0 contract defines guardrails; stronger OS sandboxing should be covered by the security architect.
+- Output schema drift is the highest SDK compatibility risk because Python MCP SDK servers validate structured output against `outputSchema`.
+- The current dirty tree has a hard `tools/call` regression from an undefined `validate_arguments` reference in `server.py`.
+- The repository now has a contract mismatch around whether `view_image` is P1 optional or a default required tool.
+- Hand-rolled schema validation can drift from `inputSchema`, especially for `additionalProperties`, ranges, and type errors.
+- HTTP version-header handling is looser than the 2025-06-18 transport spec.
+- Elicitation is documented but not implemented.
+- `view_image` does not emit MCP image content for `output: "mcp_image"`; it returns text/data URL only.
+- Stdio is clean on normal requests, but malformed input behavior is not fully JSON-RPC-compliant.
 
-## Follow-up Action Items
+## Action Items
 
-- Implementation engineer: generate tool definitions directly from the profile or a single source of truth to avoid schema drift.
-- Test harness engineer: convert every schema and error case in `docs/profile-v0.1.md` into contract tests.
-- Security architect: refine command sandbox and environment filtering details without weakening this contract.
-- Release docs engineer: reference `docs/profile-v0.1.md` from README, SPEC, SECURITY, and COMPLIANCE once those documents exist.
+1. Decide whether `view_image` is P0/default or P1/feature-gated, then align `server.py`, `tests/compliance/mcp_client.py`, `SPEC.md`, `docs/profile-v0.1.md`, and `COMPLIANCE.md`.
+2. Define or remove the new `validate_arguments` call so valid `tools/call` requests execute again.
+3. Replace the minimal `outputSchema` with accurate per-tool schemas, including success fields and the structured error object, or omit `outputSchema` until schemas are accurate.
+4. Add implementation-level argument validation against each tool `inputSchema`; return JSON-RPC `-32602` for malformed `tools/call` params and schema-invalid arguments where the profile requires protocol errors.
+5. Tighten Streamable HTTP version handling: reject invalid/unsupported `MCP-Protocol-Version` headers after initialization.
+6. Tighten stdio error handling for parse errors, non-object JSON messages, and non-object `tools/call.arguments`.
+7. Implement or explicitly downgrade `request_permissions` elicitation behavior in the profile.
+8. Emit MCP image content for `view_image` when `output: "mcp_image"` is requested, or update the profile to document data-URL-only behavior.
+9. Keep the added contract tests for annotations, output schema presence, structured-content text mirroring, structured tool errors, and stdio newline JSON-RPC behavior.
