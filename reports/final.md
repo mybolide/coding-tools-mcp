@@ -17,9 +17,12 @@ Current pushed evidence before this report update:
 
 Current local verification after this report update:
 
+- Implementation/test/docs commit verified by `make compliance`: `0f8534df65c0797544421e47974c4df14176df81`
+- Compliance report refresh commit: `c85398aa5e833e443fbd93fdd3e66fcb2d3c8c09`
+- Release tag for this iteration: `v0.1.1`
 - `make compliance`: `44` tests run, `44` passed, `0` skipped.
 - Required tools, including `view_image`: all passed.
-- The exact pushed commit and release tag for this update are recorded in the final assistant response after push.
+- The final assistant response records the pushed tag target after push.
 
 ## Implemented Tools
 
