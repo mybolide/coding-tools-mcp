@@ -67,15 +67,15 @@ WORKLOADS = [
         env={"CARGO_HOME": ".cargo-home", "CARGO_TARGET_DIR": "target"},
     ),
     Workload(
-        name="go-errors",
+        name="go-uuid",
         category="go",
-        repo="https://github.com/pkg/errors.git",
+        repo="https://github.com/google/uuid.git",
         required_executable="go",
-        read_path="errors.go",
+        read_path="uuid.go",
         search_query="func New",
         command="go test",
         timeout_ms=180000,
-        env={"GOCACHE": ".gocache", "GOMODCACHE": ".gomodcache", "GO111MODULE": "off", "GOTOOLCHAIN": "local"},
+        env={"GOCACHE": ".gocache", "GOMODCACHE": ".gomodcache", "GOTELEMETRY": "off", "GOTOOLCHAIN": "local"},
     ),
     Workload(
         name="monorepo-changesets",
@@ -215,6 +215,18 @@ def write_large_fixture(workspace: Path) -> str:
     return relative
 
 
+def workspace_env(workspace: Path, env: dict[str, str]) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for key, value in env.items():
+        if value.startswith("."):
+            resolved[key] = str((workspace / value).resolve())
+        else:
+            resolved[key] = value
+    if shutil.which("cargo") is not None:
+        resolved.setdefault("RUSTUP_TOOLCHAIN", "stable")
+    return resolved
+
+
 def run_workload(workload: Workload, checkout_root: Path, raw_dir: Path, port: int, allow_missing_tools: bool) -> dict[str, Any]:
     if shutil.which(workload.required_executable) is None:
         status = "SKIP" if allow_missing_tools else "FAIL"
@@ -273,7 +285,7 @@ def run_workload(workload: Workload, checkout_root: Path, raw_dir: Path, port: i
                     "timeout_ms": workload.timeout_ms,
                     "yield_time_ms": min(workload.timeout_ms, 30000),
                     "max_output_bytes": 65536,
-                    "env": workload.env,
+                    "env": workspace_env(workspace, workload.env),
                 },
             )
         )

@@ -23,8 +23,8 @@
 - `rust-itoa` (rust): **SKIP**
   - repo: `https://github.com/dtolnay/itoa.git`
   - reason: `required executable not found: cargo`
-- `go-errors` (go): **SKIP**
-  - repo: `https://github.com/pkg/errors.git`
+- `go-uuid` (go): **SKIP**
+  - repo: `https://github.com/google/uuid.git`
   - reason: `required executable not found: go`
 - `monorepo-changesets` (monorepo): **PASS**
   - repo: `https://github.com/changesets/changesets.git`
