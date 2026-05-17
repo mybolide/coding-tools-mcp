@@ -2232,6 +2232,20 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if origin and not is_allowed_origin(origin):
             self.send_json({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Origin denied"}}, status=403)
             return
+        session_id = self.headers.get("Mcp-Session-Id")
+        if session_id and session_id != self.runtime.http_session_id:
+            self.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32001,
+                        "message": "Unknown MCP session",
+                    },
+                },
+                status=404,
+            )
+            return
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             self.send_json(

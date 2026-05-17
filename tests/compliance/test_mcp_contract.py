@@ -244,6 +244,18 @@ class MCPContractTests(ComplianceTestCase):
                 self.assertEqual(response.get("error", {}).get("code"), -32600)
                 self.assertIn("Origin denied", response.get("error", {}).get("message", ""))
 
+    def test_http_rejects_unknown_session_id_header(self) -> None:
+        self.assertIsNotNone(self.client.session_id)
+        body = b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}'
+        accepted_status, accepted = self.raw_http_post(body, headers={"Mcp-Session-Id": str(self.client.session_id)})
+        self.assertEqual(accepted_status, 200)
+        self.assertEqual(accepted.get("result"), {})
+
+        rejected_status, rejected = self.raw_http_post(body, headers={"Mcp-Session-Id": "not-the-current-session"})
+        self.assertEqual(rejected_status, 404)
+        self.assertEqual(rejected.get("error", {}).get("code"), -32001)
+        self.assertIn("Unknown MCP session", rejected.get("error", {}).get("message", ""))
+
     def test_http_rejects_malformed_json_rpc_envelopes_and_params(self) -> None:
         cases = [
             ({"id": 1, "method": "ping", "params": {}}, -32600),
