@@ -29,6 +29,7 @@ make dogfood-mcp
 make dogfood-runner
 make dogfood-smoke
 make benchmark-smoke
+make benchmark-real-workloads
 ```
 
 | Command | Coverage |
@@ -44,6 +45,7 @@ make benchmark-smoke
 | `make dogfood-runner` | Full deterministic HTTP dogfood transcript and report |
 | `make dogfood-smoke` | Both dogfood suites |
 | `make benchmark-smoke` | SWE-bench smoke preflight and placeholder prediction validation |
+| `make benchmark-real-workloads` | MCP runtime smoke over real Python, Node, Rust, Go, and monorepo checkouts plus large file/output and long command cases |
 
 Valid runner suites include `all`, `mcp-contract`, `tool-golden`, `security`, `e2e`, `codex-compat`, `dogfood`, `compliance-report`, `docs-required`, and `schema-drift`.
 
@@ -62,3 +64,11 @@ Manual SWE-bench workflow:
 ```
 
 The manual `swebench-lite` workflow can install the official harness, record Docker diagnostics, run selected Lite instance IDs, and upload `reports/benchmark/**`. It fails by default unless official harness results include parsed resolved counts from real non-placeholder baseline and MCP-candidate predictions with `candidate_mcp_resolved >= baseline_native_resolved`.
+
+Manual real-workload workflow:
+
+```text
+.github/workflows/real-workloads.yml
+```
+
+The manual `real-workloads` workflow installs Python, Node, Go, and Rust toolchains, runs `make benchmark-real-workloads`, and uploads `reports/benchmark/real-workloads**`.

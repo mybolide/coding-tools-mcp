@@ -1,0 +1,47 @@
+name: real-workloads
+
+on:
+  workflow_dispatch:
+
+jobs:
+  real-workloads:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install runtime and CI tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run real workload benchmark
+        run: make benchmark-real-workloads
+
+      - name: Upload real workload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-workloads-evidence
+          path: reports/benchmark/real-workloads**
+          if-no-files-found: ignore
+          retention-days: 14

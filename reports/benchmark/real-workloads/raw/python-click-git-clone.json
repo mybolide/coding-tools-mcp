@@ -1,0 +1,14 @@
+{
+  "command": [
+    "git",
+    "clone",
+    "--depth",
+    "1",
+    "https://github.com/pallets/click.git",
+    "/tmp/codex-real-workloads-vck_1gpg/python-click"
+  ],
+  "elapsed_seconds": 0.537,
+  "returncode": 0,
+  "stderr": "Cloning into '/tmp/codex-real-workloads-vck_1gpg/python-click'...\n",
+  "stdout": ""
+}

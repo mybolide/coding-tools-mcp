@@ -1,14 +1,14 @@
 PYTHON ?= python3
 COMPLIANCE_RUNNER := PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m tests.compliance.runner
 PYTHON_SOURCES := codex_tool_runtime_mcp tests benchmarks
-MYPY_TARGETS := codex_tool_runtime_mcp benchmarks/mcp_http.py benchmarks/runtime_latency.py benchmarks/swebench/run_smoke.py
+MYPY_TARGETS := codex_tool_runtime_mcp benchmarks/mcp_http.py benchmarks/runtime_latency.py benchmarks/swebench/run_smoke.py benchmarks/real_workloads.py
 REPORT_FLAG ?= --report
 SWE_BENCH_ARGS ?=
 DOGFOOD_PORT ?= 8765
 RUFF_FLAGS ?= --exclude benchmarks/dogfood --ignore=E501
 MYPY_FLAGS ?= --python-version 3.11 --disable-error-code union-attr --disable-error-code assignment --disable-error-code arg-type --disable-error-code no-untyped-def
 
-.PHONY: lint typecheck test ci compliance test-protocol test-integration test-mcp-contract test-tool-golden test-security test-e2e test-codex-compat test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke swebench-preflight swebench-evaluate report
+.PHONY: lint typecheck test ci compliance test-protocol test-integration test-mcp-contract test-tool-golden test-security test-e2e test-codex-compat test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads swebench-preflight swebench-evaluate report
 
 lint:
 	$(PYTHON) -m ruff check $(RUFF_FLAGS) $(PYTHON_SOURCES)
@@ -63,6 +63,9 @@ benchmark-latency:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/runtime_latency.py
 
 benchmark-smoke: swebench-preflight
+
+benchmark-real-workloads:
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/real_workloads.py $(REAL_WORKLOAD_ARGS)
 
 swebench-preflight:
 	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) benchmarks/swebench/run_smoke.py $(SWE_BENCH_ARGS)

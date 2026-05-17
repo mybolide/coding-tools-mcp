@@ -170,6 +170,7 @@ make dogfood-mcp
 make dogfood-runner
 make dogfood-smoke
 make benchmark-smoke
+make benchmark-real-workloads
 make compliance
 make ci
 ```

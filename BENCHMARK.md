@@ -65,6 +65,27 @@ baselines using Python file reads, `rg` or a Python search fallback, and a
 native Python subprocess. It is trend evidence and a regression tripwire, not a
 claim that MCP transport should be faster than direct local tool calls.
 
+## Real Workload Benchmark
+
+Command:
+
+```bash
+make benchmark-real-workloads
+```
+
+Artifacts:
+
+- [reports/benchmark/real-workloads.md](reports/benchmark/real-workloads.md)
+- [reports/benchmark/real-workloads.json](reports/benchmark/real-workloads.json)
+- [reports/benchmark/real-workloads/raw](reports/benchmark/real-workloads/raw)
+
+The runner clones real public Python, Node, Rust, Go, and monorepo repositories,
+starts this MCP runtime against each checkout, and performs `list_files`,
+`read_file`, `search_text`, and `exec_command` through MCP. The monorepo case
+also exercises a large file read, large output command, and long-running command.
+Use [.github/workflows/real-workloads.yml](.github/workflows/real-workloads.yml)
+for the full toolchain-backed run.
+
 An explicit official-harness attempt is documented as `BLOCKED` in [reports/benchmark/swebench-official-attempt.md](reports/benchmark/swebench-official-attempt.md) when Docker or the official harness is unavailable. Checked-in predictions are schema-valid placeholders, not real model-generated patches, so they must not be used as score claims.
 
 Manual official attempts run through [.github/workflows/swebench-lite.yml](.github/workflows/swebench-lite.yml). The workflow installs the harness, records Docker diagnostics, invokes `benchmarks/swebench/run_smoke.py --run-evaluation`, uploads `reports/benchmark/**`, and fails by default unless the official harness produces parsed resolved counts from real non-placeholder baseline and MCP-candidate predictions.

@@ -1,6 +1,6 @@
 {
   "codex_dogfood": "passed",
-  "commit": "4b856193d9bb93cd312e1661aa34b3e6ddfa362e",
+  "commit": "8f732115ee88601d2d0c1126ab10f8f091edf053",
   "e2e": "passed",
   "elapsed_seconds": 14.832,
   "failures": [],

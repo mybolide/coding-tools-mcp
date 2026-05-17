@@ -1,0 +1,184 @@
+{
+  "conclusion": "PARTIAL",
+  "failures": [],
+  "raw_dir": "reports/benchmark/real-workloads/raw",
+  "skips": [
+    {
+      "category": "rust",
+      "name": "rust-itoa",
+      "reason": "required executable not found: cargo",
+      "repo": "https://github.com/dtolnay/itoa.git",
+      "status": "SKIP"
+    },
+    {
+      "category": "go",
+      "name": "go-errors",
+      "reason": "required executable not found: go",
+      "repo": "https://github.com/pkg/errors.git",
+      "status": "SKIP"
+    }
+  ],
+  "workloads": [
+    {
+      "category": "python",
+      "checks": [
+        {
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "src/click/core.py"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "class Command"
+        },
+        {
+          "cmd": "python -m compileall -q src tests",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/pallets/click.git",
+          "/tmp/codex-real-workloads-vck_1gpg/python-click"
+        ],
+        "elapsed_seconds": 0.537,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-vck_1gpg/python-click'...\n",
+        "stdout": ""
+      },
+      "commit": "c9e94136b39b1fad4a47ac0d4478fa372bd07ff8",
+      "name": "python-click",
+      "repo": "https://github.com/pallets/click.git",
+      "status": "PASS"
+    },
+    {
+      "category": "node",
+      "checks": [
+        {
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "index.js"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "mime.lookup"
+        },
+        {
+          "cmd": "node -e \"console.log('node-workload-ok')\"",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/jshttp/mime-types.git",
+          "/tmp/codex-real-workloads-vck_1gpg/node-mime-types"
+        ],
+        "elapsed_seconds": 0.462,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-vck_1gpg/node-mime-types'...\n",
+        "stdout": ""
+      },
+      "commit": "3a1187ee21388efe46b916d4991589d595bcb26c",
+      "name": "node-mime-types",
+      "repo": "https://github.com/jshttp/mime-types.git",
+      "status": "PASS"
+    },
+    {
+      "category": "rust",
+      "name": "rust-itoa",
+      "reason": "required executable not found: cargo",
+      "repo": "https://github.com/dtolnay/itoa.git",
+      "status": "SKIP"
+    },
+    {
+      "category": "go",
+      "name": "go-errors",
+      "reason": "required executable not found: go",
+      "repo": "https://github.com/pkg/errors.git",
+      "status": "SKIP"
+    },
+    {
+      "category": "monorepo",
+      "checks": [
+        {
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "packages/cli/package.json"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "workspaces"
+        },
+        {
+          "cmd": "node -e \"console.log('monorepo-workload-ok')\"",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true
+        },
+        {
+          "bytes": 1048576,
+          "name": "large_file",
+          "ok": true,
+          "path": "mcp-large-workload.txt"
+        },
+        {
+          "exit_code": 0,
+          "name": "large_output",
+          "ok": true,
+          "stdout_truncated": true
+        },
+        {
+          "exit_code": 0,
+          "name": "long_test",
+          "ok": true,
+          "stdout": "long-test-ok\n"
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/changesets/changesets.git",
+          "/tmp/codex-real-workloads-vck_1gpg/monorepo-changesets"
+        ],
+        "elapsed_seconds": 0.584,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-vck_1gpg/monorepo-changesets'...\n",
+        "stdout": ""
+      },
+      "commit": "372523f4c2ee4ffeb8330d444d47ffb6d0af5126",
+      "name": "monorepo-changesets",
+      "repo": "https://github.com/changesets/changesets.git",
+      "status": "PASS"
+    }
+  ]
+}
