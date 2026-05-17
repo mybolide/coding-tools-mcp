@@ -2,14 +2,15 @@
 
 This report summarizes the recovered rollout and subsequent production-hardening checkpoints on branch `recover-rollout-2026-05-16`.
 
-## Remote Checkpoint
+## Verified Runtime Checkpoint
 
 - GitHub repo: `https://github.com/ytagent/codex-tool-runtime-mcp`
 - Branch: `recover-rollout-2026-05-16`
-- Latest pushed commit: `687509f7588c8b215b91b0af727052d7341c3c0b`
-- Latest checkpoint tag: `v0.1.3-recovered-error-normalization`
-- Latest GitHub Actions run: `https://github.com/ytagent/codex-tool-runtime-mcp/actions/runs/25993105983`
+- Runtime/error-normalization checkpoint commit: `687509f7588c8b215b91b0af727052d7341c3c0b`
+- Checkpoint tag: `v0.1.3-recovered-error-normalization`
+- Verified GitHub Actions run: `https://github.com/ytagent/codex-tool-runtime-mcp/actions/runs/25993105983`
 - CI conclusion: `success`
+- Note: this file may be updated by later docs-only commits; use the branch history and Actions page for the current branch head.
 
 ## Current Evidence
 
