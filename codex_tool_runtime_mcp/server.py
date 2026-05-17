@@ -937,7 +937,12 @@ class Runtime:
                     }
                 )
                 return payload
-            if now - start >= initial_wait or tty:
+            with session.lock:
+                tty_has_initial_output = (
+                    len(session.stdout) > session.stdout_cursor
+                    or len(session.stderr) > session.stderr_cursor
+                )
+            if now - start >= initial_wait or (tty and tty_has_initial_output):
                 with self.sessions_lock:
                     self.sessions[session.session_id] = session
                 payload = session.snapshot_since_cursor(max_output_bytes)
