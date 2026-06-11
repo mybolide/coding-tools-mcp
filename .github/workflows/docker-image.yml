@@ -28,11 +28,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Prepare image metadata
+        id: image
+        run: |
+          owner_lc="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "tag=ghcr.io/${owner_lc}/coding-tools-mcp-sandbox:latest" >> "$GITHUB_OUTPUT"
+
       - name: Build and push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ghcr.io/${{ github.repository_owner }}/coding-tools-mcp-sandbox:latest
+          tags: ${{ steps.image.outputs.tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
