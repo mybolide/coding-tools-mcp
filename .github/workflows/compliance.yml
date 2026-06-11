@@ -47,7 +47,7 @@ jobs:
         run: make test-schema-drift
 
       - name: Run dogfood smoke
-        run: make dogfood-smoke DOGFOOD_PORT=8765
+        run: make dogfood-smoke DOGFOOD_PORT=18772
 
       - name: Run latency benchmark
         run: make benchmark-latency
@@ -70,3 +70,45 @@ jobs:
             docs/dogfood/**
           if-no-files-found: ignore
           retention-days: 14
+
+  windows-msvc-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Locate Visual Studio C++ tools
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe not found at $vswhere"
+          }
+          $installationPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installationPath) {
+            throw "Visual Studio C++ x64 tools were not found"
+          }
+          $vcvarsAll = Join-Path $installationPath "VC\Auxiliary\Build\vcvarsall.bat"
+          if (-not (Test-Path $vcvarsAll)) {
+            throw "vcvarsall.bat not found at $vcvarsAll"
+          }
+          "VCVARSALL=$vcvarsAll" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run MSVC environment inheritance smoke
+        shell: cmd
+        run: |
+          call "%VCVARSALL%" x64
+          where cl.exe
+          python -m unittest tests.compliance.test_windows_msvc_smoke

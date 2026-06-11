@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import select
 import shlex
 import signal
@@ -9,6 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -21,6 +23,8 @@ PROTOCOL_VERSION = "2025-06-18"
 ROOT = Path(__file__).resolve().parents[2]
 
 REQUIRED_TOOLS = (
+    "server_info",
+    "check_exec_environment",
     "read_file",
     "list_dir",
     "list_files",
@@ -124,8 +128,7 @@ class MCPClient:
                 "CODING_TOOLS_MCP_WORKSPACE": str(self.workspace),
             }
         )
-        existing_pythonpath = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = str(ROOT) if not existing_pythonpath else str(ROOT) + os.pathsep + existing_pythonpath
+        prepend_repo_pythonpath(env)
         self.process = subprocess.Popen(
             cmd,
             cwd=str(self.workspace),
@@ -282,24 +285,169 @@ class MCPClient:
     def stdout_snapshot(self) -> str:
         if self.process is None or self.process.stdout is None:
             return ""
-        return self._stream_snapshot(self.process.stdout)
+        return stream_snapshot(self.process.stdout)
 
     def stderr_snapshot(self) -> str:
         if self.process is None or self.process.stderr is None:
             return ""
-        return self._stream_snapshot(self.process.stderr)
+        return stream_snapshot(self.process.stderr)
 
-    def _stream_snapshot(self, stream: Any) -> str:
-        chunks: list[str] = []
-        while True:
-            readable, _, _ = select.select([stream], [], [], 0)
-            if not readable:
-                break
-            chunk = os.read(stream.fileno(), 4096).decode("utf-8", errors="replace")
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return "".join(chunks)
+
+def stream_snapshot(stream: Any) -> str:
+    """Drain whatever is currently readable from a pipe without blocking."""
+    chunks: list[str] = []
+    while True:
+        readable, _, _ = select.select([stream], [], [], 0)
+        if not readable:
+            break
+        chunk = os.read(stream.fileno(), 4096).decode("utf-8", errors="replace")
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return "".join(chunks)
+
+
+def prepend_repo_pythonpath(env: dict[str, str]) -> dict[str, str]:
+    """Ensure spawned server processes import the in-repo coding_tools_mcp package."""
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(ROOT) if not existing else str(ROOT) + os.pathsep + existing
+    return env
+
+
+class StdioMCPClient:
+    """Newline-delimited JSON-RPC client around a `coding_tools_mcp --stdio` subprocess."""
+
+    def __init__(self, workspace: Path, *, extra_args: list[str] | None = None) -> None:
+        self.workspace = workspace
+        self.extra_args = list(extra_args or [])
+        self.process: subprocess.Popen[str] | None = None
+        self.request_id = 0
+        self.stdout_lines: queue.Queue[str] = queue.Queue()
+        self.stderr_lines: list[str] = []
+
+    def __enter__(self) -> StdioMCPClient:
+        env = prepend_repo_pythonpath(os.environ.copy())
+        kwargs: dict[str, Any] = {}
+        creation_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if creation_flag:
+            kwargs["creationflags"] = creation_flag
+        self.process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "coding_tools_mcp",
+                "--workspace",
+                str(self.workspace),
+                "--stdio",
+                *self.extra_args,
+            ],
+            cwd=str(self.workspace),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+            **kwargs,
+        )
+        threading.Thread(target=self._drain_stdout, daemon=True).start()
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+        self.rpc(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "coding-tools-mcp-stdio-client", "version": "0.1"},
+            },
+        )
+        self.notify("notifications/initialized", {})
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.close()
+
+    def _drain_stdout(self) -> None:
+        process = self.process
+        if process is None or process.stdout is None:
+            return
+        for line in process.stdout:
+            self.stdout_lines.put(line)
+
+    def _drain_stderr(self) -> None:
+        process = self.process
+        if process is None or process.stderr is None:
+            return
+        for line in process.stderr:
+            self.stderr_lines.append(line)
+
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return self.rpc("tools/call", {"name": name, "arguments": arguments})
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self._send({"jsonrpc": "2.0", "method": method, "params": params or {}})
+
+    def rpc(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.request_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+            "params": params or {},
+        }
+        self._send(payload)
+        response = self._read_response(self.request_id)
+        if "error" in response:
+            raise AssertionError(f"unexpected JSON-RPC error: {response!r}")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise AssertionError(f"JSON-RPC result must be an object: {response!r}")
+        return result
+
+    def _send(self, payload: dict[str, Any]) -> None:
+        process = self.process
+        if process is None or process.stdin is None:
+            raise AssertionError("stdio server was not started")
+        if process.poll() is not None:
+            raise AssertionError(f"stdio server exited with {process.returncode}; stderr={self.stderr_tail()!r}")
+        process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+
+    def _read_response(self, request_id: int) -> dict[str, Any]:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            process = self.process
+            if process is not None and process.poll() is not None and self.stdout_lines.empty():
+                raise AssertionError(f"stdio server exited with {process.returncode}; stderr={self.stderr_tail()!r}")
+            try:
+                line = self.stdout_lines.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            response = json.loads(line)
+            if response.get("id") == request_id:
+                return response
+        raise AssertionError(f"timed out waiting for JSON-RPC response {request_id}; stderr={self.stderr_tail()!r}")
+
+    def close(self) -> None:
+        process = self.process
+        if process is None:
+            return
+        try:
+            if process.stdin is not None:
+                process.stdin.close()
+        except OSError:
+            pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+    def stderr_tail(self) -> str:
+        return "".join(self.stderr_lines)[-4000:]
 
 
 def parse_sse_json(text: str) -> dict[str, Any]:

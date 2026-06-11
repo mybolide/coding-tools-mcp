@@ -38,22 +38,28 @@ Use stdio for MCP clients:
 uvx coding-tools-mcp --stdio --workspace /path/to/repo
 ```
 
-When working from this checkout instead of a published package, install the runtime in editable mode:
+When working from this checkout instead of a published package, start Streamable HTTP with:
 
 ```bash
-python -m pip install -e ".[dev]"
-```
-
-Start Streamable HTTP against a workspace:
-
-```bash
-coding-tools-mcp --workspace /path/to/repo --host 127.0.0.1 --port 8765
+make start
 ```
 
 Endpoint:
 
 ```text
 http://127.0.0.1:8765/mcp
+```
+
+Pass a different workspace, host, port, or extra server flags with Make variables:
+
+```bash
+make start MCP_WORKSPACE=/path/to/repo MCP_PORT=8000 MCP_ARGS="--permission-mode trusted"
+```
+
+If dependencies are missing, install the runtime in editable mode:
+
+```bash
+python -m pip install -e ".[dev]"
 ```
 
 Start stdio:
@@ -76,10 +82,24 @@ CODING_TOOLS_MCP_TRACE=1 coding-tools-mcp --workspace /path/to/repo
 
 Trace JSON lines are written to stderr.
 
-If the MCP client cannot show permission prompts and you intentionally want permission-gated commands to run:
+For toolchains that require inherited shell variables, start the server with a broader shell environment policy:
 
 ```bash
-coding-tools-mcp --dangerously-skip-all-permissions --workspace /path/to/repo
+CODING_TOOLS_MCP_SHELL_ENV_INHERIT=all coding-tools-mcp --workspace /path/to/repo
 ```
 
-Use this only with trusted workspaces and trusted clients. It does not remove workspace path boundaries.
+For local development with dependency downloads, shell expansion, and inline interpreter snippets, use trusted mode:
+
+```bash
+coding-tools-mcp --permission-mode trusted --workspace /path/to/repo
+```
+
+`--allow-network` remains a compatibility flag when you only want to open the network-looking command gate.
+
+If the MCP client cannot show permission prompts and you intentionally want to disable `exec_command` permission gates inside an isolated container or VM:
+
+```bash
+coding-tools-mcp --permission-mode dangerous --workspace /path/to/repo
+```
+
+Use this only with trusted workspaces and trusted clients in an externally hardened environment. `--dangerously-skip-all-permissions` remains as a compatibility alias.

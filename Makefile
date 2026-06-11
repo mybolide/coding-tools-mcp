@@ -4,11 +4,18 @@ PYTHON_SOURCES := coding_tools_mcp tests benchmarks
 MYPY_TARGETS := coding_tools_mcp benchmarks/mcp_http.py benchmarks/runtime_latency.py benchmarks/swebench/run_smoke.py benchmarks/swebench/generate_reference_predictions.py benchmarks/real_workloads.py
 REPORT_FLAG ?= --report
 SWE_BENCH_ARGS ?=
-DOGFOOD_PORT ?= 8765
+DOGFOOD_PORT ?= 18772
+MCP_WORKSPACE ?= .
+MCP_HOST ?= 127.0.0.1
+MCP_PORT ?= 8765
+MCP_ARGS ?=
 RUFF_FLAGS ?= --exclude benchmarks/dogfood --ignore=E501
 MYPY_FLAGS ?= --python-version 3.11 --disable-error-code union-attr --disable-error-code assignment --disable-error-code arg-type --disable-error-code no-untyped-def
 
-.PHONY: lint typecheck test ci compliance test-protocol test-integration test-mcp-contract test-tool-golden test-security test-e2e test-runtime-semantics test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads swebench-reference-predictions swebench-preflight swebench-evaluate install-user publish-testpypi publish-pypi publish-all report
+.PHONY: start lint typecheck test ci compliance test-protocol test-integration test-mcp-contract test-tool-golden test-security test-e2e test-runtime-semantics test-docs-required test-schema-drift dogfood-mcp dogfood-runner dogfood-smoke benchmark-latency benchmark-smoke benchmark-real-workloads swebench-reference-predictions swebench-preflight swebench-evaluate install-user publish-testpypi publish-pypi publish-all report
+
+start:
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) -m coding_tools_mcp --workspace "$(MCP_WORKSPACE)" --host "$(MCP_HOST)" --port "$(MCP_PORT)" $(MCP_ARGS)
 
 lint:
 	$(PYTHON) -m ruff check $(RUFF_FLAGS) $(PYTHON_SOURCES)

@@ -7,6 +7,7 @@ import hashlib
 import html
 import difflib
 import fnmatch
+import functools
 import http.server
 import json
 import mimetypes
@@ -17,15 +18,17 @@ import secrets
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 import jwt
 
@@ -75,9 +78,61 @@ RISKY_ENV_NAMES = {
     "PYTHONPATH",
     "PYTHONSTARTUP",
     "NODE_OPTIONS",
-    "RUBYOPT",
+    "PERL5LIB",
     "PERL5OPT",
+    "RUBYOPT",
+    "RUBYLIB",
 }
+SHELL_ENV_INHERIT_CHOICES = ("core", "all", "none")
+
+
+@dataclass(frozen=True)
+class ModeCapabilities:
+    """What a permission mode allows. Gates consult this instead of comparing mode strings."""
+
+    network: bool
+    shell_expansion: bool
+    inline_script: bool
+    landlock: bool
+    secret_env_filter: bool
+    global_tmp_write: str  # "blocked" | "tmp-prefix" | "allowed"
+    skip_all_permissions: bool
+
+
+PERMISSION_MODE_CAPABILITIES: dict[str, ModeCapabilities] = {
+    "safe": ModeCapabilities(
+        network=False,
+        shell_expansion=False,
+        inline_script=False,
+        landlock=True,
+        secret_env_filter=True,
+        global_tmp_write="blocked",
+        skip_all_permissions=False,
+    ),
+    "trusted": ModeCapabilities(
+        network=True,
+        shell_expansion=True,
+        inline_script=True,
+        landlock=True,
+        secret_env_filter=True,
+        global_tmp_write="tmp-prefix",
+        skip_all_permissions=False,
+    ),
+    "dangerous": ModeCapabilities(
+        network=True,
+        shell_expansion=True,
+        inline_script=True,
+        landlock=False,
+        secret_env_filter=False,
+        global_tmp_write="allowed",
+        skip_all_permissions=True,
+    ),
+}
+PERMISSION_MODE_CHOICES = tuple(PERMISSION_MODE_CAPABILITIES)
+# Documented kill_session status enum (docs/profile-v0.1.md); guarded by test_schema_drift.
+KILL_SESSION_STATUSES = ("terminated", "killed", "exited", "terminating", "not_found")
+POSIX_CORE_ENV_NAMES = {"PATH", "LANG", "LC_ALL", "TERM"}
+WINDOWS_CORE_ENV_NAMES = {"PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "WINDIR"}
 NETWORK_RE = re.compile(
     r"(https?://|urllib\.request|urllib3|requests\.|http\.client|\bHTTPConnection\b|\bHTTPSConnection\b|socket\.|aiohttp|httpx|\bcurl\b|\bwget\b|\bnc\b|\bnetcat\b|\bssh\b|\bscp\b|\bftp\b)",
     re.I,
@@ -153,10 +208,75 @@ ENV_FLAG_OPTIONS = {
 NETWORK_LITERAL_COMMANDS = {"echo", "printf", "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "wc"}
 INLINE_SCRIPT_PERMISSION = "inline_script"
 ENV_PREFIX = "CODING_TOOLS_MCP"
+RUNTIME_ROOT_DIR_NAME = "coding-tools-mcp"
+SPECIAL_DEVICE_PATHS = ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom")
+DNS_RESOLVER_READ_ROOTS = (
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/nsswitch.conf",
+    "/etc/gai.conf",
+    "/etc/protocols",
+    "/etc/services",
+    "/run/systemd/resolve",
+    "/run/resolvconf",
+)
+TOOLCHAIN_READ_ROOTS = (
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/etc/alternatives",
+    "/etc/ssl",
+    "/etc/ca-certificates",
+    "/etc/pki",
+    "/etc/localtime",
+    "/etc/npmrc",
+    "/usr/local/sdkman/candidates",
+)
+GIT_READ_ROOTS = (
+    "/etc/gitconfig",
+    "/etc/gitconfig.d",
+)
+SYSTEM_PATH_ROOT_PREFIXES = (
+    "/bin",
+    "/sbin",
+    "/usr",
+    "/lib",
+    "/lib64",
+    "/etc/alternatives",
+    "/usr/local/sdkman/candidates",
+)
+ECOSYSTEM_CACHE_ENV_NAMES = {
+    "MAVEN_USER_HOME",
+    "GRADLE_USER_HOME",
+    "NPM_CONFIG_CACHE",
+    "npm_config_cache",
+    "PIP_CACHE_DIR",
+    "GOCACHE",
+    "GOMODCACHE",
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+}
 
 OAUTH_CODE_TTL_SECONDS = 300
 OAUTH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 OAUTH_MAX_BODY_BYTES = 8_192
+
+
+@dataclass(frozen=True)
+class ShellEnvPolicy:
+    inherit: str = "core"
+    include_only: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    set: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RuntimePolicy:
+    permission_mode: str
+    shell_env_policy: ShellEnvPolicy
+    allow_network: bool
 
 
 @dataclass(frozen=True)
@@ -232,42 +352,300 @@ def _safe_external_host(host: str) -> str:
     return host
 
 
+def env_pattern_matches(name: str, patterns: tuple[str, ...]) -> bool:
+    upper_name = name.upper()
+    return any(fnmatch.fnmatchcase(upper_name, pattern.upper()) for pattern in patterns)
+
+
+def is_risky_env_name(name: str) -> bool:
+    upper = name.upper()
+    return upper in RISKY_ENV_NAMES or upper.startswith("DYLD_")
+
+
+def is_filtered_env_var(name: str, value: str) -> bool:
+    return bool(SENSITIVE_ENV_RE.search(name) or is_risky_env_name(name) or SENSITIVE_VALUE_RE.search(value))
+
+
+def is_core_command_env_name(name: str) -> bool:
+    upper = name.upper()
+    if os.name == "nt":
+        return upper in WINDOWS_CORE_ENV_NAMES
+    return upper in POSIX_CORE_ENV_NAMES or upper.startswith("LC_")
+
+
+def split_env_patterns(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def parse_shell_env_set(value: str | None) -> dict[str, str]:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{ENV_PREFIX}_SHELL_ENV_SET must be a JSON object") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{ENV_PREFIX}_SHELL_ENV_SET must be a JSON object")
+    return {str(key): str(item) for key, item in parsed.items()}
+
+
+def truthy_env(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, fallback: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    try:
+        return int(raw) if raw else fallback
+    except ValueError:
+        return fallback
+
+
+def configured_runtime_root() -> Path | None:
+    configured = os.environ.get(f"{ENV_PREFIX}_RUNTIME_ROOT") or ""
+    if not configured.strip():
+        return None
+    return Path(configured).expanduser()
+
+
+def runtime_parent_root() -> Path:
+    return configured_runtime_root() or Path(tempfile.gettempdir()) / RUNTIME_ROOT_DIR_NAME
+
+
+def runtime_parent_fallback_root() -> Path | None:
+    if configured_runtime_root() is not None:
+        return None
+    if os.name == "nt":
+        return None
+    fallback = Path("/tmp") / RUNTIME_ROOT_DIR_NAME
+    if fallback == runtime_parent_root():
+        return None
+    return fallback
+
+
+def workspace_runtime_hash(workspace: Path) -> str:
+    resolved = workspace.expanduser().resolve(strict=False)
+    return hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+
+
+def runtime_dir_for_workspace(workspace: Path, instance_id: str) -> Path:
+    root = runtime_parent_root()
+    try:
+        root_in_workspace = is_relative_to(root.resolve(strict=False), workspace.expanduser().resolve(strict=False))
+    except OSError:
+        root_in_workspace = False
+    if root_in_workspace:
+        if configured_runtime_root() is not None:
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                f"{ENV_PREFIX}_RUNTIME_ROOT must be outside the configured workspace.",
+                category="validation",
+            )
+        root = runtime_parent_fallback_root() or root
+    return root / workspace_runtime_hash(workspace) / instance_id
+
+
+def fallback_runtime_dir_for_workspace(workspace: Path, instance_id: str) -> Path | None:
+    fallback = runtime_parent_fallback_root()
+    if fallback is None:
+        return None
+    return fallback / workspace_runtime_hash(workspace) / instance_id
+
+
+def shell_env_policy_from_args(args: argparse.Namespace) -> ShellEnvPolicy:
+    raw_inherit = args.shell_env_inherit or os.environ.get(f"{ENV_PREFIX}_SHELL_ENV_INHERIT") or "core"
+    inherit = raw_inherit.strip().lower()
+    if inherit not in SHELL_ENV_INHERIT_CHOICES:
+        supported = ", ".join(SHELL_ENV_INHERIT_CHOICES)
+        raise ValueError(f"shell env inherit must be one of: {supported}")
+    return ShellEnvPolicy(
+        inherit=inherit,
+        include_only=split_env_patterns(os.environ.get(f"{ENV_PREFIX}_SHELL_ENV_INCLUDE_ONLY")),
+        exclude=split_env_patterns(os.environ.get(f"{ENV_PREFIX}_SHELL_ENV_EXCLUDE")),
+        set=parse_shell_env_set(os.environ.get(f"{ENV_PREFIX}_SHELL_ENV_SET")),
+    )
+
+
+def permission_mode_from_args(args: argparse.Namespace) -> str:
+    skip_all = bool(getattr(args, "dangerously_skip_all_permissions", False)) or truthy_env(
+        os.environ.get(f"{ENV_PREFIX}_DANGEROUSLY_SKIP_ALL_PERMISSIONS")
+    )
+    raw_mode = (
+        getattr(args, "permission_mode", None)
+        or os.environ.get(f"{ENV_PREFIX}_PERMISSION_MODE")
+        or ("dangerous" if skip_all else "safe")
+    )
+    mode = raw_mode.strip().lower()
+    if mode not in PERMISSION_MODE_CHOICES:
+        supported = ", ".join(PERMISSION_MODE_CHOICES)
+        raise ValueError(f"permission mode must be one of: {supported}")
+    return "dangerous" if skip_all else mode
+
+
+def runtime_policy_from_args(args: argparse.Namespace) -> RuntimePolicy:
+    permission_mode = permission_mode_from_args(args)
+    allow_network = (
+        PERMISSION_MODE_CAPABILITIES[permission_mode].network
+        or bool(getattr(args, "allow_network", False))
+        or truthy_env(os.environ.get(f"{ENV_PREFIX}_ALLOW_NETWORK"))
+    )
+    return RuntimePolicy(
+        permission_mode=permission_mode,
+        shell_env_policy=shell_env_policy_from_args(args),
+        allow_network=allow_network,
+    )
+
+
 TOOL_PROFILE_CHOICES = ("full", "read-only", "compat-readonly-all")
-FULL_TOOL_NAMES = (
-    "server_info",
-    "get_default_cwd",
-    "set_default_cwd",
-    "read_file",
-    "list_dir",
-    "list_files",
-    "search_text",
-    "apply_patch",
-    "exec_command",
-    "write_stdin",
-    "kill_session",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
-    "git_blame",
-    "request_permissions",
-    "view_image",
-)
-READ_ONLY_TOOL_NAMES = (
-    "server_info",
-    "get_default_cwd",
-    "set_default_cwd",
-    "read_file",
-    "list_dir",
-    "list_files",
-    "search_text",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_show",
-    "git_blame",
-    "view_image",
-)
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Single source of truth for one tool: title, description, annotation hints, profile membership.
+
+    Handler methods on Runtime are named exactly after the tool. Input schemas live in
+    input_schemas(), keyed by the same names.
+    """
+
+    title: str
+    description: str
+    read_only: bool = False
+    destructive: bool = False
+    idempotent: bool = False
+    open_world: bool = False
+    in_read_only_profile: bool = False
+
+
+TOOL_REGISTRY: dict[str, ToolSpec] = {
+    "server_info": ToolSpec(
+        title="Server info",
+        description="Return server, workspace, auth, profile, and exposed-tool metadata.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "check_exec_environment": ToolSpec(
+        title="Check exec environment",
+        description="Return lightweight exec_command sandbox and environment status known to the server.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "get_default_cwd": ToolSpec(
+        title="Get default cwd",
+        description="Return the current default cwd inside the workspace.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "set_default_cwd": ToolSpec(
+        title="Set default cwd",
+        description="Set the default cwd for relative tool paths inside the workspace.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "read_file": ToolSpec(
+        title="Read file",
+        description="Read a UTF-8 text file slice inside the configured workspace.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "list_dir": ToolSpec(
+        title="List directory",
+        description="List directory entries inside the configured workspace.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "list_files": ToolSpec(
+        title="List files",
+        description="List workspace files using glob filters.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "search_text": ToolSpec(
+        title="Search text",
+        description="Search UTF-8 workspace files for text or regex matches.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "apply_patch": ToolSpec(
+        title="Apply patch",
+        description="Apply a patch envelope transactionally inside the workspace.",
+        destructive=True,
+    ),
+    "exec_command": ToolSpec(
+        title="Execute command",
+        description="Run a bounded command in the workspace under runtime policy.",
+        destructive=True,
+        open_world=True,
+    ),
+    "write_stdin": ToolSpec(
+        title="Write stdin",
+        description="Write characters to a server-managed running command session.",
+    ),
+    "kill_session": ToolSpec(
+        title="Kill session",
+        description="Terminate a server-managed running command session.",
+        destructive=True,
+    ),
+    "git_status": ToolSpec(
+        title="Git status",
+        description="Return git working tree status for the workspace.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "git_diff": ToolSpec(
+        title="Git diff",
+        description="Return unified git diff for workspace changes.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "git_log": ToolSpec(
+        title="Git log",
+        description="Return recent git commits with bounded structured metadata.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "git_show": ToolSpec(
+        title="Git show",
+        description="Return bounded git show output for a revision.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "git_blame": ToolSpec(
+        title="Git blame",
+        description="Return bounded git blame metadata for a workspace file.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+    "request_permissions": ToolSpec(
+        title="Request permissions",
+        description="Request a scoped permission grant for dangerous runtime operations.",
+        read_only=True,
+    ),
+    "view_image": ToolSpec(
+        title="View image",
+        description="Return a workspace image as MCP image content.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
+    ),
+}
+
+FULL_TOOL_NAMES = tuple(TOOL_REGISTRY)
+READ_ONLY_TOOL_NAMES = tuple(name for name, spec in TOOL_REGISTRY.items() if spec.in_read_only_profile)
 
 LANDLOCK_CREATE_RULESET_VERSION = 1
 LANDLOCK_RULE_PATH_BENEATH = 1
@@ -605,6 +983,184 @@ def landlock_unavailable_warning(exc: ToolFailure) -> str:
     )
 
 
+def landlock_status_payload() -> dict[str, Any]:
+    try:
+        version = landlock_abi_version()
+    except ToolFailure as exc:
+        return {
+            "available": False,
+            "abi_version": None,
+            "reason": exc.message,
+            "details": exc.details,
+        }
+    return {
+        "available": True,
+        "abi_version": version,
+    }
+
+
+def truncate_evidence(text: str, limit: int = 240) -> str:
+    text = " ".join(text.strip().split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def diagnostic(
+    code: str,
+    *,
+    evidence: str = "",
+    severity: str = "error",
+    suggested_fix: str | None = None,
+    suggested_next_command: str | None = None,
+    suggested_server_flag: str | None = None,
+) -> dict[str, str]:
+    item = {"code": code, "severity": severity}
+    if evidence:
+        item["evidence"] = truncate_evidence(evidence)
+    if suggested_fix:
+        item["suggested_fix"] = suggested_fix
+    if suggested_next_command:
+        item["suggested_next_command"] = suggested_next_command
+    if suggested_server_flag:
+        item["suggested_server_flag"] = suggested_server_flag
+    return item
+
+
+PERMISSION_FAILURE_DIAGNOSTICS: dict[str, dict[str, str]] = {
+    "network": {
+        "code": "NETWORK_PERMISSION_REQUIRED",
+        "suggested_fix": "Restart the server with --permission-mode trusted or --allow-network.",
+        "suggested_server_flag": "--permission-mode trusted",
+    },
+    "shell_expansion": {
+        "code": "SHELL_EXPANSION_PERMISSION_REQUIRED",
+        "suggested_fix": "Restart the server with --permission-mode trusted for local development shell expansion.",
+        "suggested_server_flag": "--permission-mode trusted",
+    },
+    INLINE_SCRIPT_PERMISSION: {
+        "code": "INLINE_SCRIPT_PERMISSION_REQUIRED",
+        "suggested_fix": "Restart the server with --permission-mode trusted for local development inline scripts.",
+        "suggested_server_flag": "--permission-mode trusted",
+    },
+    "sensitive_env": {
+        "code": "SECRET_ENV_REJECTED",
+        "suggested_fix": "Remove secret-looking or loader/startup environment variables from exec_command env.",
+    },
+}
+
+
+def permission_failure_diagnostics(exc: ToolFailure) -> list[dict[str, str]]:
+    spec = PERMISSION_FAILURE_DIAGNOSTICS.get(str(exc.details.get("permission") or ""))
+    if spec is None:
+        return []
+    return [
+        diagnostic(
+            spec["code"],
+            evidence=exc.message,
+            suggested_fix=spec["suggested_fix"],
+            suggested_server_flag=spec.get("suggested_server_flag"),
+        )
+    ]
+
+
+def exec_output_diagnostics(payload: dict[str, Any]) -> list[dict[str, str]]:
+    diagnostics: list[dict[str, str]] = []
+    stdout = str(payload.get("stdout", ""))
+    stderr = str(payload.get("stderr", ""))
+    combined = "\n".join(part for part in (stderr, stdout) if part)
+    lower = combined.lower()
+    if payload.get("timed_out") or payload.get("status") == "timeout":
+        diagnostics.append(
+            diagnostic(
+                "COMMAND_TIMED_OUT",
+                evidence="command timed out",
+                suggested_fix="Increase timeout_ms only for trusted workloads, or run a narrower command.",
+            )
+        )
+    if payload.get("truncated") or payload.get("stdout_truncated") or payload.get("stderr_truncated"):
+        diagnostics.append(
+            diagnostic(
+                "OUTPUT_TRUNCATED",
+                evidence="stdout/stderr exceeded max_output_bytes or session buffer limits",
+                severity="warning",
+                suggested_fix="Increase max_output_bytes or poll the running session more frequently.",
+            )
+        )
+    if "/dev/null" in lower and "permission denied" in lower:
+        diagnostics.append(
+            diagnostic(
+                "DEV_NULL_DENIED",
+                evidence=combined,
+                suggested_fix="Landlock special device rules should include WRITE_FILE, TRUNCATE, and IOCTL_DEV for /dev/null.",
+            )
+        )
+    if "could not resolve host" in lower or "temporary failure in name resolution" in lower or "name or service not known" in lower:
+        diagnostics.append(
+            diagnostic(
+                "DNS_RESOLUTION_FAILED",
+                evidence=combined,
+                suggested_next_command="cat /etc/resolv.conf && getent hosts repo.maven.apache.org",
+            )
+        )
+    if "java.security" in lower and ("permission denied" in lower or "could not" in lower or "error loading" in lower):
+        diagnostics.append(
+            diagnostic(
+                "JDK_SECURITY_CONFIG_BLOCKED",
+                evidence=combined,
+                suggested_fix="Ensure the JDK security configuration path is included in Landlock read roots.",
+            )
+        )
+    if "tmpdir" in lower and ("permission denied" in lower or "not writable" in lower or "cannot write" in lower):
+        diagnostics.append(
+            diagnostic(
+                "TMPDIR_NOT_WRITABLE",
+                evidence=combined,
+                suggested_next_command="printf ok > \"$TMPDIR/coding-tools-write-test\"",
+            )
+        )
+    home_error_terms = ("permission denied", "not writable", "cannot write", "eacces")
+    home_path_error = any(
+        re.search(r"(?:\.coding-tools/home|/home(?:/|[\"'\s]|$))", line)
+        and any(term in line for term in home_error_terms)
+        for line in lower.splitlines()
+    )
+    home_error = (
+        "$home" in lower
+        or "home=" in lower
+        or re.search(r"\bhome directory\b", lower)
+        or "cannot write to home" in lower
+        or re.search(r"not writable:\s+\S*home", lower)
+        or re.search(r"permission denied:\s+\S*home", lower)
+        or home_path_error
+    )
+    if home_error and any(term in lower for term in home_error_terms):
+        diagnostics.append(
+            diagnostic(
+                "HOME_NOT_WRITABLE",
+                evidence=combined,
+                suggested_next_command="printf ok > \"$HOME/coding-tools-write-test\"",
+            )
+        )
+    if "permission denied" in lower and any(root in combined for root in ("/usr", "/bin", "/lib", "/etc", "/usr/local/sdkman")):
+        diagnostics.append(
+            diagnostic(
+                "LANDLOCK_READ_ROOT_BLOCKED",
+                evidence=combined,
+                suggested_fix="Add the missing toolchain path to CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS or the default read roots.",
+            )
+        )
+    if payload.get("exit_code") == 127 or "command not found" in lower or ("not found" in lower and "exec" in lower):
+        diagnostics.append(
+            diagnostic(
+                "EXECUTABLE_NOT_FOUND",
+                evidence=combined or "exit_code=127",
+                suggested_next_command="command -v <executable>",
+            )
+        )
+    return diagnostics
+
+
 def process_group_popen_kwargs() -> dict[str, Any]:
     if hasattr(os, "setsid"):
         return {"start_new_session": True}
@@ -627,7 +1183,12 @@ class Workspace:
         self.root = root.expanduser().resolve(strict=True)
         if not self.root.is_dir():
             raise ToolFailure("INVALID_ARGUMENT", "Workspace root must be a directory.", category="validation")
-        if str(self.root) in {"/", str(Path.home().resolve())}:
+        unsafe_roots = {"/"}
+        try:
+            unsafe_roots.add(str(Path.home().resolve()))
+        except RuntimeError:
+            pass
+        if str(self.root) in unsafe_roots:
             raise ToolFailure("INVALID_ARGUMENT", "Unsafe workspace root rejected.", category="security")
 
     def _reject_unsafe_text(self, raw_path: str) -> PurePosixPath:
@@ -788,6 +1349,7 @@ class ExecSession:
     exit_code: int | None = None
     signal_name: str | None = None
     timed_out: bool = False
+    terminating: bool = False
 
     def append_stdout(self, chunk: bytes) -> None:
         with self.lock:
@@ -832,6 +1394,8 @@ class ExecSession:
         stderr_truncated = stderr_truncation.truncated
         if self.timed_out:
             status = "timeout"
+        elif self.terminating and self.process.poll() is None:
+            status = "terminating"
         else:
             status = "running" if self.process.poll() is None else "exited"
         payload: dict[str, Any] = {
@@ -885,6 +1449,7 @@ class ExecSession:
             return
         self.drain_readers()
         self.exit_code = code
+        self.terminating = False
         if code < 0:
             self.signal_name = signal.Signals(-code).name if -code in [s.value for s in signal.Signals] else str(-code)
         self.closed = True
@@ -904,14 +1469,37 @@ class Runtime:
         workspace: Path,
         *,
         enable_view_image: bool = True,
+        permission_mode: str = "safe",
         dangerously_skip_all_permissions: bool = False,
+        shell_env_policy: ShellEnvPolicy | None = None,
+        allow_network: bool = False,
         tool_profile: str = "full",
         auth_token: str | None = None,
         oauth_config: OAuthConfig | None = None,
     ) -> None:
         self.workspace = Workspace(workspace)
         self.enable_view_image = enable_view_image
-        self.dangerously_skip_all_permissions = dangerously_skip_all_permissions
+        if dangerously_skip_all_permissions:
+            permission_mode = "dangerous"
+        if permission_mode not in PERMISSION_MODE_CHOICES:
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                f"Unknown permission mode: {permission_mode}",
+                category="validation",
+                details={"supported": list(PERMISSION_MODE_CHOICES)},
+            )
+        self.permission_mode = permission_mode
+        self.capabilities = PERMISSION_MODE_CAPABILITIES[permission_mode]
+        self.dangerously_skip_all_permissions = self.capabilities.skip_all_permissions
+        self.shell_env_policy = shell_env_policy or ShellEnvPolicy()
+        if self.shell_env_policy.inherit not in SHELL_ENV_INHERIT_CHOICES:
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                f"Unknown shell env inherit policy: {self.shell_env_policy.inherit}",
+                category="validation",
+                details={"supported": list(SHELL_ENV_INHERIT_CHOICES)},
+            )
+        self.allow_network = allow_network or self.capabilities.network
         if tool_profile not in TOOL_PROFILE_CHOICES:
             raise ToolFailure(
                 "INVALID_ARGUMENT",
@@ -922,6 +1510,9 @@ class Runtime:
         self.tool_profile = tool_profile
         self.auth_token = auth_token or None
         self.oauth_config = oauth_config
+        self.server_instance_id = secrets.token_urlsafe(12)
+        self._set_runtime_dir(runtime_dir_for_workspace(self.workspace.root, self.server_instance_id))
+        self.fallback_runtime_dir = fallback_runtime_dir_for_workspace(self.workspace.root, self.server_instance_id)
         self._pending_codes: dict[str, dict[str, Any]] = {}
         self._pending_codes_lock = threading.Lock()
         self.default_cwd = self.workspace.root
@@ -931,6 +1522,77 @@ class Runtime:
         self.patch_baselines: dict[str, str | None] = {}
         self.initialized = False
         self.logging_level = "warning"
+        self._tool_handlers = {name: getattr(self, name) for name in TOOL_REGISTRY}
+
+    def _set_runtime_dir(self, runtime_dir: Path) -> None:
+        self.runtime_dir = runtime_dir
+        self.home_dir = self.runtime_dir / "home"
+        self.tmp_dir = self.runtime_dir / "tmp"
+        self.cache_dir = self.runtime_dir / "cache"
+
+    def _ensure_runtime_dirs(self) -> None:
+        candidates = [self.runtime_dir]
+        if self.fallback_runtime_dir is not None and self.fallback_runtime_dir not in candidates:
+            candidates.append(self.fallback_runtime_dir)
+        errors: list[str] = []
+        for runtime_dir in candidates:
+            self._set_runtime_dir(runtime_dir)
+            try:
+                for path in (
+                    self.runtime_dir.parent,
+                    self.runtime_dir,
+                    self.home_dir,
+                    self.tmp_dir,
+                    self.cache_dir,
+                ):
+                    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    if os.name != "nt":
+                        try:
+                            path.chmod(0o700)
+                        except OSError:
+                            pass
+                return
+            except OSError as exc:
+                errors.append(f"{runtime_dir}: {exc}")
+        raise ToolFailure(
+            "RUNTIME_DIR_UNWRITABLE",
+            "Runtime directory could not be created outside the workspace.",
+            category="runtime",
+            details={"attempted": errors},
+        )
+
+    def command_home_dir(self) -> Path:
+        return self.home_dir
+
+    def command_tmp_dir(self) -> Path:
+        return self.tmp_dir
+
+    def global_tmp_write_policy(self) -> str:
+        return self.capabilities.global_tmp_write
+
+    def shell_expansion_policy(self) -> str:
+        return "allowed" if self.capabilities.shell_expansion else "blocked"
+
+    def inline_script_policy(self) -> str:
+        return "allowed" if self.capabilities.inline_script else "blocked"
+
+    def secret_env_filter_policy(self) -> str:
+        return "enabled" if self.capabilities.secret_env_filter else "disabled"
+
+    def landlock_enabled(self) -> bool:
+        return self.capabilities.landlock
+
+    def landlock_write_roots(self) -> list[Path]:
+        return [self.runtime_dir]
+
+    def is_allowed_command_tmp_path(self, candidate: str) -> bool:
+        if self.capabilities.skip_all_permissions:
+            return False
+        try:
+            resolved = Path(candidate).expanduser().resolve(strict=False)
+        except OSError:
+            return False
+        return is_relative_to(resolved, self.runtime_dir)
 
     def initialize(self) -> dict[str, Any]:
         return {
@@ -971,17 +1633,44 @@ class Runtime:
             return self.default_cwd_display()
         return self.resolve_for_write(raw_path).display
 
+    def _exec_environment_summary(self) -> dict[str, Any]:
+        return {
+            "workspace": str(self.workspace.root),
+            "permission_mode": self.permission_mode,
+            "network_allowed": self.allow_network,
+            "runtime_dir": str(self.runtime_dir),
+            "home": str(self.command_home_dir()),
+            "tmpdir": str(self.command_tmp_dir()),
+            "cache_dir": str(self.cache_dir),
+        }
+
+    def _landlock_enforced(self, landlock: dict[str, Any]) -> bool:
+        return bool(landlock.get("available")) and self.landlock_enabled()
+
     def server_info_payload(self) -> dict[str, Any]:
         tools = self.exposed_tool_names()
+        landlock = landlock_status_payload()
+        landlock["enabled"] = self._landlock_enforced(landlock)
         return {
             "server": SERVER_NAME,
             "title": "Coding Tools MCP",
             "version": __version__,
             "protocol_version": PROTOCOL_VERSION,
-            "workspace": str(self.workspace.root),
+            **self._exec_environment_summary(),
             "default_cwd": self.default_cwd_display(),
             "tool_profile": self.tool_profile,
             "auth_enabled": self.auth_enabled(),
+            "dangerously_skip_all_permissions": self.dangerously_skip_all_permissions,
+            "landlock": landlock,
+            "exec_policy": {
+                "shell_expansion": self.shell_expansion_policy(),
+                "inline_script": self.inline_script_policy(),
+                "global_tmp_write": self.global_tmp_write_policy(),
+                "secret_env_filter": self.secret_env_filter_policy(),
+            },
+            "shell_env_inherit": self.shell_env_policy.inherit,
+            "shell_env_include_only": list(self.shell_env_policy.include_only),
+            "shell_env_exclude": list(self.shell_env_policy.exclude),
             "endpoint_path": "/mcp",
             "tools": tools,
             "tool_count": len(tools),
@@ -1001,28 +1690,7 @@ class Runtime:
     def call_tool(self, name: str, arguments: dict[str, Any] | None) -> dict[str, Any]:
         started_at = time.time()
         args = arguments or {}
-        handlers = {
-            "server_info": self.server_info,
-            "get_default_cwd": self.get_default_cwd,
-            "set_default_cwd": self.set_default_cwd,
-            "read_file": self.read_file,
-            "list_dir": self.list_dir,
-            "list_files": self.list_files,
-            "search_text": self.search_text,
-            "apply_patch": self.apply_patch,
-            "exec_command": self.exec_command,
-            "write_stdin": self.write_stdin,
-            "kill_session": self.kill_session,
-            "git_status": self.git_status,
-            "git_diff": self.git_diff,
-            "git_log": self.git_log,
-            "git_show": self.git_show,
-            "git_blame": self.git_blame,
-            "request_permissions": self.request_permissions,
-        }
-        if self.enable_view_image:
-            handlers["view_image"] = self.view_image
-        handler = handlers.get(name) if name in set(self.exposed_tool_names()) else None
+        handler = self._tool_handlers.get(name) if name in self.exposed_tool_names() else None
         if handler is None:
             raise JsonRpcError(-32602, f"Unknown tool: {name}", {"reason": "unknown_tool"})
         validate_arguments(name, args)
@@ -1051,6 +1719,9 @@ class Runtime:
                     "details": exc.details,
                 },
             }
+            diagnostics = permission_failure_diagnostics(exc)
+            if diagnostics:
+                payload["diagnostics"] = diagnostics
             if exc.code == "PERMISSION_REQUIRED":
                 permission = exc.details.get("permission")
                 payload["permission_request"] = {
@@ -1079,6 +1750,22 @@ class Runtime:
 
     def server_info(self, args: dict[str, Any]) -> dict[str, Any]:
         return self.server_info_payload()
+
+    def check_exec_environment(self, args: dict[str, Any]) -> dict[str, Any]:
+        landlock = landlock_status_payload()
+        warnings: list[str] = []
+        if not landlock.get("available"):
+            warnings.append("Linux Landlock filesystem confinement is unavailable")
+        if self.capabilities.skip_all_permissions:
+            warnings.append("permission_mode=dangerous disables MCP safety gates")
+        return {
+            "ok": True,
+            **self._exec_environment_summary(),
+            "landlock_enabled": self._landlock_enforced(landlock),
+            "landlock_abi": landlock.get("abi_version"),
+            "global_tmp_write": self.global_tmp_write_policy(),
+            "warnings": warnings,
+        }
 
     def get_default_cwd(self, args: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1678,15 +2365,20 @@ class Runtime:
         popen_cmd: Any = cmd
         popen_shell = True
         popen_extra = process_group_popen_kwargs()
-        try:
-            landlock_fd = open_landlock_ruleset(self.workspace.root, guard_allow_roots())
-            popen_cmd = landlock_exec_argv(landlock_fd, cmd)
-            popen_shell = False
-            popen_extra["pass_fds"] = (landlock_fd,)
-        except ToolFailure as exc:
-            if exc.code != "SANDBOX_UNAVAILABLE":
-                raise
-            landlock_warning = landlock_unavailable_warning(exc)
+        if self.landlock_enabled():
+            try:
+                landlock_fd = open_landlock_ruleset(
+                    self.workspace.root,
+                    guard_allow_roots(),
+                    write_roots=self.landlock_write_roots(),
+                )
+                popen_cmd = landlock_exec_argv(landlock_fd, cmd)
+                popen_shell = False
+                popen_extra["pass_fds"] = (landlock_fd,)
+            except ToolFailure as exc:
+                if exc.code != "SANDBOX_UNAVAILABLE":
+                    raise
+                landlock_warning = landlock_unavailable_warning(exc)
         try:
             process = subprocess.Popen(
                 popen_cmd,
@@ -1725,33 +2417,27 @@ class Runtime:
                     except OSError:
                         pass
         initial_wait = max(0, min(yield_ms, 30000)) / 1000.0
+
+        def finish(status: str, **extra: Any) -> dict[str, Any]:
+            payload = session.snapshot_since_cursor(max_output_bytes)
+            payload["status"] = status
+            payload["elapsed_ms"] = int((time.time() - start) * 1000)
+            payload.update(extra)
+            self._add_exec_diagnostics(payload)
+            return payload
+
         while True:
             if process.poll() is not None:
                 session.refresh_status()
                 session.drain_readers()
-                payload = session.snapshot_since_cursor(max_output_bytes)
-                payload.update(
-                    {
-                        "status": "timeout" if session.timed_out else "exited",
-                        "elapsed_ms": int((time.time() - start) * 1000),
-                    }
-                )
-                return payload
+                return finish("timeout" if session.timed_out else "exited")
             now = time.time()
             if not tty and now >= deadline:
                 session.timed_out = True
                 self._terminate_process_group(process, signal.SIGTERM)
                 session.refresh_status()
                 session.drain_readers()
-                payload = session.snapshot_since_cursor(max_output_bytes)
-                payload.update(
-                    {
-                        "status": "timeout",
-                        "timed_out": True,
-                        "elapsed_ms": int((time.time() - start) * 1000),
-                    }
-                )
-                return payload
+                return finish("timeout", timed_out=True)
             with session.lock:
                 tty_has_initial_output = (
                     len(session.stdout) > session.stdout_cursor
@@ -1760,26 +2446,16 @@ class Runtime:
             if now - start >= initial_wait or (tty and tty_has_initial_output):
                 with self.sessions_lock:
                     self.sessions[session.session_id] = session
-                payload = session.snapshot_since_cursor(max_output_bytes)
-                payload.update(
-                    {
-                        "status": "running",
-                        "elapsed_ms": int((time.time() - start) * 1000),
-                    }
-                )
-                return payload
+                return finish("running")
             time.sleep(0.02)
 
     def _check_command_policy(self, cmd: str, args: dict[str, Any]) -> None:
-        self._check_command_paths(cmd)
         if self.dangerously_skip_all_permissions:
             return
+        self._check_command_paths(cmd)
         env = args.get("env", {})
         if isinstance(env, dict) and any(
-            SENSITIVE_ENV_RE.search(str(key))
-            or str(key).upper() in RISKY_ENV_NAMES
-            or SENSITIVE_VALUE_RE.search(str(value))
-            for key, value in env.items()
+            is_filtered_env_var(str(key), str(value)) for key, value in env.items()
         ):
             raise ToolFailure(
                 "PERMISSION_REQUIRED",
@@ -1787,16 +2463,17 @@ class Runtime:
                 category="permission",
                 details={"permission": "sensitive_env", "env_keys": sorted(str(key) for key in env)},
             )
-        inline_script = inline_script_command(cmd)
-        if inline_script is not None:
-            raise ToolFailure(
-                "PERMISSION_REQUIRED",
-                "Inline interpreter or shell code requires explicit permission because network and filesystem effects cannot be verified statically.",
-                category="permission",
-                details={"permission": INLINE_SCRIPT_PERMISSION, **inline_script},
-            )
+        if not self.capabilities.inline_script:
+            inline_script = inline_script_command(cmd)
+            if inline_script is not None:
+                raise ToolFailure(
+                    "PERMISSION_REQUIRED",
+                    "Inline interpreter or shell code requires explicit permission because network and filesystem effects cannot be verified statically.",
+                    category="permission",
+                    details={"permission": INLINE_SCRIPT_PERMISSION, **inline_script},
+                )
         compact = " ".join(cmd.split()).lower()
-        if SHELL_EXPANSION_RE.search(cmd):
+        if not self.capabilities.shell_expansion and SHELL_EXPANSION_RE.search(cmd):
             raise ToolFailure(
                 "PERMISSION_REQUIRED",
                 "Shell command substitution and parameter expansion require explicit permission.",
@@ -1817,13 +2494,18 @@ class Runtime:
                 category="permission",
                 details={"permission": "destructive_command", "command": compact},
             )
-        if NETWORK_RE.search(cmd) and not is_literal_network_reference_command(cmd):
+        if not self.allow_network and NETWORK_RE.search(cmd) and not is_literal_network_reference_command(cmd):
             raise ToolFailure(
                 "PERMISSION_REQUIRED",
                 "Network access is denied by default.",
                 category="permission",
                 details={"permission": "network", "command": compact},
             )
+
+    def _add_exec_diagnostics(self, payload: dict[str, Any]) -> None:
+        diagnostics = exec_output_diagnostics(payload)
+        if diagnostics:
+            payload["diagnostics"] = diagnostics
 
     def _check_command_paths(self, cmd: str) -> None:
         try:
@@ -1842,6 +2524,10 @@ class Runtime:
         if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", candidate):
             return
         normalized = candidate.replace("\\", "/")
+        if normalized in SPECIAL_DEVICE_PATHS:
+            return
+        if self.is_allowed_command_tmp_path(normalized):
+            return
         if (
             normalized.startswith("/")
             or normalized.startswith("~")
@@ -1906,25 +2592,49 @@ class Runtime:
             )
 
     def _command_env(self, extra: Any) -> dict[str, str]:
-        env: dict[str, str] = {}
-        for key in ("PATH", "LANG", "LC_ALL"):
-            if key in os.environ:
-                env[key] = os.environ[key]
-        env["HOME"] = str(self.workspace.root)
-        env["TMPDIR"] = str(self.workspace.root / ".tmp")
-        (self.workspace.root / ".tmp").mkdir(exist_ok=True)
+        env = self._base_command_env()
+        if not self.dangerously_skip_all_permissions:
+            env = {key: value for key, value in env.items() if not is_filtered_env_var(key, value)}
+            env = {key: value for key, value in env.items() if key not in ECOSYSTEM_CACHE_ENV_NAMES}
+        if self.shell_env_policy.exclude:
+            env = {
+                key: value
+                for key, value in env.items()
+                if not env_pattern_matches(key, self.shell_env_policy.exclude)
+            }
+        if self.shell_env_policy.include_only:
+            env = {
+                key: value
+                for key, value in env.items()
+                if env_pattern_matches(key, self.shell_env_policy.include_only)
+            }
+        env.update({str(key): str(value) for key, value in self.shell_env_policy.set.items()})
+        self._ensure_runtime_dirs()
+        tmp_dir = self.command_tmp_dir()
+        env["HOME"] = str(self.command_home_dir())
+        env["TMPDIR"] = str(tmp_dir)
+        if os.name == "nt":
+            env["TEMP"] = str(tmp_dir)
+            env["TMP"] = str(tmp_dir)
         if isinstance(extra, dict):
             for key, value in extra.items():
                 key_text = str(key)
                 value_text = str(value)
-                if not self.dangerously_skip_all_permissions and (
-                    SENSITIVE_ENV_RE.search(key_text)
-                    or key_text.upper() in RISKY_ENV_NAMES
-                    or SENSITIVE_VALUE_RE.search(value_text)
-                ):
+                if not self.dangerously_skip_all_permissions and is_filtered_env_var(key_text, value_text):
                     continue
                 env[key_text] = value_text
         return env
+
+    def _base_command_env(self) -> dict[str, str]:
+        if self.shell_env_policy.inherit == "none":
+            return {}
+        if self.shell_env_policy.inherit == "all":
+            return {str(key): str(value) for key, value in os.environ.items()}
+        return {
+            str(key): str(value)
+            for key, value in os.environ.items()
+            if is_core_command_env_name(str(key))
+        }
 
     def _make_session(
         self,
@@ -1972,25 +2682,50 @@ class Runtime:
                         break
         return session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
 
+    def _wait_for_session_exit(self, session: ExecSession, wait_seconds: float) -> bool:
+        wait_until = time.time() + max(0.0, wait_seconds)
+        while time.time() < wait_until and session.process.poll() is None:
+            time.sleep(0.02)
+        session.refresh_status()
+        session.drain_readers()
+        return session.process.poll() is not None
+
     def kill_session(self, args: dict[str, Any]) -> dict[str, Any]:
         session_id = str(args.get("session_id", ""))
         session = self._get_session(session_id)
         signal_name = str(args.get("signal", "TERM"))
         signum = {"TERM": signal.SIGTERM, "KILL": signal.SIGKILL, "INT": signal.SIGINT}.get(signal_name, signal.SIGTERM)
+        evict = True
+        signal_sent = signal.Signals(signum).name
         if session.process.poll() is None:
+            session.terminating = True
             self._terminate_process_group(session.process, signum)
-            wait_until = time.time() + (int(args.get("wait_ms", 5000)) / 1000.0)
-            while time.time() < wait_until and session.process.poll() is None:
-                time.sleep(0.02)
-            killed = True
-            status = "terminated" if session.process.poll() is not None else "terminated"
+            exited = self._wait_for_session_exit(session, int(args.get("wait_ms", 5000)) / 1000.0)
+            if not exited and signum != signal.SIGKILL:
+                signum = signal.SIGKILL
+                signal_sent = signal.SIGKILL.name
+                self._terminate_process_group(session.process, signal.SIGKILL)
+                exited = self._wait_for_session_exit(session, int(args.get("kill_wait_ms", 2000)) / 1000.0)
+            if exited:
+                killed = True
+                status = "killed" if signum == signal.SIGKILL else "terminated"
+            else:
+                killed = False
+                evict = False
+                status = "terminating"
         else:
             killed = False
             status = "exited"
         payload = session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
-        payload.update({"killed": killed, "status": status})
-        with self.sessions_lock:
-            self.sessions.pop(session_id, None)
+        payload.update({"killed": killed, "status": status, "evicted": evict, "signal_sent": signal_sent})
+        if status == "terminating":
+            warnings = list(payload.get("warnings", []))
+            warnings.append("Process did not exit after TERM/SIGKILL; session retained for retry or watchdog cleanup.")
+            payload["warnings"] = warnings
+            payload["next_action"] = "retry kill_session or wait for watchdog cleanup"
+        if evict:
+            with self.sessions_lock:
+                self.sessions.pop(session_id, None)
         return payload
 
     def cancel_session(self, session_id: str) -> None:
@@ -3083,7 +3818,19 @@ def landlock_handled_access(version: int) -> int:
     return handled
 
 
-def open_landlock_ruleset(workspace: Path, read_roots: list[str]) -> int:
+def landlock_device_access(handled: int) -> int:
+    readonly_file_access = handled & (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE)
+    return readonly_file_access | (
+        handled
+        & (
+            LANDLOCK_ACCESS_FS_WRITE_FILE
+            | LANDLOCK_ACCESS_FS_TRUNCATE
+            | LANDLOCK_ACCESS_FS_IOCTL_DEV
+        )
+    )
+
+
+def open_landlock_ruleset(workspace: Path, read_roots: list[str], *, write_roots: list[Path] | None = None) -> int:
     version = landlock_abi_version()
     handled = landlock_handled_access(version)
     ruleset_attr = LandlockRulesetAttr(handled)
@@ -3106,11 +3853,13 @@ def open_landlock_ruleset(workspace: Path, read_roots: list[str]) -> int:
         readonly_access = handled & (
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
         )
-        device_access = readonly_access | (handled & LANDLOCK_ACCESS_FS_WRITE_FILE)
+        device_access = landlock_device_access(handled)
         add_landlock_path(ruleset_fd, workspace, workspace_access)
+        for root in write_roots or []:
+            add_landlock_path(ruleset_fd, root, workspace_access, required=False)
         for root in read_roots:
             add_landlock_path(ruleset_fd, Path(root), readonly_access, required=False)
-        for special in ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom"):
+        for special in SPECIAL_DEVICE_PATHS:
             add_landlock_path(ruleset_fd, Path(special), device_access, required=False)
         for special_dir in ("/proc/self", "/proc/thread-self", "/dev/fd"):
             add_landlock_path(ruleset_fd, Path(special_dir), readonly_access, required=False)
@@ -3133,7 +3882,7 @@ def add_landlock_path(ruleset_fd: int, path: Path, allowed_access: int, *, requi
             ) from exc
         return
     try:
-        path_attr = LandlockPathBeneathAttr(allowed_access, fd)
+        path_attr = LandlockPathBeneathAttr(allowed_access & landlock_path_allowed_access(path), fd)
         rc = libc_syscall(SYS_LANDLOCK_ADD_RULE, ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, ctypes.byref(path_attr), 0)
         if rc < 0 and required:
             err = ctypes.get_errno()
@@ -3145,6 +3894,22 @@ def add_landlock_path(ruleset_fd: int, path: Path, allowed_access: int, *, requi
             )
     finally:
         os.close(fd)
+
+
+def landlock_path_allowed_access(path: Path) -> int:
+    try:
+        mode = path.stat().st_mode
+    except OSError:
+        return ~0
+    if stat.S_ISDIR(mode):
+        return ~0
+    return (
+        LANDLOCK_ACCESS_FS_EXECUTE
+        | LANDLOCK_ACCESS_FS_WRITE_FILE
+        | LANDLOCK_ACCESS_FS_READ_FILE
+        | LANDLOCK_ACCESS_FS_TRUNCATE
+        | LANDLOCK_ACCESS_FS_IOCTL_DEV
+    )
 
 
 def restrict_self_with_landlock(ruleset_fd: int) -> None:
@@ -3165,23 +3930,43 @@ def landlock_exec_argv(ruleset_fd: int, cmd: str) -> list[str]:
     return [sys.executable, str(helper), str(ruleset_fd), cmd]
 
 
+def is_default_system_path_root(resolved: Path) -> bool:
+    for prefix_path in _resolved_system_path_root_prefixes():
+        if resolved == prefix_path or is_relative_to(resolved, prefix_path):
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=1)
+def _resolved_system_path_root_prefixes() -> tuple[Path, ...]:
+    prefixes: list[Path] = []
+    for prefix in SYSTEM_PATH_ROOT_PREFIXES:
+        try:
+            prefixes.append(Path(prefix).resolve())
+        except OSError:
+            prefixes.append(Path(prefix))
+    return tuple(prefixes)
+
+
 def guard_allow_roots() -> list[str]:
-    roots = {
-        "/bin",
-        "/lib",
-        "/lib64",
-        "/sbin",
-        "/usr",
-        "/etc/alternatives",
-        "/etc/ca-certificates",
-        "/etc/localtime",
-        "/etc/npmrc",
-        "/etc/pki",
-        "/etc/ssl",
-        str(Path(sys.executable).resolve().parent),
-        str(Path(sys.prefix).resolve()),
-        str(Path(sys.base_prefix).resolve()),
-    }
+    roots = set(TOOLCHAIN_READ_ROOTS)
+    roots.update(GIT_READ_ROOTS)
+    roots.update(DNS_RESOLVER_READ_ROOTS)
+    roots.update(
+        {
+            str(Path(sys.executable).resolve().parent),
+            str(Path(sys.prefix).resolve()),
+            str(Path(sys.base_prefix).resolve()),
+        }
+    )
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        try:
+            resolved_java_home = Path(java_home).expanduser().resolve()
+        except OSError:
+            pass
+        else:
+            roots.add(str(resolved_java_home))
     for item in os.environ.get("PATH", "").split(os.pathsep):
         if not item:
             continue
@@ -3189,9 +3974,7 @@ def guard_allow_roots() -> list[str]:
             resolved = Path(item).resolve()
         except OSError:
             continue
-        if resolved.is_dir() and any(
-            str(resolved).startswith(prefix) for prefix in ("/usr", "/bin", "/sbin", "/lib", "/lib64", str(Path(sys.prefix).resolve()))
-        ):
+        if resolved.is_dir() and is_default_system_path_root(resolved):
             roots.add(str(resolved))
     for item in os.environ.get(f"{ENV_PREFIX}_EXEC_ALLOW_ROOTS", "").split(os.pathsep):
         if not item:
@@ -3577,30 +4360,10 @@ def tool_definition(name: str, *, tool_profile: str = "full") -> dict[str, Any]:
             "destructiveHint": False,
             "openWorldHint": False,
         }
-    descriptions = {
-        "server_info": "Return server, workspace, auth, profile, and exposed-tool metadata.",
-        "get_default_cwd": "Return the current default cwd inside the workspace.",
-        "set_default_cwd": "Set the default cwd for relative tool paths inside the workspace.",
-        "read_file": "Read a UTF-8 text file slice inside the configured workspace.",
-        "list_dir": "List directory entries inside the configured workspace.",
-        "list_files": "List workspace files using glob filters.",
-        "search_text": "Search UTF-8 workspace files for text or regex matches.",
-        "apply_patch": "Apply a patch envelope transactionally inside the workspace.",
-        "exec_command": "Run a bounded command in the workspace under runtime policy.",
-        "write_stdin": "Write characters to a server-managed running command session.",
-        "kill_session": "Terminate a server-managed running command session.",
-        "git_status": "Return git working tree status for the workspace.",
-        "git_diff": "Return unified git diff for workspace changes.",
-        "git_log": "Return recent git commits with bounded structured metadata.",
-        "git_show": "Return bounded git show output for a revision.",
-        "git_blame": "Return bounded git blame metadata for a workspace file.",
-        "request_permissions": "Request a scoped permission grant for dangerous runtime operations.",
-        "view_image": "Return a workspace image as MCP image content.",
-    }
     return {
         "name": name,
         "title": annotations["title"],
-        "description": descriptions[name],
+        "description": TOOL_REGISTRY[name].description,
         "inputSchema": schemas[name],
         "outputSchema": tool_output_schema(),
         "annotations": annotations,
@@ -3608,65 +4371,13 @@ def tool_definition(name: str, *, tool_profile: str = "full") -> dict[str, Any]:
 
 
 def tool_annotations(name: str) -> dict[str, Any]:
-    read_only = name in {
-        "server_info",
-        "get_default_cwd",
-        "set_default_cwd",
-        "read_file",
-        "list_dir",
-        "list_files",
-        "search_text",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_show",
-        "git_blame",
-        "request_permissions",
-        "view_image",
-    }
-    destructive = name in {"apply_patch", "exec_command", "kill_session"}
-    idempotent = name in {
-        "server_info",
-        "get_default_cwd",
-        "set_default_cwd",
-        "read_file",
-        "list_dir",
-        "list_files",
-        "search_text",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_show",
-        "git_blame",
-        "view_image",
-    }
-    open_world = name == "exec_command"
-    titles = {
-        "server_info": "Server info",
-        "get_default_cwd": "Get default cwd",
-        "set_default_cwd": "Set default cwd",
-        "read_file": "Read file",
-        "list_dir": "List directory",
-        "list_files": "List files",
-        "search_text": "Search text",
-        "apply_patch": "Apply patch",
-        "exec_command": "Execute command",
-        "write_stdin": "Write stdin",
-        "kill_session": "Kill session",
-        "git_status": "Git status",
-        "git_diff": "Git diff",
-        "git_log": "Git log",
-        "git_show": "Git show",
-        "git_blame": "Git blame",
-        "request_permissions": "Request permissions",
-        "view_image": "View image",
-    }
+    spec = TOOL_REGISTRY[name]
     return {
-        "title": titles[name],
-        "readOnlyHint": read_only,
-        "destructiveHint": destructive,
-        "idempotentHint": idempotent,
-        "openWorldHint": open_world,
+        "title": spec.title,
+        "readOnlyHint": spec.read_only,
+        "destructiveHint": spec.destructive,
+        "idempotentHint": spec.idempotent,
+        "openWorldHint": spec.open_world,
     }
 
 
@@ -3677,6 +4388,7 @@ def input_schemas() -> dict[str, dict[str, Any]]:
     string_array = {"type": "array", "items": {"type": "string"}}
     return {
         "server_info": object_schema(),
+        "check_exec_environment": object_schema(),
         "get_default_cwd": object_schema(),
         "set_default_cwd": object_schema(
             {
@@ -4199,7 +4911,9 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
         if not host:
             host = _safe_external_host(self.headers.get("Host", ""))
         if not host:
-            bind_host, bind_port = self.server.server_address[:2]  # type: ignore[attr-defined]
+            server_address = cast(tuple[Any, ...], self.server.server_address)  # type: ignore[attr-defined]
+            bind_host = server_address[0]
+            bind_port = server_address[1]
             host = _http_base_for_bind_host(str(bind_host), int(bind_port)).removeprefix("http://")
         if proto not in {"http", "https"}:
             host_without_port = host.rsplit(":", 1)[0].strip("[]")
@@ -4518,12 +5232,54 @@ class RuntimeHTTPServer(http.server.ThreadingHTTPServer):
         self.runtime = runtime
 
 
+def build_runtime(
+    args: argparse.Namespace,
+    runtime_policy: RuntimePolicy,
+    *,
+    auth_token: str | None = None,
+    oauth_config: OAuthConfig | None = None,
+) -> Runtime:
+    workspace = Path(args.workspace or os.environ.get(f"{ENV_PREFIX}_WORKSPACE") or os.getcwd())
+    runtime = Runtime(
+        workspace,
+        enable_view_image=args.enable_view_image,
+        permission_mode=runtime_policy.permission_mode,
+        shell_env_policy=runtime_policy.shell_env_policy,
+        allow_network=runtime_policy.allow_network,
+        tool_profile=args.tool_profile,
+        auth_token=auth_token,
+        oauth_config=oauth_config,
+    )
+    if runtime.capabilities.skip_all_permissions:
+        print(
+            "WARNING: permission_mode=dangerous disables MCP safety gates. Use only inside an isolated container or VM.",
+            file=sys.stderr,
+        )
+    return runtime
+
+
+AUTH_MODE_CHOICES = ("bearer", "noauth", "oauth")
+
+
 def run_http(args: argparse.Namespace) -> int:
-    workspace = Path(args.workspace or os.environ.get("CODING_TOOLS_MCP_WORKSPACE") or os.getcwd())
+    auth_mode = (os.environ.get(f"{ENV_PREFIX}_AUTH_MODE") or "").strip().lower()
+    if auth_mode and auth_mode not in AUTH_MODE_CHOICES:
+        supported = ", ".join(AUTH_MODE_CHOICES)
+        print(f"ERROR: {ENV_PREFIX}_AUTH_MODE must be one of: {supported}.", file=sys.stderr)
+        return 2
     auth_token = args.auth_token or os.environ.get(f"{ENV_PREFIX}_AUTH_TOKEN") or None
+    try:
+        runtime_policy = runtime_policy_from_args(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     oauth_config: OAuthConfig | None = None
-    oauth_mode = getattr(args, "oauth_mode", False) or os.environ.get(f"{ENV_PREFIX}_OAUTH_MODE") == "1"
+    oauth_mode = (
+        getattr(args, "oauth_mode", False)
+        or truthy_env(os.environ.get(f"{ENV_PREFIX}_OAUTH_MODE"))
+        or auth_mode == "oauth"
+    )
     if oauth_mode:
         client_id = os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_ID") or None
         client_secret = os.environ.get(f"{ENV_PREFIX}_OAUTH_CLIENT_SECRET") or None
@@ -4562,37 +5318,35 @@ def run_http(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    if (
+        not auth_token
+        and not oauth_config
+        and not is_loopback_bind_host(str(args.host))
+        and auth_mode != "noauth"
+        and truthy_env(os.environ.get(f"{ENV_PREFIX}_GENERATE_AUTH_TOKEN"))
+    ):
+        auth_token = secrets.token_urlsafe(32)
+        print(f"Generated {ENV_PREFIX}_AUTH_TOKEN for non-loopback binding.", file=sys.stderr)
+        print(f"Bearer token: {auth_token}", file=sys.stderr)
+
     if not auth_token and not oauth_config and not is_loopback_bind_host(str(args.host)):
         print(
             "ERROR: non-loopback HTTP binding requires --auth-token, CODING_TOOLS_MCP_AUTH_TOKEN, or --oauth-mode.",
             file=sys.stderr,
         )
         return 2
-    runtime = Runtime(
-        workspace,
-        enable_view_image=args.enable_view_image,
-        dangerously_skip_all_permissions=args.dangerously_skip_all_permissions,
-        tool_profile=args.tool_profile,
-        auth_token=auth_token,
-        oauth_config=oauth_config,
-    )
+    runtime = build_runtime(args, runtime_policy, auth_token=auth_token, oauth_config=oauth_config)
     server = RuntimeHTTPServer((args.host, args.port), MCPHandler, runtime)
-    if args.dangerously_skip_all_permissions:
-        print(
-            "WARNING: --dangerously-skip-all-permissions is enabled; permission-gated operations will be auto-granted.",
-            file=sys.stderr,
-        )
-    if oauth_config and runtime.auth_token:
+    if oauth_config:
         url_label = oauth_config.server_url or "dynamic request URL"
-        auth_label = f"oauth2 + bearer enabled (server_url={url_label})"
-    elif oauth_config:
-        url_label = oauth_config.server_url or "dynamic request URL"
-        auth_label = f"oauth2 enabled (server_url={url_label})"
+        suffix = " + bearer" if runtime.auth_token else ""
+        auth_label = f"oauth2{suffix} enabled (server_url={url_label})"
     elif runtime.auth_token:
         auth_label = "bearer auth enabled"
     else:
         auth_label = "no auth configured"
-    print(f"{SERVER_NAME} listening on http://{args.host}:{args.port}/mcp ({auth_label}, profile={args.tool_profile})", file=sys.stderr)
+    base_url = _http_base_for_bind_host(str(args.host), args.port)
+    print(f"{SERVER_NAME} listening on {base_url}/mcp ({auth_label}, profile={args.tool_profile})", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -4603,18 +5357,12 @@ def run_http(args: argparse.Namespace) -> int:
 
 
 def run_stdio(args: argparse.Namespace) -> int:
-    workspace = Path(args.workspace or os.environ.get("CODING_TOOLS_MCP_WORKSPACE") or os.getcwd())
-    runtime = Runtime(
-        workspace,
-        enable_view_image=args.enable_view_image,
-        dangerously_skip_all_permissions=args.dangerously_skip_all_permissions,
-        tool_profile=args.tool_profile,
-    )
-    if args.dangerously_skip_all_permissions:
-        print(
-            "WARNING: --dangerously-skip-all-permissions is enabled; permission-gated operations will be auto-granted.",
-            file=sys.stderr,
-        )
+    try:
+        runtime_policy = runtime_policy_from_args(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    runtime = build_runtime(args, runtime_policy)
     dispatcher = StdioDispatcher(runtime)
     for line in sys.stdin:
         if not line.strip():
@@ -4693,8 +5441,17 @@ class StdioDispatcher:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serve workspace-confined coding tools over MCP.")
     parser.add_argument("--workspace", help="workspace root; defaults to CODING_TOOLS_MCP_WORKSPACE or cwd")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--host",
+        default=os.environ.get(f"{ENV_PREFIX}_HOST") or "127.0.0.1",
+        help=f"bind host; defaults to {ENV_PREFIX}_HOST or 127.0.0.1",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=env_int(f"{ENV_PREFIX}_PORT", 8000),
+        help=f"bind port; defaults to {ENV_PREFIX}_PORT or 8000",
+    )
     parser.add_argument("--stdio", action="store_true", help="serve newline-delimited JSON-RPC over stdio")
     parser.add_argument(
         "--auth-token",
@@ -4718,6 +5475,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="tool exposure profile",
     )
     parser.add_argument(
+        "--shell-env-inherit",
+        choices=SHELL_ENV_INHERIT_CHOICES,
+        default=None,
+        help=(
+            "baseline environment inheritance for exec_command subprocesses; "
+            f"defaults to {ENV_PREFIX}_SHELL_ENV_INHERIT or core"
+        ),
+    )
+    parser.add_argument(
+        "--permission-mode",
+        choices=PERMISSION_MODE_CHOICES,
+        default=None,
+        help=(
+            "exec_command permission mode: safe denies network/shell-expansion/inline-script gates; "
+            "trusted allows local development network, shell expansion, and inline scripts; "
+            "dangerous disables permission gates"
+        ),
+    )
+    parser.add_argument(
+        "--allow-network",
+        action="store_true",
+        help=(
+            "compatibility alias: allow network-looking exec_command calls without changing other gates; "
+            f"can also be enabled with {ENV_PREFIX}_ALLOW_NETWORK=1"
+        ),
+    )
+    parser.add_argument(
         "--enable-view-image",
         action="store_true",
         default=os.environ.get("CODING_TOOLS_MCP_ENABLE_VIEW_IMAGE", "1") != "0",
@@ -4727,8 +5511,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dangerously-skip-all-permissions",
         action="store_true",
         help=(
-            "dangerous: auto-grant permission-gated operations when the MCP client cannot elicit approvals; "
-            "workspace path boundaries still apply"
+            "compatibility alias for --permission-mode dangerous; workspace path boundaries for direct file tools still apply"
         ),
     )
     return parser

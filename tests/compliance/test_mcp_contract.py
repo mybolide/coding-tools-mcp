@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from coding_tools_mcp.server import MAX_HTTP_REQUEST_BYTES, MAX_JSON_RPC_BATCH_ITEMS
@@ -22,9 +23,10 @@ from tests.compliance.mcp_client import (
     MCPClient,
     MCPError,
     REQUIRED_TOOLS,
-    ROOT,
     default_server_command,
     free_port,
+    prepend_repo_pythonpath,
+    stream_snapshot,
 )
 from tests.compliance.test_support import ComplianceTestCase
 
@@ -88,6 +90,7 @@ class MCPContractTests(ComplianceTestCase):
     def test_tool_annotations_match_mcp_sdk_hint_shape(self) -> None:
         expected = {
             "server_info": (True, False, True, False),
+            "check_exec_environment": (True, False, True, False),
             "get_default_cwd": (True, False, True, False),
             "set_default_cwd": (True, False, True, False),
             "read_file": (True, False, True, False),
@@ -828,27 +831,22 @@ class MCPContractTests(ComplianceTestCase):
         token: str | None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, Any]]:
-        parsed = urllib.parse.urlparse(url)
-        self.assertIsNotNone(parsed.hostname)
-        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
-        body = b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}'
-        try:
-            connection.putrequest("POST", parsed.path or "/mcp")
-            connection.putheader("Accept", "application/json, text/event-stream")
-            connection.putheader("Content-Type", "application/json")
-            connection.putheader("MCP-Protocol-Version", "2025-06-18")
-            connection.putheader("Content-Length", str(len(body)))
-            if token is not None:
-                connection.putheader("Authorization", f"Bearer {token}")
-            for name, value in (headers or {}).items():
-                connection.putheader(name, value)
-            connection.endheaders()
-            connection.send(body)
-            response = connection.getresponse()
-            response_body = response.read().decode("utf-8")
-            return response.status, json.loads(response_body)
-        finally:
-            connection.close()
+        request_headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": "2025-06-18",
+        }
+        if token is not None:
+            request_headers["Authorization"] = f"Bearer {token}"
+        request_headers.update(headers or {})
+        status, _, response_body = self.raw_base_http_request(
+            url,
+            "POST",
+            urllib.parse.urlparse(url).path or "/mcp",
+            body=b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}',
+            headers=request_headers,
+        )
+        return status, json.loads(response_body)
 
     def oauth_server_env(self, **overrides: str) -> dict[str, str]:
         env = self.server_process_env()
@@ -885,16 +883,11 @@ class MCPContractTests(ComplianceTestCase):
         )
 
     def wait_for_json(self, url: str) -> dict[str, Any]:
-        deadline = time.time() + 10
-        last_error: Exception | None = None
-        while time.time() < deadline:
-            try:
-                with urllib.request.urlopen(url, timeout=1) as response:
-                    return json.loads(response.read().decode("utf-8"))
-            except Exception as exc:  # noqa: BLE001 - startup retry records last failure
-                last_error = exc
-                time.sleep(0.1)
-        raise AssertionError(f"server did not return JSON from {url}: {last_error!r}")
+        def probe() -> dict[str, Any]:
+            with urllib.request.urlopen(url, timeout=1) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        return self.wait_for_server(probe, f"server did not return JSON from {url}")
 
     def pkce_challenge(self, verifier: str) -> str:
         digest = hashlib.sha256(verifier.encode("ascii")).digest()
@@ -1020,36 +1013,29 @@ class MCPContractTests(ComplianceTestCase):
         return process, f"http://127.0.0.1:{port}/mcp"
 
     def server_process_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        existing_pythonpath = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = str(ROOT) if not existing_pythonpath else str(ROOT) + os.pathsep + existing_pythonpath
-        return env
+        return prepend_repo_pythonpath(os.environ.copy())
 
     def process_stderr_snapshot(self, process: subprocess.Popen[str]) -> str:
         if process.stderr is None:
             return ""
-        chunks: list[str] = []
-        while True:
-            readable, _, _ = select.select([process.stderr], [], [], 0)
-            if not readable:
-                break
-            chunk = os.read(process.stderr.fileno(), 4096).decode("utf-8", errors="replace")
-            if not chunk:
-                break
-            chunks.append(chunk)
-        return "".join(chunks)
+        return stream_snapshot(process.stderr)
 
-    def wait_for_ping(self, url: str) -> None:
+    def wait_for_server(self, probe: Callable[[], Any], description: str) -> Any:
         deadline = time.time() + 10
         last_error: Exception | None = None
         while time.time() < deadline:
             try:
-                self.raw_post_to(url, {"jsonrpc": "2.0", "id": 99, "method": "ping", "params": {}})
-                return
+                return probe()
             except Exception as exc:  # noqa: BLE001 - startup retry records last failure
                 last_error = exc
                 time.sleep(0.1)
-        raise AssertionError(f"server did not accept ping: {last_error!r}")
+        raise AssertionError(f"{description}: {last_error!r}")
+
+    def wait_for_ping(self, url: str) -> None:
+        self.wait_for_server(
+            lambda: self.raw_post_to(url, {"jsonrpc": "2.0", "id": 99, "method": "ping", "params": {}}),
+            "server did not accept ping",
+        )
 
     def stop_process(self, process: subprocess.Popen[str]) -> None:
         try:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
 
-from coding_tools_mcp.server import input_schemas, tool_annotations
+from coding_tools_mcp.server import KILL_SESSION_STATUSES, TOOL_REGISTRY, input_schemas, tool_annotations
 from tests.compliance.mcp_client import REQUIRED_TOOLS
 
 
@@ -12,6 +13,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SchemaDriftTests(unittest.TestCase):
+    def test_input_schemas_cover_exactly_the_registered_tools(self) -> None:
+        self.assertEqual(set(input_schemas()), set(TOOL_REGISTRY))
+
+    def test_profile_kill_session_status_enum_matches_live_constant(self) -> None:
+        profile = (ROOT / "docs/profile-v0.1.md").read_text(encoding="utf-8")
+        self.assertIn(json.dumps(list(KILL_SESSION_STATUSES)), profile)
+
     def test_profile_contains_every_live_tool_and_input_property(self) -> None:
         profile = (ROOT / "docs/profile-v0.1.md").read_text(encoding="utf-8")
         sections = markdown_tool_sections(profile)

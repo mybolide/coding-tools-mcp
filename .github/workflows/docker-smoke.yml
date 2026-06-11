@@ -1,0 +1,75 @@
+name: docker-smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker-compose.yml
+      - scripts/mcp_smoke.py
+      - coding_tools_mcp/**
+      - pyproject.toml
+      - .github/workflows/docker-smoke.yml
+
+env:
+  MCP_PORT: 8765
+  MCP_TOKEN: smoke-token
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build sandbox image
+        run: docker build -t coding-tools-mcp-sandbox:smoke .
+
+      - name: Start sandbox
+        run: |
+          docker run -d --rm \
+            --name coding-tools-mcp-smoke \
+            -p "$MCP_PORT:$MCP_PORT" \
+            -e CODING_TOOLS_MCP_PORT="$MCP_PORT" \
+            -e CODING_TOOLS_MCP_AUTH_TOKEN="$MCP_TOKEN" \
+            -v "$PWD:/workspace" \
+            coding-tools-mcp-sandbox:smoke
+
+      - name: Wait for MCP server
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -H "Authorization: Bearer $MCP_TOKEN" "http://127.0.0.1:$MCP_PORT/mcp" >/tmp/mcp-card.json; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs coding-tools-mcp-smoke
+          exit 1
+
+      - name: Smoke HTTP metadata
+        run: |
+          curl -fsS -H "Authorization: Bearer $MCP_TOKEN" "http://127.0.0.1:$MCP_PORT/mcp" | python -m json.tool
+
+      - name: Smoke MCP tools
+        env:
+          CODING_TOOLS_MCP_AUTH_TOKEN: ${{ env.MCP_TOKEN }}
+        run: |
+          python scripts/mcp_smoke.py \
+            --expect-permission-mode trusted \
+            "http://127.0.0.1:$MCP_PORT/mcp" \
+            "java -version" \
+            "javac -version" \
+            "mvn -version" \
+            "gcc --version" \
+            "node --version" \
+            "npm --version" \
+            "python --version" \
+            "go version" \
+            "cargo --version" \
+            "rustc --version"
+
+      - name: Stop sandbox
+        if: always()
+        run: docker stop coding-tools-mcp-smoke || true

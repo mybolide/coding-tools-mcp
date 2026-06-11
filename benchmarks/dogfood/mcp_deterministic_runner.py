@@ -359,9 +359,21 @@ class DogfoodRunner:
             return result
 
 
+def dogfood_fixture_parent() -> Path:
+    configured = os.environ.get("CODING_TOOLS_MCP_DOGFOOD_ROOT") or ""
+    if configured.strip():
+        return Path(configured).expanduser()
+    return Path(tempfile.gettempdir())
+
+
 def prepare_workspace(base_dir: Path | None = None) -> tuple[Path, Path]:
     if base_dir is None:
-        root = Path(tempfile.mkdtemp(prefix="codex-mcp-dogfood-"))
+        root = Path(
+            tempfile.mkdtemp(
+                prefix="coding-tools-mcp-dogfood-",
+                dir=str(dogfood_fixture_parent()),
+            )
+        )
     else:
         root = base_dir
         root.mkdir(parents=True, exist_ok=True)
@@ -586,6 +598,7 @@ def main(argv: list[str] | None = None) -> int:
         adapter = ToolAdapter(tools)
         report["tools"] = adapter.names()
         required = [
+            "server_info",
             "read_file",
             "search_text",
             "apply_patch",
@@ -602,6 +615,19 @@ def main(argv: list[str] | None = None) -> int:
             write_transcript(args.transcript_json, report)
             return 1
         runner = DogfoodRunner(client, adapter)
+        server_info = runner.call("server_info", {})
+        server_workspace = parse_text_json(server_info).get("workspace")
+        expected_workspace = str(workspace.resolve(strict=False))
+        if server_workspace != expected_workspace:
+            report["conclusion"] = "FAIL"
+            report["tool_calls"] = [call.__dict__ for call in runner.calls]
+            report["known_limitations"].append(
+                f"Connected MCP server workspace {server_workspace!r} "
+                f"did not match fixture workspace {expected_workspace!r}"
+            )
+            write_reports(args.report_json, args.report_md, report)
+            write_transcript(args.transcript_json, report)
+            return 1
         cases = runner.run_all()
         final_diff = runner.call("git_diff", adapter.git_diff_args())
         report["cases"] = [case.__dict__ for case in cases]

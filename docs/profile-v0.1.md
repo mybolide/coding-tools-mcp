@@ -54,7 +54,7 @@ If a client requests a newer date-based protocol revision, the server negotiates
   "serverInfo": {
     "name": "coding-tools-mcp",
     "title": "Coding Tools MCP",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "instructions": "Use these tools only for local coding operations inside the configured workspace."
 }
@@ -164,6 +164,7 @@ Shared error object:
             "SANDBOX_UNAVAILABLE",
             "ELICITATION_UNSUPPORTED",
             "PATCH_FAILED",
+            "RUNTIME_DIR_UNWRITABLE",
             "GIT_ERROR",
             "INTERNAL_ERROR"
           ]
@@ -201,6 +202,7 @@ Protocol-level errors:
 P0 tools:
 
 - `server_info`
+- `check_exec_environment`
 - `get_default_cwd`
 - `set_default_cwd`
 - `read_file`
@@ -225,7 +227,7 @@ P1 tool:
 Tool profiles:
 
 - `full`: expose all tools with truthful annotations.
-- `read-only`: expose only `server_info`, `get_default_cwd`, `set_default_cwd`, file read/list/search tools, git inspection tools, and `view_image`.
+- `read-only`: expose only `server_info`, `check_exec_environment`, `get_default_cwd`, `set_default_cwd`, file read/list/search tools, git inspection tools, and `view_image`.
 - `compat-readonly-all`: expose all tools, but advertise `readOnlyHint: true`, `destructiveHint: false`, and `openWorldHint: false` for every tool. This profile is a compatibility escape hatch only; mutation-capable tools still mutate local state.
 
 Forbidden tools and equivalent aliases:
@@ -243,6 +245,64 @@ Forbidden tools and equivalent aliases:
 Compliance tests must assert these forbidden capabilities are absent from `tools/list`.
 
 ## Tool Definitions
+
+### server_info
+
+Description: Return server, workspace, auth, profile, and exposed-tool metadata, including lightweight exec policy state.
+
+Annotations:
+
+```json
+{
+  "title": "Server info",
+  "readOnlyHint": true,
+  "destructiveHint": false,
+  "idempotentHint": true,
+  "openWorldHint": false
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+```
+
+Output fields include `permission_mode`, `workspace`, `default_cwd`, `network_allowed`, `runtime_dir`, `home`, `tmpdir`, `cache_dir`, `landlock`, and `exec_policy`. `runtime_dir` is an external server-owned directory outside the Git worktree; `home`, `tmpdir`, and `cache_dir` describe the default `exec_command` environment directories under it. `landlock` reports availability and ABI when known. `exec_policy` reports shell expansion, inline script, global tmp write, and secret env filter policy.
+
+### check_exec_environment
+
+Description: Return lightweight `exec_command` sandbox and environment status known to the server. This tool does not run active DNS, network, package-manager, compiler, or interpreter probes.
+
+Annotations:
+
+```json
+{
+  "title": "Check exec environment",
+  "readOnlyHint": true,
+  "destructiveHint": false,
+  "idempotentHint": true,
+  "openWorldHint": false
+}
+```
+
+Input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+```
+
+Output fields include `ok`, `workspace`, `permission_mode`, `network_allowed`, `runtime_dir`, `home`, `tmpdir`, `cache_dir`, `landlock_enabled`, `landlock_abi`, `global_tmp_write`, and `warnings`.
 
 ### read_file
 
@@ -720,6 +780,13 @@ Output schema:
     "stdout_truncated": { "type": "boolean" },
     "stderr_truncated": { "type": "boolean" },
     "elapsed_ms": { "type": "integer" },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
     "permission_request": { "type": "object", "additionalProperties": true },
     "warnings": { "type": "array", "items": { "type": "string" } },
     "error": { "$ref": "#/$defs/tool_error" }
@@ -731,10 +798,13 @@ Output schema:
 Policy requirements:
 
 - `workdir` must remain inside the workspace.
-- Commands with network access, broad filesystem destruction, privilege changes, or sensitive environment access must be rejected or return `PERMISSION_REQUIRED`.
-- Inline interpreter and shell snippets such as `python -c`, `python -`, `node -e`, `ruby -e`, `perl -e`, and `sh -c` must return `PERMISSION_REQUIRED` by default because network and filesystem effects cannot be verified statically.
+- `safe` mode rejects network access, shell expansion, inline interpreter or shell snippets, broad filesystem destruction, privilege changes, sensitive environment access, and outside-workspace path arguments unless a narrower compatibility flag explicitly opens a gate.
+- `trusted` mode allows network-looking commands, shell expansion, and inline interpreter or shell snippets for local development, while still filtering secrets and blocking destructive commands and host-root writes.
+- `dangerous` mode disables `exec_command` permission gates and Landlock. Direct file and patch tools still enforce workspace path boundaries.
+- Inline interpreter and shell snippets such as `python -c`, `python -`, `node -e`, `ruby -e`, `perl -e`, and `sh -c` must return `PERMISSION_REQUIRED` by default in `safe` mode because network and filesystem effects cannot be verified statically.
 - `rm -rf /`, `git reset --hard`, broad `chmod`/`chown`, and similar destructive commands must not execute without explicit permission.
-- Linux Landlock confinement must be applied when available. If it is unavailable, `exec_command` must continue to run under policy checks and include a warning that an external sandbox is required for untrusted commands.
+- Linux Landlock confinement must be applied when available. Safe and trusted modes must add only the exact external runtime directory as the extra non-workspace writable root. If Landlock is unavailable, `exec_command` must continue to run under policy checks and include a warning that an external sandbox is required for untrusted commands.
+- `exec_command` may include `diagnostics` with machine-readable error attribution while preserving raw stdout, stderr, and exit code.
 - Long-running commands return `ok: true`, `status: "running"`, and `session_id`.
 - Timed-out commands must clean up their process group.
 
@@ -835,7 +905,7 @@ Output schema:
     "ok": { "type": "boolean" },
     "session_id": { "type": "string" },
     "killed": { "type": "boolean" },
-    "status": { "type": "string", "enum": ["terminated", "exited", "not_found"] },
+    "status": { "type": "string", "enum": ["terminated", "killed", "exited", "terminating", "not_found"] },
     "exit_code": { "type": "integer" },
     "signal": { "type": "string" },
     "stdout": { "type": "string" },
@@ -848,6 +918,10 @@ Output schema:
 ```
 
 The tool may terminate only sessions created by this MCP server.
+
+If `status` is `terminating`, the server attempted graceful termination and forceful cleanup but did not
+observe process exit before the wait deadlines. The session is retained so clients can retry cleanup or
+observe later watchdog completion. Sessions are evicted only after terminal process state is confirmed.
 
 ### git_status
 
@@ -1049,8 +1123,8 @@ Output schema:
 Behavior:
 
 - If the MCP client declared `elicitation`, the server may send an `elicitation/create` request to obtain a user decision.
-- If elicitation is unavailable, the tool returns `ok: false`, `status: "unsupported"`, and `ELICITATION_UNSUPPORTED`, unless the server was explicitly started with a documented non-default permission mode such as `--dangerously-skip-all-permissions`.
-- In `--dangerously-skip-all-permissions` mode, permission-gated operations are auto-granted. Workspace path boundaries still apply.
+- If elicitation is unavailable, the tool returns `ok: false`, `status: "unsupported"`, and `ELICITATION_UNSUPPORTED`, unless the server was explicitly started with `--permission-mode dangerous` or the compatibility alias `--dangerously-skip-all-permissions`.
+- In `--permission-mode dangerous`, permission-gated operations are auto-granted. Workspace path boundaries for direct file tools still apply.
 - v0.1 does not expose a grant registry consumed by `exec_command` or `apply_patch`; `request_permissions` is an unsupported/not-required diagnostic unless dangerous mode is explicitly enabled.
 - Workspace escape is not grantable in v0.1.
 - Dangerous permissions must not be silently granted by default.

@@ -132,6 +132,25 @@ require_oauth_env() {
   export CODING_TOOLS_MCP_OAUTH_PASSWORD
 }
 
+# Validates $AUTH_MODE and sets $TOKEN (exporting CODING_TOOLS_MCP_AUTH_TOKEN in bearer mode).
+resolve_auth_credentials() {
+  TOKEN=""
+  case "$AUTH_MODE" in
+    bearer)
+      TOKEN="${CODING_TOOLS_MCP_AUTH_TOKEN:-$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')}"
+      export CODING_TOOLS_MCP_AUTH_TOKEN="$TOKEN"
+      ;;
+    noauth) ;;
+    oauth)
+      require_oauth_env || exit 2
+      ;;
+    *)
+      echo "CODING_TOOLS_MCP_AUTH_MODE must be bearer, noauth, or oauth" >&2
+      exit 2
+      ;;
+  esac
+}
+
 start_coding_tools_mcp() {
   local workspace="$1"
   local port="$2"

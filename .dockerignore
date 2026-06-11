@@ -1,0 +1,13 @@
+.git
+.mypy_cache
+.ruff_cache
+__pycache__
+*.pyc
+dist
+build
+reports
+.coding-tools
+.venv
+venv
+node_modules
+target

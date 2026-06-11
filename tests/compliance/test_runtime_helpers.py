@@ -1,14 +1,75 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from coding_tools_mcp import server as server_module
-from coding_tools_mcp.server import Runtime, ToolFailure, identify_image, truncate_text_head, truncate_text_tail
+from coding_tools_mcp.server import (
+    LANDLOCK_ACCESS_FS_IOCTL_DEV,
+    LANDLOCK_ACCESS_FS_TRUNCATE,
+    LANDLOCK_ACCESS_FS_WRITE_FILE,
+    Runtime,
+    ShellEnvPolicy,
+    ToolFailure,
+    exec_output_diagnostics,
+    guard_allow_roots,
+    identify_image,
+    permission_failure_diagnostics,
+    runtime_parent_root,
+    truncate_text_head,
+    truncate_text_tail,
+)
+
+
+@contextmanager
+def fake_landlock_exec() -> Iterator[dict[str, object]]:
+    """Patch landlock + Popen so exec_command runs without spawning a process.
+
+    Yields a dict capturing the landlock write_roots and the Popen args/kwargs;
+    "read_fd" holds the fd handed to the server (closed by exec_command itself).
+    """
+    read_fd, write_fd = os.pipe()
+    original_open = server_module.open_landlock_ruleset
+    original_popen = server_module.subprocess.Popen
+    original_watchdog = server_module.start_session_watchdog
+    captured: dict[str, object] = {"read_fd": read_fd}
+
+    class FakeProcess:
+        stdin = None
+        stdout = None
+        stderr = None
+        pid = 1
+
+        def poll(self) -> int:
+            return 0
+
+    def fake_open(_workspace: Path, _read_roots: list[str], **kwargs: object) -> int:
+        captured["write_roots"] = kwargs.get("write_roots")
+        return read_fd
+
+    def fake_popen(*args: object, **kwargs: object) -> FakeProcess:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    server_module.open_landlock_ruleset = fake_open
+    server_module.subprocess.Popen = fake_popen  # type: ignore[method-assign]
+    server_module.start_session_watchdog = lambda _session: None
+    try:
+        yield captured
+    finally:
+        server_module.open_landlock_ruleset = original_open
+        server_module.subprocess.Popen = original_popen  # type: ignore[method-assign]
+        server_module.start_session_watchdog = original_watchdog
+        os.close(write_fd)
 
 
 class RuntimeHelperTests(unittest.TestCase):
@@ -73,6 +134,34 @@ class RuntimeHelperTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--workspace", result.stdout)
+        self.assertIn("--shell-env-inherit", result.stdout)
+        self.assertIn("--permission-mode", result.stdout)
+        self.assertIn("--allow-network", result.stdout)
+
+    def test_workspace_init_tolerates_missing_home_lookup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with patch.object(server_module.Path, "home", side_effect=RuntimeError("home unavailable")):
+                runtime = Runtime(Path(tmp))
+
+        self.assertEqual(runtime.workspace.root, Path(tmp).resolve())
+
+    def test_kill_session_keeps_unresponsive_session(self) -> None:
+        class StillRunningProcess:
+            def poll(self) -> None:
+                return None
+
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp))
+            session = runtime._make_session(StillRunningProcess())  # type: ignore[arg-type]
+            runtime.sessions[session.session_id] = session
+            with patch.object(runtime, "_terminate_process_group", return_value=None):
+                result = runtime.kill_session({"session_id": session.session_id, "wait_ms": 0, "kill_wait_ms": 0})
+
+        self.assertFalse(result.get("killed"), result)
+        self.assertEqual(result.get("status"), "terminating", result)
+        self.assertFalse(result.get("evicted"), result)
+        self.assertIn(session.session_id, runtime.sessions)
+        self.assertTrue(any("session retained" in warning for warning in result.get("warnings", [])), result)
 
     def test_command_policy_gates_inline_interpreter_code(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -101,6 +190,258 @@ class RuntimeHelperTests(unittest.TestCase):
                         runtime._check_command_policy(command, {})
                     self.assertEqual(cm.exception.code, "PERMISSION_REQUIRED")
 
+    def test_command_policy_allows_standard_special_devices_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp))
+            runtime._check_command_policy("echo hi >/dev/null", {})
+            runtime._check_command_policy("dd if=/dev/null of=/dev/null bs=1 count=0", {})
+            with self.assertRaises(ToolFailure):
+                runtime._check_command_policy("echo hi >/dev/not-a-standard-device", {})
+
+    def test_allow_network_only_opens_network_gate(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp), allow_network=True)
+            runtime._check_command_policy("curl https://example.com", {})
+            for command in ("git reset --hard", "python3 -c \"print(1)\""):
+                with self.subTest(command=command):
+                    with self.assertRaises(ToolFailure) as cm:
+                        runtime._check_command_policy(command, {})
+                    self.assertEqual(cm.exception.code, "PERMISSION_REQUIRED")
+
+    def test_command_env_core_is_not_windows_toolchain_specific(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime = Runtime(workspace)
+            host_env = {
+                "Path": r"C:\VS\VC\Tools\MSVC\bin;C:\Windows\System32",
+                "PATHEXT": ".COM;.EXE;.BAT;.CMD",
+                "SystemRoot": r"C:\Windows",
+                "ComSpec": r"C:\Windows\System32\cmd.exe",
+                "INCLUDE": r"C:\VS\VC\Tools\MSVC\include;C:\SDK\Include",
+                "LIB": r"C:\VS\VC\Tools\MSVC\lib;C:\SDK\Lib",
+                "LIBPATH": r"C:\VS\VC\Tools\MSVC\libpath",
+                "WindowsSdkDir": r"C:\Program Files (x86)\Windows Kits\10\\",
+                "VCToolsInstallDir": r"C:\VS\VC\Tools\MSVC\14.99.99999\\",
+                "VSCMD_ARG_TGT_ARCH": "x64",
+                "UNRELATED": "drop-me",
+                "VSCMD_SECRET": "drop-me-too",
+            }
+            with (
+                patch.object(server_module.os, "name", "nt"),
+                patch.dict(server_module.os.environ, host_env, clear=True),
+            ):
+                env = runtime._command_env({"CUSTOM": "ok", "OPENAI_API_KEY": "sk-test-secret-value"})
+
+            self.assertEqual(env.get("Path"), host_env["Path"])
+            self.assertEqual(env.get("PATHEXT"), host_env["PATHEXT"])
+            self.assertEqual(env.get("SystemRoot"), host_env["SystemRoot"])
+            self.assertEqual(env.get("ComSpec"), host_env["ComSpec"])
+            self.assertEqual(env.get("CUSTOM"), "ok")
+            self.assertEqual(env.get("HOME"), str(runtime.command_home_dir()))
+            self.assertEqual(env.get("TEMP"), str(runtime.command_tmp_dir()))
+            self.assertEqual(env.get("TMP"), str(runtime.command_tmp_dir()))
+            self.assertNotIn("INCLUDE", env)
+            self.assertNotIn("LIB", env)
+            self.assertNotIn("LIBPATH", env)
+            self.assertNotIn("WindowsSdkDir", env)
+            self.assertNotIn("VCToolsInstallDir", env)
+            self.assertNotIn("VSCMD_ARG_TGT_ARCH", env)
+            self.assertNotIn("UNRELATED", env)
+            self.assertNotIn("VSCMD_SECRET", env)
+            self.assertNotIn("OPENAI_API_KEY", env)
+            self.assertTrue(runtime.command_home_dir().is_dir())
+            self.assertTrue(runtime.command_tmp_dir().is_dir())
+            self.assertTrue(runtime.cache_dir.is_dir())
+            self.assertFalse((workspace / ".coding-tools").exists())
+
+    def test_command_env_uses_external_home_tmp_and_cache_without_ecosystem_cache_vars(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime = Runtime(workspace, shell_env_policy=ShellEnvPolicy(inherit="all"))
+            host_env = {
+                "PATH": "/usr/bin",
+                "MAVEN_USER_HOME": "/host/m2",
+                "GRADLE_USER_HOME": "/host/gradle",
+                "npm_config_cache": "/host/npm",
+                "PIP_CACHE_DIR": "/host/pip",
+                "GOCACHE": "/host/go-build",
+                "GOMODCACHE": "/host/go-mod",
+                "CARGO_HOME": "/host/cargo",
+                "RUSTUP_HOME": "/host/rustup",
+            }
+            with patch.dict(server_module.os.environ, host_env, clear=True):
+                env = runtime._command_env({})
+
+            self.assertEqual(env.get("HOME"), str(runtime.command_home_dir()))
+            self.assertEqual(env.get("TMPDIR"), str(runtime.command_tmp_dir()))
+            self.assertEqual(runtime.runtime_dir.parent.parent, runtime_parent_root())
+            for key in (
+                "MAVEN_USER_HOME",
+                "GRADLE_USER_HOME",
+                "npm_config_cache",
+                "PIP_CACHE_DIR",
+                "GOCACHE",
+                "GOMODCACHE",
+                "CARGO_HOME",
+                "RUSTUP_HOME",
+            ):
+                self.assertNotIn(key, env)
+            self.assertTrue(runtime.cache_dir.is_dir())
+            self.assertFalse((workspace / ".coding-tools").exists())
+
+    def test_runtime_and_server_info_do_not_create_exec_dirs(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime = Runtime(workspace)
+            self.assertFalse((workspace / ".coding-tools").exists())
+            self.assertFalse(runtime.runtime_dir.exists())
+
+            info = runtime.server_info_payload()
+            self.assertEqual(info.get("runtime_dir"), str(runtime.runtime_dir))
+            self.assertEqual(info.get("home"), str(runtime.command_home_dir()))
+            self.assertFalse((workspace / ".coding-tools").exists())
+            self.assertFalse(runtime.runtime_dir.exists())
+
+            check = runtime.check_exec_environment({})
+            self.assertTrue(check.get("ok"))
+            self.assertEqual(check.get("runtime_dir"), str(runtime.runtime_dir))
+            self.assertEqual(check.get("cache_dir"), str(runtime.cache_dir))
+            self.assertFalse((workspace / ".coding-tools").exists())
+            self.assertFalse(runtime.runtime_dir.exists())
+
+    def test_server_info_and_check_exec_environment_expose_exec_state(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime = Runtime(workspace)
+            info = runtime.server_info_payload()
+            self.assertEqual(info.get("permission_mode"), "safe")
+            self.assertEqual(info.get("runtime_dir"), str(runtime.runtime_dir))
+            self.assertEqual(info.get("home"), str(runtime.command_home_dir()))
+            self.assertEqual(info.get("tmpdir"), str(runtime.command_tmp_dir()))
+            self.assertEqual(info.get("cache_dir"), str(runtime.cache_dir))
+            self.assertEqual(info.get("network_allowed"), False)
+            self.assertIsInstance(info.get("landlock"), dict)
+            self.assertEqual(info.get("exec_policy", {}).get("shell_expansion"), "blocked")
+            self.assertEqual(info.get("exec_policy", {}).get("inline_script"), "blocked")
+            self.assertEqual(info.get("exec_policy", {}).get("global_tmp_write"), "blocked")
+            check = runtime.check_exec_environment({})
+            self.assertTrue(check.get("ok"))
+            self.assertEqual(check.get("permission_mode"), "safe")
+            self.assertEqual(check.get("runtime_dir"), str(runtime.runtime_dir))
+            self.assertEqual(check.get("home"), str(runtime.command_home_dir()))
+
+    def test_permission_modes_apply_expected_gates(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            safe = Runtime(workspace)
+            with self.assertRaises(ToolFailure):
+                safe._check_command_policy("python3 -c \"print(1)\"", {})
+            with self.assertRaises(ToolFailure):
+                safe._check_command_policy("echo $(pwd)", {})
+            with self.assertRaises(ToolFailure):
+                safe._check_command_policy("curl https://example.com", {})
+
+            trusted = Runtime(workspace, permission_mode="trusted")
+            trusted._check_command_policy("python3 -c \"print(1)\"", {})
+            trusted._check_command_policy("echo $(pwd)", {})
+            trusted._check_command_policy("curl https://example.com", {})
+            self.assertEqual(trusted.global_tmp_write_policy(), "tmp-prefix")
+            self.assertEqual(trusted.command_tmp_dir().parent, trusted.runtime_dir)
+            self.assertEqual(trusted.runtime_dir.parent.parent, runtime_parent_root())
+            with self.assertRaises(ToolFailure):
+                trusted._check_command_policy("git reset --hard", {})
+
+            dangerous = Runtime(workspace, permission_mode="dangerous")
+            dangerous._check_command_policy("cat /etc/passwd", {})
+            dangerous._check_command_policy("git reset --hard", {})
+            self.assertFalse(dangerous.landlock_enabled())
+            self.assertEqual(dangerous.global_tmp_write_policy(), "allowed")
+
+    def test_command_env_all_preserves_toolchain_environment_but_filters_sensitive_values(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime = Runtime(workspace, shell_env_policy=ShellEnvPolicy(inherit="all"))
+            host_env = {
+                "PATH": "/toolchain/bin:/usr/bin",
+                "INCLUDE": r"C:\VS\VC\Tools\MSVC\include",
+                "LIB": r"C:\VS\VC\Tools\MSVC\lib",
+                "LIBPATH": r"C:\VS\VC\Tools\MSVC\libpath",
+                "CUDA_PATH": "/opt/cuda",
+                "ONEAPI_ROOT": "/opt/intel/oneapi",
+                "OPENAI_API_KEY": "sk-test-secret-value",
+                "PYTHONPATH": "/tmp/injected",
+                "DYLD_LIBRARY_PATH": "/tmp/injected",
+            }
+            with patch.dict(server_module.os.environ, host_env, clear=True):
+                env = runtime._command_env({})
+
+            self.assertEqual(env.get("INCLUDE"), host_env["INCLUDE"])
+            self.assertEqual(env.get("LIB"), host_env["LIB"])
+            self.assertEqual(env.get("LIBPATH"), host_env["LIBPATH"])
+            self.assertEqual(env.get("CUDA_PATH"), host_env["CUDA_PATH"])
+            self.assertEqual(env.get("ONEAPI_ROOT"), host_env["ONEAPI_ROOT"])
+            self.assertNotIn("OPENAI_API_KEY", env)
+            self.assertNotIn("PYTHONPATH", env)
+            self.assertNotIn("DYLD_LIBRARY_PATH", env)
+
+    def test_command_env_dangerous_all_preserves_sensitive_inherited_environment(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                Path(tmp),
+                dangerously_skip_all_permissions=True,
+                shell_env_policy=ShellEnvPolicy(inherit="all"),
+            )
+            host_env = {
+                "OPENAI_API_KEY": "sk-test-secret-value",
+                "LD_PRELOAD": "/tmp/injected.so",
+            }
+            with patch.dict(server_module.os.environ, host_env, clear=True):
+                env = runtime._command_env({})
+
+            self.assertEqual(env.get("OPENAI_API_KEY"), "sk-test-secret-value")
+            self.assertEqual(env.get("LD_PRELOAD"), "/tmp/injected.so")
+
+    def test_runtime_root_stays_posix_tmp_when_process_tmpdir_is_workspace_local(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX /tmp semantics do not apply on Windows")
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            drifted_tmp = workspace / ".coding-tools" / "tmp"
+            drifted_tmp.mkdir(parents=True)
+            with patch.dict(server_module.os.environ, {"TMPDIR": str(drifted_tmp)}, clear=True):
+                safe = Runtime(workspace)
+                trusted = Runtime(workspace, permission_mode="trusted")
+            self.assertEqual(safe.runtime_dir.parent.parent, runtime_parent_root())
+            self.assertEqual(trusted.runtime_dir.parent.parent, runtime_parent_root())
+            self.assertEqual(safe.command_tmp_dir().parent, safe.runtime_dir)
+            self.assertEqual(trusted.command_tmp_dir().parent, trusted.runtime_dir)
+
+    def test_command_env_include_exclude_and_set_are_applied_in_order(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(
+                Path(tmp),
+                shell_env_policy=ShellEnvPolicy(
+                    inherit="all",
+                    include_only=("PATH", "KEEP_*", "SET_BY_POLICY"),
+                    exclude=("KEEP_DROP",),
+                    set={"SET_BY_POLICY": "configured"},
+                ),
+            )
+            host_env = {
+                "PATH": "/usr/bin",
+                "KEEP_THIS": "yes",
+                "KEEP_DROP": "no",
+                "OTHER": "drop",
+            }
+            with patch.dict(server_module.os.environ, host_env, clear=True):
+                env = runtime._command_env({})
+
+            self.assertEqual(env.get("PATH"), "/usr/bin")
+            self.assertEqual(env.get("KEEP_THIS"), "yes")
+            self.assertEqual(env.get("SET_BY_POLICY"), "configured")
+            self.assertNotIn("KEEP_DROP", env)
+            self.assertNotIn("OTHER", env)
+
     def test_command_policy_unwraps_env_before_path_checks(self) -> None:
         with TemporaryDirectory() as tmp:
             runtime = Runtime(Path(tmp))
@@ -122,7 +463,7 @@ class RuntimeHelperTests(unittest.TestCase):
             runtime = Runtime(Path(tmp))
             original = server_module.open_landlock_ruleset
 
-            def unavailable(_workspace: Path, _read_roots: list[str]) -> int:
+            def unavailable(_workspace: Path, _read_roots: list[str], **_kwargs: object) -> int:
                 raise ToolFailure("SANDBOX_UNAVAILABLE", "test landlock unavailable", category="security")
 
             server_module.open_landlock_ruleset = unavailable
@@ -138,39 +479,8 @@ class RuntimeHelperTests(unittest.TestCase):
     def test_exec_command_uses_landlock_wrapper_without_preexec_fn(self) -> None:
         with TemporaryDirectory() as tmp:
             runtime = Runtime(Path(tmp))
-            read_fd, write_fd = os.pipe()
-            original_open = server_module.open_landlock_ruleset
-            original_popen = server_module.subprocess.Popen
-            original_watchdog = server_module.start_session_watchdog
-            captured: dict[str, object] = {}
-
-            class FakeProcess:
-                stdin = None
-                stdout = None
-                stderr = None
-                pid = 1
-
-                def poll(self) -> int:
-                    return 0
-
-            def fake_open(_workspace: Path, _read_roots: list[str]) -> int:
-                return read_fd
-
-            def fake_popen(*args: object, **kwargs: object) -> FakeProcess:
-                captured["args"] = args
-                captured["kwargs"] = kwargs
-                return FakeProcess()
-
-            server_module.open_landlock_ruleset = fake_open
-            server_module.subprocess.Popen = fake_popen  # type: ignore[method-assign]
-            server_module.start_session_watchdog = lambda _session: None
-            try:
+            with fake_landlock_exec() as captured:
                 runtime.exec_command({"cmd": "printf ok", "timeout_ms": 5000, "yield_time_ms": 0})
-            finally:
-                server_module.open_landlock_ruleset = original_open
-                server_module.subprocess.Popen = original_popen  # type: ignore[method-assign]
-                server_module.start_session_watchdog = original_watchdog
-                os.close(write_fd)
 
             kwargs = captured["kwargs"]
             self.assertIsInstance(kwargs, dict)
@@ -180,12 +490,22 @@ class RuntimeHelperTests(unittest.TestCase):
                 self.assertIn("creationflags", kwargs)
             else:
                 self.assertIn("start_new_session", kwargs)
-            self.assertEqual(kwargs.get("pass_fds"), (read_fd,))
+            self.assertEqual(kwargs.get("pass_fds"), (captured["read_fd"],))
+            self.assertEqual(captured.get("write_roots"), [runtime.runtime_dir])
             popen_args = captured["args"]
             self.assertIsInstance(popen_args, tuple)
             argv = popen_args[0]
             self.assertIsInstance(argv, list)
             self.assertTrue(str(argv[1]).endswith("landlock_exec.py"))
+
+    def test_exec_command_passes_runtime_write_root_to_landlock(self) -> None:
+        for permission_mode in ("safe", "trusted"):
+            with self.subTest(permission_mode=permission_mode), TemporaryDirectory() as tmp:
+                runtime = Runtime(Path(tmp), permission_mode=permission_mode)
+                with fake_landlock_exec() as captured:
+                    runtime.exec_command({"cmd": "printf ok", "timeout_ms": 5000, "yield_time_ms": 0})
+
+                self.assertEqual(captured.get("write_roots"), [runtime.runtime_dir])
 
     def test_dangerously_skip_all_permissions_auto_grants_permission_gates(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -212,6 +532,114 @@ class RuntimeHelperTests(unittest.TestCase):
             dangerous_env = dangerous_runtime._command_env({"OPENAI_API_KEY": "sk-test-secret-value"})
             self.assertNotIn("OPENAI_API_KEY", filtered_env)
             self.assertEqual(dangerous_env.get("OPENAI_API_KEY"), "sk-test-secret-value")
+
+    def test_landlock_device_access_includes_truncate_and_ioctl_bits(self) -> None:
+        handled = server_module.landlock_handled_access(5)
+        device_access = server_module.landlock_device_access(handled)
+        self.assertTrue(device_access & LANDLOCK_ACCESS_FS_WRITE_FILE)
+        self.assertTrue(device_access & LANDLOCK_ACCESS_FS_TRUNCATE)
+        self.assertTrue(device_access & LANDLOCK_ACCESS_FS_IOCTL_DEV)
+
+    def test_guard_allow_roots_include_dns_toolchain_path_and_java_home(self) -> None:
+        with TemporaryDirectory() as tmp:
+            java_home = Path(tmp) / "jdk"
+            explicit_root = Path(tmp) / "explicit-root"
+            private_path_dir = Path(tmp) / "bin"
+            java_home.mkdir()
+            explicit_root.mkdir()
+            private_path_dir.mkdir()
+            with patch.dict(
+                server_module.os.environ,
+                {
+                    "PATH": str(private_path_dir),
+                    "JAVA_HOME": str(java_home),
+                    "CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS": str(explicit_root),
+                },
+                clear=True,
+            ):
+                roots = set(guard_allow_roots())
+        self.assertIn("/etc/resolv.conf", roots)
+        self.assertIn("/etc/hosts", roots)
+        self.assertIn("/usr", roots)
+        self.assertIn("/usr/local/sdkman/candidates", roots)
+        self.assertIn("/etc/gitconfig", roots)
+        self.assertIn("/etc/gitconfig.d", roots)
+        self.assertIn(str(java_home.resolve()), roots)
+        self.assertIn(str(explicit_root.resolve()), roots)
+        self.assertNotIn(str(private_path_dir.resolve()), roots)
+
+    def test_safe_exec_git_init_and_local_config_reads_system_git_config_roots(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is not available")
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            runtime = Runtime(workspace)
+            with patch.dict(server_module.os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True):
+                self.assertNotIn("GIT_CONFIG_NOSYSTEM", runtime._command_env({}))
+                result = runtime.exec_command(
+                    {
+                        "cmd": (
+                            "git init -q tmp-git-repo && "
+                            "git -C tmp-git-repo config user.email test@example.invalid && "
+                            "git -C tmp-git-repo config user.name Test"
+                        ),
+                        "timeout_ms": 10000,
+                        "yield_time_ms": 30000,
+                        "max_output_bytes": 20000,
+                    }
+                )
+        self.assertEqual(result.get("status"), "exited", result)
+        self.assertEqual(result.get("exit_code"), 0, result)
+        self.assertNotIn("unable to access '/etc/gitconfig'", str(result.get("stderr", "")))
+
+    def test_exec_diagnostics_classify_common_failures(self) -> None:
+        self.assertEqual(
+            exec_output_diagnostics({"stderr": "mvn: cannot create /dev/null: Permission denied"})[0]["code"],
+            "DEV_NULL_DENIED",
+        )
+        self.assertEqual(
+            exec_output_diagnostics({"stderr": "curl: (6) Could not resolve host: example.com"})[0]["code"],
+            "DNS_RESOLUTION_FAILED",
+        )
+        self.assertEqual(
+            exec_output_diagnostics({"status": "timeout", "timed_out": True})[0]["code"],
+            "COMMAND_TIMED_OUT",
+        )
+        self.assertEqual(
+            exec_output_diagnostics({"truncated": True})[0]["code"],
+            "OUTPUT_TRUNCATED",
+        )
+
+    def test_exec_diagnostics_do_not_treat_maven_home_as_unwritable_home(self) -> None:
+        output = """warning: unable to access '/etc/gitconfig': Permission denied
+fatal: unknown error occurred while reading the configuration files
+Maven home: /usr/share/maven
+"""
+        codes = [item["code"] for item in exec_output_diagnostics({"stderr": output})]
+        self.assertIn("LANDLOCK_READ_ROOT_BLOCKED", codes)
+        self.assertNotIn("HOME_NOT_WRITABLE", codes)
+
+    def test_exec_diagnostics_treat_eacces_home_path_as_unwritable_home(self) -> None:
+        output = "Error: EACCES: permission denied, mkdir '/work/.coding-tools/home/.cache'"
+        codes = [item["code"] for item in exec_output_diagnostics({"stderr": output})]
+        self.assertIn("HOME_NOT_WRITABLE", codes)
+
+    def test_permission_failure_diagnostics_classify_policy_gates(self) -> None:
+        cases = [
+            ("network", "NETWORK_PERMISSION_REQUIRED"),
+            ("shell_expansion", "SHELL_EXPANSION_PERMISSION_REQUIRED"),
+            ("inline_script", "INLINE_SCRIPT_PERMISSION_REQUIRED"),
+            ("sensitive_env", "SECRET_ENV_REJECTED"),
+        ]
+        for permission, expected in cases:
+            with self.subTest(permission=permission):
+                exc = ToolFailure(
+                    "PERMISSION_REQUIRED",
+                    "test",
+                    category="permission",
+                    details={"permission": permission},
+                )
+                self.assertEqual(permission_failure_diagnostics(exc)[0]["code"], expected)
 
     def test_tool_profiles_filter_tools_and_compat_annotations(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -74,6 +74,8 @@ Main workflow:
 .github/workflows/compliance.yml
 ```
 
+The main workflow also includes a `windows-msvc-smoke` job. It initializes the Visual Studio C++ environment with `vcvarsall.bat x64`, then verifies that `exec_command` keeps the default `core` environment narrow and that `--shell-env-inherit all` can compile and run a single-file `cl.exe` smoke test.
+
 Manual SWE-bench workflow:
 
 ```text
@@ -89,3 +91,12 @@ Manual real-workload workflow:
 ```
 
 The manual `real-workloads` workflow installs Python, Node, Go, and Rust toolchains, runs `make benchmark-real-workloads`, and uploads `reports/benchmark/real-workloads**`.
+
+Docker workflows:
+
+```text
+.github/workflows/docker-image.yml
+.github/workflows/docker-smoke.yml
+```
+
+`docker-image` builds and publishes the sandbox image to GHCR. `docker-smoke` builds the image, starts `coding-tools-mcp --permission-mode trusted` in a container, verifies MCP metadata and `tools/list`, checks `server_info`, and runs explicit `exec_command` toolchain version commands.

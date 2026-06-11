@@ -1,0 +1,198 @@
+name: start-sandbox
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Docker image that contains coding-tools-mcp.
+        required: false
+        type: string
+        default: ghcr.io/xytom/coding-tools-mcp-sandbox:latest
+      port:
+        description: Local MCP port exposed on the GitHub Actions runner.
+        required: false
+        type: number
+        default: 8765
+      permission_mode:
+        description: coding-tools-mcp permission mode.
+        required: false
+        type: string
+        default: trusted
+      tool_profile:
+        description: coding-tools-mcp tool profile.
+        required: false
+        type: string
+        default: full
+      checkout_repository:
+        description: Check out the caller repository into /workspace before starting the sandbox.
+        required: false
+        type: boolean
+        default: true
+      timeout_minutes:
+        description: Maximum sandbox lifetime.
+        required: false
+        type: number
+        default: 120
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Docker image that contains coding-tools-mcp.
+        required: true
+        type: string
+        default: ghcr.io/xytom/coding-tools-mcp-sandbox:latest
+      port:
+        description: Local MCP port exposed on the GitHub Actions runner.
+        required: true
+        type: number
+        default: 8765
+      permission_mode:
+        description: coding-tools-mcp permission mode.
+        required: true
+        type: choice
+        options:
+          - safe
+          - trusted
+          - dangerous
+        default: trusted
+      tool_profile:
+        description: coding-tools-mcp tool profile.
+        required: true
+        type: choice
+        options:
+          - full
+          - read-only
+          - compat-readonly-all
+        default: full
+      checkout_repository:
+        description: Check out this repository into /workspace before starting the sandbox.
+        required: true
+        type: boolean
+        default: true
+      timeout_minutes:
+        description: Maximum sandbox lifetime.
+        required: true
+        type: number
+        default: 120
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: start-sandbox-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sandbox:
+    name: Start coding-tools-mcp sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - name: Check out caller repository
+        if: ${{ inputs.checkout_repository }}
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Install cloudflared
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Prepare sandbox credentials
+        id: credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(python3 - <<'PY'
+          import secrets
+          print(secrets.token_urlsafe(32))
+          PY
+          )"
+          git_config="$RUNNER_TEMP/coding-tools-mcp-gitconfig"
+          {
+            echo '[safe]'
+            echo 'directory = /workspace'
+          } > "$git_config"
+          echo "mcp_token=$token" >> "$GITHUB_OUTPUT"
+          echo "git_config=$git_config" >> "$GITHUB_OUTPUT"
+
+      - name: Start coding-tools-mcp container
+        env:
+          IMAGE: ${{ inputs.image }}
+          MCP_PORT: ${{ inputs.port }}
+          MCP_TOKEN: ${{ steps.credentials.outputs.mcp_token }}
+          PERMISSION_MODE: ${{ inputs.permission_mode }}
+          TOOL_PROFILE: ${{ inputs.tool_profile }}
+          GIT_CONFIG: ${{ steps.credentials.outputs.git_config }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker rm -f coding-tools-mcp-sandbox >/dev/null 2>&1 || true
+          shell_env_set='{"CARGO_HOME":"/usr/local/cargo","RUSTUP_HOME":"/usr/local/rustup","GIT_CONFIG_GLOBAL":"/etc/coding-tools-mcp/gitconfig"}'
+          docker run -d --rm \
+            --name coding-tools-mcp-sandbox \
+            -p "127.0.0.1:${MCP_PORT}:${MCP_PORT}" \
+            -e CODING_TOOLS_MCP_PORT="$MCP_PORT" \
+            -e CODING_TOOLS_MCP_AUTH_TOKEN="$MCP_TOKEN" \
+            -e CODING_TOOLS_MCP_PERMISSION_MODE="$PERMISSION_MODE" \
+            -e CODING_TOOLS_MCP_TOOL_PROFILE="$TOOL_PROFILE" \
+            -e CODING_TOOLS_MCP_EXEC_ALLOW_ROOTS=/etc/java-17-openjdk:/etc/maven:/etc/coding-tools-mcp \
+            -e CODING_TOOLS_MCP_SHELL_ENV_SET="$shell_env_set" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$GIT_CONFIG:/etc/coding-tools-mcp/gitconfig:ro" \
+            "$IMAGE"
+
+      - name: Wait for MCP server
+        env:
+          MCP_PORT: ${{ inputs.port }}
+          MCP_TOKEN: ${{ steps.credentials.outputs.mcp_token }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            if curl -fsS \
+              -H "Authorization: Bearer $MCP_TOKEN" \
+              "http://127.0.0.1:$MCP_PORT/mcp" >/tmp/coding-tools-mcp-card.json; then
+              python3 -m json.tool /tmp/coding-tools-mcp-card.json
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs coding-tools-mcp-sandbox || true
+          exit 1
+
+      - name: Print connection details
+        env:
+          MCP_PORT: ${{ inputs.port }}
+          MCP_TOKEN: ${{ steps.credentials.outputs.mcp_token }}
+          PERMISSION_MODE: ${{ inputs.permission_mode }}
+          TOOL_PROFILE: ${{ inputs.tool_profile }}
+        run: |
+          cat <<EOF
+          coding-tools-mcp sandbox is ready.
+
+          Local runner endpoint: http://127.0.0.1:$MCP_PORT/mcp
+          Public tunnel endpoint: use the HTTPS hostname printed by cloudflared below, plus /mcp
+          Header: Authorization: Bearer $MCP_TOKEN
+          Permission mode: $PERMISSION_MODE
+          Tool profile: $TOOL_PROFILE
+
+          To push to the caller repository, the caller workflow must grant contents: write.
+          actions/checkout persisted the caller repository credential when checkout_repository=true.
+          Keep this job running while your MCP client is connected; cancel the workflow to tear it down.
+          EOF
+
+      - name: Open cloudflared tunnel
+        env:
+          MCP_PORT: ${{ inputs.port }}
+        run: |
+          set -euo pipefail
+          cloudflared tunnel --no-autoupdate --url "http://127.0.0.1:$MCP_PORT"
+
+      - name: Stop sandbox
+        if: always()
+        run: docker rm -f coding-tools-mcp-sandbox >/dev/null 2>&1 || true
