@@ -16,6 +16,7 @@ The normative schema source is [profile-v0.1.md](profile-v0.1.md). Live schemas 
 - `exec_command`: run a bounded command under policy, with Landlock confinement when available.
 - `write_stdin`: write to a live server-managed command session.
 - `kill_session`: terminate a server-managed command session.
+- `read_output`: page retained stdout or stderr by stream-specific `output_ref`.
 - `git_status`: inspect git status.
 - `git_diff`: inspect unified diff.
 - `git_log`: inspect recent commits.
@@ -26,7 +27,7 @@ The normative schema source is [profile-v0.1.md](profile-v0.1.md). Live schemas 
 
 Every tool returns `content`, `structuredContent`, and `isError`. Tool execution failures use `isError: true` with structured error details.
 
-`exec_command` results preserve raw `stdout`, `stderr`, and `exit_code`. They may also include `diagnostics`, a lightweight machine-readable list of common failure attributions such as `DEV_NULL_DENIED`, `DNS_RESOLUTION_FAILED`, `NETWORK_PERMISSION_REQUIRED`, `SHELL_EXPANSION_PERMISSION_REQUIRED`, `INLINE_SCRIPT_PERMISSION_REQUIRED`, `COMMAND_TIMED_OUT`, and `OUTPUT_TRUNCATED`.
+`exec_command` results preserve raw `stdout`, `stderr`, and `exit_code` by default. Callers may request compact `summary` or `preview` verbosity and retrieve retained stdout/stderr independently with `read_output` using `output_refs`. Results may also include `diagnostics`, a lightweight machine-readable list of common failure attributions such as `DEV_NULL_DENIED`, `DNS_RESOLUTION_FAILED`, `NETWORK_PERMISSION_REQUIRED`, `SHELL_EXPANSION_PERMISSION_REQUIRED`, `INLINE_SCRIPT_PERMISSION_REQUIRED`, `COMMAND_TIMED_OUT`, and `OUTPUT_TRUNCATED`.
 
 ## Tool Profiles
 

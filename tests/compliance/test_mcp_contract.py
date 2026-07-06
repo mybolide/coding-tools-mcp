@@ -101,6 +101,7 @@ class MCPContractTests(ComplianceTestCase):
             "exec_command": (False, True, False, True),
             "write_stdin": (False, False, False, False),
             "kill_session": (False, True, False, False),
+            "read_output": (True, False, True, False),
             "git_status": (True, False, True, False),
             "git_diff": (True, False, True, False),
             "git_log": (True, False, True, False),

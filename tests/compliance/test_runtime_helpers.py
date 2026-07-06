@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -27,6 +28,7 @@ from coding_tools_mcp.server import (
     truncate_text_head,
     truncate_text_tail,
 )
+from tests.compliance.fixtures import git_fixture_preflight_error, init_git
 
 
 @contextmanager
@@ -656,6 +658,7 @@ Maven home: /usr/share/maven
             self.assertIn("server_info", read_only_names)
             self.assertIn("set_default_cwd", read_only_names)
             self.assertIn("git_blame", read_only_names)
+            self.assertIn("read_output", read_only_names)
             self.assertNotIn("apply_patch", read_only_names)
             self.assertNotIn("exec_command", read_only_names)
             self.assertNotIn("write_stdin", read_only_names)
@@ -669,6 +672,89 @@ Maven home: /usr/share/maven
                 self.assertIs(annotations.get("readOnlyHint"), True)
                 self.assertIs(annotations.get("destructiveHint"), False)
                 self.assertIs(annotations.get("openWorldHint"), False)
+
+    def test_exec_command_compact_preview_and_read_output(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp), permission_mode="trusted")
+            result = runtime.exec_command(
+                {
+                    "cmd": "printf 'alpha\nbeta\n'",
+                    "timeout_ms": 5000,
+                    "yield_time_ms": 30000,
+                    "verbosity": "preview",
+                    "preview_bytes": 64,
+                }
+            )
+            self.assertEqual(result.get("status"), "exited", result)
+            self.assertEqual(result.get("exit_code"), 0, result)
+            self.assertIn("summary", result)
+            self.assertIn("preview", result)
+            self.assertIn("output_ref", result)
+            self.assertIn("output_refs", result)
+            self.assertEqual(result.get("output_stream"), "stdout")
+            self.assertNotIn("stdout", result)
+            page = runtime.read_output({"output_ref": result["output_ref"], "offset": 0, "limit": 128})
+            self.assertIn("alpha", page.get("content", ""))
+            self.assertIn("beta", page.get("content", ""))
+            self.assertEqual(page.get("stream"), "stdout")
+            self.assertIsNone(page.get("next_offset"))
+
+    def test_read_output_pages_streams_independently(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp), permission_mode="trusted")
+            script = (
+                "import sys,time;"
+                "sys.stderr.write('err1\\nerr2\\n'); sys.stderr.flush();"
+                "sys.stdout.write('out1\\n'); sys.stdout.flush();"
+                "time.sleep(0.4);"
+                "sys.stdout.write('out2\\n'); sys.stdout.flush();"
+                "time.sleep(1)"
+            )
+            result = runtime.exec_command(
+                {
+                    "cmd": f"{sys.executable} -c {script!r}",
+                    "timeout_ms": 5000,
+                    "yield_time_ms": 100,
+                    "verbosity": "preview",
+                    "preview_bytes": 64,
+                }
+            )
+            self.assertEqual(result.get("status"), "running", result)
+            output_refs = result.get("output_refs")
+            self.assertIsInstance(output_refs, dict)
+            stderr_ref = output_refs["stderr"]
+
+            first: dict[str, object] = {}
+            for _ in range(10):
+                first = runtime.read_output({"output_ref": stderr_ref, "offset": 0, "limit": 5})
+                if first.get("content"):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(first.get("content"), "err1\n")
+            self.assertEqual(first.get("next_offset"), 5)
+            time.sleep(0.6)
+            second = runtime.read_output({"output_ref": stderr_ref, "offset": first["next_offset"], "limit": 64})
+            self.assertEqual(second.get("offset"), first.get("next_offset"))
+            self.assertEqual(second.get("content"), "err2\n")
+            self.assertNotIn("out2", second.get("content", ""))
+            runtime.kill_session({"session_id": result["session_id"], "wait_ms": 1000})
+
+    def test_read_output_uses_absolute_stream_offsets_after_buffer_drop(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp), permission_mode="trusted")
+            # The context manager closes the stdout/stderr pipes and waits, so
+            # the test does not leak pipe file objects (ResourceWarning).
+            with subprocess.Popen([sys.executable, "-c", ""], stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+                session = server_module.ExecSession(session_id="manual-output", process=process, buffer_limit=4)
+                session.append_stdout(b"abcdef")
+                runtime._remember_output_session(session)
+
+                page = runtime.read_output({"output_ref": "session:manual-output:stdout", "offset": 0, "limit": 10})
+                self.assertEqual(page.get("offset"), 2)
+                self.assertEqual(page.get("requested_offset"), 0)
+                self.assertEqual(page.get("content"), "cdef")
+                self.assertEqual(page.get("omitted_bytes"), 2)
+                self.assertEqual(page.get("retained_start_offset"), 2)
 
     def test_default_cwd_and_git_convenience_tools(self) -> None:
         if server_module.shutil.which("git") is None:
@@ -708,6 +794,108 @@ Maven home: /usr/share/maven
 
             with self.assertRaises(ToolFailure):
                 runtime.set_default_cwd({"path": "../outside"})
+
+    def test_boundary_regressions_for_aliases_and_command_scanning(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "nested").mkdir()
+            (workspace / "sample.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            runtime = Runtime(workspace, permission_mode="trusted")
+
+            cwd_result = runtime.exec_command(
+                {"cmd": "pwd", "cwd": "nested", "timeout_ms": 5000, "max_output_bytes": 4096}
+            )
+            self.assertEqual(cwd_result.get("exit_code"), 0)
+            self.assertEqual(Path(str(cwd_result.get("stdout", "")).strip()).name, "nested")
+
+            with self.assertRaises(ToolFailure):
+                runtime.exec_command({"cmd": "pwd", "workdir": ".", "cwd": "nested"})
+
+            read = runtime.read_file({"path": "sample.txt", "start_line": 2, "max_lines": 1})
+            self.assertEqual(read.get("content"), "two\n")
+            self.assertEqual(read.get("end_line"), 2)
+
+            tag = "model" + "Version"
+            xml_heredoc = (
+                "cat > pom.xml <<'EOF'\n"
+                "<project>\n"
+                f"  <{tag}>4.0.0</{tag}>\n"
+                "</project>\n"
+                "EOF"
+            )
+            runtime.exec_command({"cmd": xml_heredoc, "timeout_ms": 5000, "max_output_bytes": 4096})
+            self.assertIn(tag, (workspace / "pom.xml").read_text(encoding="utf-8"))
+
+    def test_heredoc_payload_stripping_keeps_live_shell_code_scanned(self) -> None:
+        with TemporaryDirectory() as tmp:
+            runtime = Runtime(Path(tmp), permission_mode="trusted")
+
+            # Redirection target on the heredoc operator's own line is live code.
+            with self.assertRaises(ToolFailure) as ctx:
+                runtime.exec_command({"cmd": "cat <<EOF > /etc/cron.d/evil\nbody\nEOF"})
+            self.assertEqual(ctx.exception.details.get("path"), "/etc/cron.d/evil")
+
+            # Commands after the closing delimiter are live code.
+            with self.assertRaises(ToolFailure) as ctx:
+                runtime.exec_command(
+                    {"cmd": "cat <<'EOF'\nbody\nEOF\ncp /etc/shadow stolen.txt"}
+                )
+            self.assertEqual(ctx.exception.details.get("path"), "/etc/shadow")
+
+            # A here-string consumes only one word; chained commands stay live.
+            with self.assertRaises(ToolFailure) as ctx:
+                runtime.exec_command({"cmd": "grep x <<< hi && cat /etc/passwd"})
+            self.assertEqual(ctx.exception.details.get("path"), "/etc/passwd")
+
+    def test_git_helpers_use_command_environment(self) -> None:
+        preflight_error = git_fixture_preflight_error()
+        if preflight_error is not None:
+            self.skipTest(preflight_error)
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "repo"
+            workspace.mkdir()
+            (workspace / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+            init_git(workspace)
+
+            # GIT_TEST_ASSUME_DIFFERENT_OWNER makes git treat the repo as owned
+            # by another user, reproducing the dubious-ownership failure that
+            # motivated routing helper subprocesses through the command env.
+            probe = subprocess.run(
+                ["git", "-C", str(workspace), "rev-parse", "--show-toplevel"],
+                env={**os.environ, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if probe.returncode == 0:
+                self.skipTest("git does not honor GIT_TEST_ASSUME_DIFFERENT_OWNER")
+
+            def runtime_with_git_config(config: Path) -> Runtime:
+                return Runtime(
+                    workspace,
+                    shell_env_policy=ShellEnvPolicy(
+                        set={"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1", "GIT_CONFIG_GLOBAL": str(config)}
+                    ),
+                )
+
+            without_safe = root / "gitconfig-empty"
+            without_safe.write_text("", encoding="utf-8")
+            status = runtime_with_git_config(without_safe).git_status({"max_entries": 5})
+            self.assertFalse(status.get("is_repo"))
+            self.assertTrue(
+                any("dubious ownership" in warning for warning in status.get("warnings", [])),
+                status.get("warnings"),
+            )
+
+            with_safe = root / "gitconfig-safe"
+            with_safe.write_text(f"[safe]\n\tdirectory = {workspace.as_posix()}\n", encoding="utf-8")
+            runtime = runtime_with_git_config(with_safe)
+            status = runtime.git_status({"max_entries": 5})
+            self.assertTrue(status.get("is_repo"))
+            log = runtime.git_log({"max_count": 1})
+            self.assertTrue(log.get("is_repo"))
+            self.assertEqual(log.get("commits", [])[0].get("subject"), "baseline fixture")
 
 
 def file_path(name: str):

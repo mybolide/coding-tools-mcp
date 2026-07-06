@@ -33,6 +33,7 @@ REQUIRED_TOOLS = (
     "exec_command",
     "write_stdin",
     "kill_session",
+    "read_output",
     "git_status",
     "git_diff",
     "request_permissions",

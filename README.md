@@ -13,6 +13,7 @@ It is not a prompt wrapper. It does not expose external agent accounts, memory, 
 
 - [Quickstart](docs/quickstart.md)
 - [MCP client configuration](docs/mcp-client-config.md)
+- [Embedding in your app or agent](docs/embedding.md)
 - [Remote MCP](docs/remote-mcp.md)
 - [Tools and schemas](docs/tools-and-schemas.md)
 - [Permission modes](docs/permission-modes.md)

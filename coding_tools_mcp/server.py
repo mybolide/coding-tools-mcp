@@ -132,6 +132,9 @@ PERMISSION_MODE_CHOICES = tuple(PERMISSION_MODE_CAPABILITIES)
 # Documented kill_session status enum (docs/profile-v0.1.md); guarded by test_schema_drift.
 KILL_SESSION_STATUSES = ("terminated", "killed", "exited", "terminating", "not_found")
 POSIX_CORE_ENV_NAMES = {"PATH", "LANG", "LC_ALL", "TERM"}
+# Not POSIX core, but inherited under inherit="core" so git helper subprocesses and
+# exec_command share the host's global git config (e.g. safe.directory entries).
+GIT_ENV_NAMES = {"GIT_CONFIG_GLOBAL"}
 WINDOWS_CORE_ENV_NAMES = {"PATH", "PATHEXT", "COMSPEC", "SYSTEMROOT", "WINDIR"}
 NETWORK_RE = re.compile(
     r"(https?://|urllib\.request|urllib3|requests\.|http\.client|\bHTTPConnection\b|\bHTTPSConnection\b|socket\.|aiohttp|httpx|\bcurl\b|\bwget\b|\bnc\b|\bnetcat\b|\bssh\b|\bscp\b|\bftp\b)",
@@ -145,6 +148,8 @@ DESTRUCTIVE_RE = re.compile(
 MAX_HTTP_REQUEST_BYTES = 1_048_576
 MAX_JSON_RPC_BATCH_ITEMS = 50
 SESSION_BUFFER_BYTES = 1_048_576
+EXEC_PREVIEW_BYTES = 4096
+MAX_RETAINED_OUTPUT_SESSIONS = 128
 SHELL_CONTROL_TOKENS = {"|", "||", "&", "&&", ";", "(", ")"}
 REDIRECTION_TOKENS = {">", ">>", "<", "<>", ">&", "<&", "&>", "&>>"}
 HEREDOC_TOKENS = {"<<", "<<<"}
@@ -233,6 +238,11 @@ TOOLCHAIN_READ_ROOTS = (
     "/etc/localtime",
     "/etc/npmrc",
     "/usr/local/sdkman/candidates",
+)
+OS_METADATA_READ_FILES = (
+    "/etc/debian_version",
+    "/etc/os-release",
+    "/etc/lsb-release",
 )
 GIT_READ_ROOTS = (
     "/etc/gitconfig",
@@ -370,7 +380,7 @@ def is_core_command_env_name(name: str) -> bool:
     upper = name.upper()
     if os.name == "nt":
         return upper in WINDOWS_CORE_ENV_NAMES
-    return upper in POSIX_CORE_ENV_NAMES or upper.startswith("LC_")
+    return upper in POSIX_CORE_ENV_NAMES or upper in GIT_ENV_NAMES or upper.startswith("LC_")
 
 
 def split_env_patterns(value: str | None) -> tuple[str, ...]:
@@ -594,6 +604,13 @@ TOOL_REGISTRY: dict[str, ToolSpec] = {
         title="Kill session",
         description="Terminate a server-managed running command session.",
         destructive=True,
+    ),
+    "read_output": ToolSpec(
+        title="Read output",
+        description="Read retained stdout or stderr by output_ref with per-stream byte offset pagination.",
+        read_only=True,
+        idempotent=True,
+        in_read_only_profile=True,
     ),
     "git_status": ToolSpec(
         title="Git status",
@@ -1462,6 +1479,37 @@ class ExecSession:
                 break
             thread.join(timeout=remaining)
 
+    def retained_output_bytes(self) -> bytes:
+        with self.lock:
+            stdout = bytes(self.stdout)
+            stderr = bytes(self.stderr)
+        sections: list[bytes] = []
+        if stdout:
+            sections.extend([b"--- stdout ---\n", stdout])
+        if stderr:
+            if sections:
+                sections.append(b"\n")
+            sections.extend([b"--- stderr ---\n", stderr])
+        return b"".join(sections)
+
+    def retained_stream_bytes(self, stream: str) -> tuple[bytes, int, int, int]:
+        with self.lock:
+            if stream == "stdout":
+                return (
+                    bytes(self.stdout),
+                    self.stdout_start_offset,
+                    self.stdout_total_bytes,
+                    self.stdout_dropped_bytes,
+                )
+            if stream == "stderr":
+                return (
+                    bytes(self.stderr),
+                    self.stderr_start_offset,
+                    self.stderr_total_bytes,
+                    self.stderr_dropped_bytes,
+                )
+        raise ValueError(f"Unknown output stream: {stream}")
+
 
 class Runtime:
     def __init__(
@@ -1517,6 +1565,7 @@ class Runtime:
         self._pending_codes_lock = threading.Lock()
         self.default_cwd = self.workspace.root
         self.sessions: dict[str, ExecSession] = {}
+        self.output_sessions: dict[str, ExecSession] = {}
         self.sessions_lock = threading.Lock()
         self.http_session_id = secrets.token_urlsafe(24)
         self.patch_baselines: dict[str, str | None] = {}
@@ -1808,6 +1857,13 @@ class Runtime:
         max_bytes = int(args.get("max_bytes", 131072))
         start_line = int(args.get("start_line", 1))
         end_line = args.get("end_line")
+        max_lines = args.get("max_lines")
+        if end_line is not None and max_lines is not None:
+            calculated_end_line = start_line + int(max_lines) - 1
+            if int(end_line) != calculated_end_line:
+                raise ToolFailure("INVALID_ARGUMENT", "end_line and max_lines select different ranges.", category="validation")
+        if end_line is None and max_lines is not None:
+            end_line = start_line + int(max_lines) - 1
         encoding = args.get("encoding", "utf-8")
         if encoding != "utf-8":
             raise ToolFailure("UNSUPPORTED_ENCODING", "Only utf-8 is supported.", category="validation")
@@ -2348,7 +2404,10 @@ class Runtime:
         cmd = str(args.get("cmd", ""))
         if not cmd:
             raise ToolFailure("INVALID_ARGUMENT", "cmd is required.", category="validation")
-        workdir = self.resolve_existing(str(args.get("workdir", ".")))
+        workdir_arg = args.get("workdir", args.get("cwd", "."))
+        if "workdir" in args and "cwd" in args and str(args["workdir"]) != str(args["cwd"]):
+            raise ToolFailure("INVALID_ARGUMENT", "workdir and cwd refer to different directories.", category="validation")
+        workdir = self.resolve_existing(str(workdir_arg))
         if not workdir.path.is_dir():
             raise ToolFailure("NOT_A_DIRECTORY", "workdir is not a directory.", category="validation")
         self._check_command_policy(cmd, args)
@@ -2424,7 +2483,7 @@ class Runtime:
             payload["elapsed_ms"] = int((time.time() - start) * 1000)
             payload.update(extra)
             self._add_exec_diagnostics(payload)
-            return payload
+            return self._format_session_output(session, payload, args)
 
         while True:
             if process.poll() is not None:
@@ -2508,10 +2567,11 @@ class Runtime:
             payload["diagnostics"] = diagnostics
 
     def _check_command_paths(self, cmd: str) -> None:
+        scannable = strip_heredoc_payloads(cmd)
         try:
-            tokens = shlex_split(cmd)
+            tokens = shlex_split(scannable)
         except ValueError:
-            tokens = cmd.split()
+            tokens = scannable.split()
         for executable in command_executables(tokens):
             self._reject_setuid_executable(executable)
         for candidate in explicit_command_path_candidates(tokens):
@@ -2625,6 +2685,46 @@ class Runtime:
                 env[key_text] = value_text
         return env
 
+    def _git_env(self) -> dict[str, str]:
+        return self._command_env({})
+
+    def _run_git_text(self, cmd: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env=self._git_env(),
+        )
+
+    def _run_git_bytes(self, cmd: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            cmd,
+            text=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env=self._git_env(),
+        )
+
+    def _git_status_not_repo(self, completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+        warnings = []
+        stderr = completed.stderr.strip()
+        if stderr:
+            warnings.append(f"git rev-parse failed: {stderr}")
+        return {"is_repo": False, "clean": True, "entries": [], "truncated": False, "warnings": warnings}
+
+    def _is_git_repo(self, path: Path) -> bool:
+        completed = self._run_git_text(
+            [require_git(), "-C", str(path), "rev-parse", "--is-inside-work-tree"]
+        )
+        return completed.returncode == 0 and completed.stdout.strip() == "true"
+
+    def _git_rev_parse(self, path: Path, rev: str) -> str:
+        completed = self._run_git_text([require_git(), "-C", str(path), "rev-parse", rev])
+        return completed.stdout.strip() if completed.returncode == 0 else ""
+
     def _base_command_env(self) -> dict[str, str]:
         if self.shell_env_policy.inherit == "none":
             return {}
@@ -2650,6 +2750,139 @@ class Runtime:
             warnings=warnings or [],
         )
 
+    def _remember_output_session(self, session: ExecSession) -> None:
+        with self.sessions_lock:
+            self.output_sessions.pop(session.session_id, None)
+            self.output_sessions[session.session_id] = session
+            while len(self.output_sessions) > MAX_RETAINED_OUTPUT_SESSIONS:
+                oldest = next(iter(self.output_sessions))
+                self.output_sessions.pop(oldest, None)
+
+    def _get_output_session(self, session_id: str) -> ExecSession:
+        with self.sessions_lock:
+            session = self.sessions.get(session_id) or self.output_sessions.get(session_id)
+        if session is None:
+            raise ToolFailure("SESSION_NOT_FOUND", "Output session not found.", category="runtime")
+        return session
+
+    def _format_session_output(self, session: ExecSession, payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+        verbosity = str(args.get("verbosity", "")).strip().lower()
+        if not verbosity:
+            return payload
+        if verbosity not in {"summary", "preview", "full"}:
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                "verbosity must be one of: summary, preview, full.",
+                category="validation",
+            )
+        self._remember_output_session(session)
+        output_refs = {
+            "stdout": f"session:{session.session_id}:stdout",
+            "stderr": f"session:{session.session_id}:stderr",
+        }
+        output_stream = "stderr" if not payload.get("stdout") and payload.get("stderr") else "stdout"
+        output_ref = output_refs[output_stream]
+        payload["summary"] = self._session_output_summary(session, payload)
+        payload["output_ref"] = output_ref
+        payload["output_stream"] = output_stream
+        payload["output_refs"] = output_refs
+        if verbosity == "full":
+            return payload
+        compact = {
+            key: value
+            for key, value in payload.items()
+            if key
+            not in {
+                "stdout",
+                "stderr",
+                "stdout_truncated",
+                "stderr_truncated",
+                "stdout_truncated_by",
+                "stderr_truncated_by",
+                "stdout_output_lines",
+                "stderr_output_lines",
+                "stdout_output_bytes",
+                "stderr_output_bytes",
+                "stdout_omitted_bytes",
+                "stderr_omitted_bytes",
+            }
+        }
+        if verbosity == "preview":
+            preview_limit = int(args.get("preview_bytes", EXEC_PREVIEW_BYTES))
+            preview, preview_truncated = truncate_bytes(session.retained_output_bytes(), preview_limit)
+            compact["preview"] = preview
+            compact["preview_truncated"] = preview_truncated
+            compact["truncated"] = bool(compact.get("truncated") or preview_truncated)
+        return compact
+
+    def _session_output_summary(self, session: ExecSession, payload: dict[str, Any]) -> str:
+        retained = session.retained_output_bytes().decode("utf-8", errors="replace")
+        lines = retained.splitlines()
+        tail = next((line.strip() for line in reversed(lines) if line.strip()), "")
+        if len(tail) > 120:
+            tail = tail[:117] + "..."
+        elapsed = float(payload.get("elapsed_ms") or 0) / 1000.0
+        exit_code = payload.get("exit_code")
+        status = f"exit {exit_code}" if exit_code is not None else str(payload.get("status", "running"))
+        parts = [status, f"{elapsed:.1f}s", f"{len(lines)} lines"]
+        if tail:
+            parts.append(f"tail: {tail!r}")
+        return " | ".join(parts)
+
+    def read_output(self, args: dict[str, Any]) -> dict[str, Any]:
+        output_ref = str(args.get("output_ref", ""))
+        match = re.fullmatch(r"session:([^:]+):(full|stdout|stderr)", output_ref)
+        if not match:
+            raise ToolFailure(
+                "INVALID_ARGUMENT",
+                "output_ref must look like session:<id>:stdout or session:<id>:stderr.",
+                category="validation",
+            )
+        session = self._get_output_session(match.group(1))
+        session.refresh_status()
+        ref_stream = match.group(2)
+        requested_stream = str(args.get("stream", "") or "")
+        if requested_stream and requested_stream not in {"stdout", "stderr"}:
+            raise ToolFailure("INVALID_ARGUMENT", "stream must be stdout or stderr.", category="validation")
+        if ref_stream in {"stdout", "stderr"} and requested_stream and requested_stream != ref_stream:
+            raise ToolFailure("INVALID_ARGUMENT", "stream does not match output_ref.", category="validation")
+        stream = ref_stream if ref_stream in {"stdout", "stderr"} else requested_stream or "stdout"
+        data, retained_start_offset, total_stream_bytes, dropped_bytes = session.retained_stream_bytes(stream)
+        requested_offset = max(0, int(args.get("offset", 0)))
+        offset = max(requested_offset, retained_start_offset)
+        limit = max(1, min(int(args.get("limit", EXEC_PREVIEW_BYTES)), SESSION_BUFFER_BYTES))
+        buffer_offset = max(0, offset - retained_start_offset)
+        chunk = data[buffer_offset : buffer_offset + limit]
+        next_offset = offset + len(chunk) if offset + len(chunk) < total_stream_bytes else None
+        omitted_bytes = max(0, retained_start_offset - requested_offset)
+        warnings: list[str] = []
+        if omitted_bytes:
+            warnings.append(f"{stream} offset skipped dropped bytes")
+        if dropped_bytes:
+            warnings.append(f"older {stream} output was dropped from the rolling session buffer")
+        if ref_stream == "full":
+            warnings.append("legacy full output_ref defaults to stdout; use output_refs for stable stream paging")
+        return {
+            "output_ref": output_ref,
+            "stream_output_ref": f"session:{session.session_id}:{stream}",
+            "stream": stream,
+            "offset": offset,
+            "requested_offset": requested_offset,
+            "limit": limit,
+            "content": chunk.decode("utf-8", errors="replace"),
+            "next_offset": next_offset,
+            "total_retained_bytes": len(data),
+            "retained_start_offset": retained_start_offset,
+            "total_stream_bytes": total_stream_bytes,
+            "stdout_dropped_bytes": session.stdout_dropped_bytes,
+            "stderr_dropped_bytes": session.stderr_dropped_bytes,
+            "stream_dropped_bytes": dropped_bytes,
+            "omitted_bytes": omitted_bytes,
+            "truncated": next_offset is not None,
+            "ok": True,
+            "warnings": warnings,
+        }
+
     def write_stdin(self, args: dict[str, Any]) -> dict[str, Any]:
         session_id = str(args.get("session_id", ""))
         session = self._get_session(session_id)
@@ -2658,7 +2891,8 @@ class Runtime:
         if session.process.poll() is not None:
             if chars:
                 raise ToolFailure("SESSION_CLOSED", "Session is closed; stdin write blocked.", category="runtime")
-            return session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
+            payload = session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
+            return self._format_session_output(session, payload, args)
         if chars:
             if session.process.stdin is None or session.process.stdin.closed:
                 raise ToolFailure("SESSION_CLOSED", "Session stdin is closed.", category="runtime")
@@ -2680,7 +2914,8 @@ class Runtime:
                         first_output_at = time.time()
                     if time.time() - first_output_at >= 0.05:
                         break
-        return session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
+        payload = session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
+        return self._format_session_output(session, payload, args)
 
     def _wait_for_session_exit(self, session: ExecSession, wait_seconds: float) -> bool:
         wait_until = time.time() + max(0.0, wait_seconds)
@@ -2718,6 +2953,7 @@ class Runtime:
             status = "exited"
         payload = session.snapshot_since_cursor(int(args.get("max_output_bytes", 65536)))
         payload.update({"killed": killed, "status": status, "evicted": evict, "signal_sent": signal_sent})
+        payload = self._format_session_output(session, payload, args)
         if status == "terminating":
             warnings = list(payload.get("warnings", []))
             warnings.append("Process did not exit after TERM/SIGKILL; session retained for retry or watchdog cleanup.")
@@ -2752,18 +2988,13 @@ class Runtime:
         max_entries = int(args.get("max_entries", 1000))
         include_untracked = bool(args.get("include_untracked", True))
         git = require_git()
-        root_check = subprocess.run(
-            [git, "-C", str(resolved.path), "rev-parse", "--show-toplevel"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        root_check = self._run_git_text([git, "-C", str(resolved.path), "rev-parse", "--show-toplevel"])
         if root_check.returncode != 0:
-            return {"is_repo": False, "clean": True, "entries": [], "truncated": False}
+            return self._git_status_not_repo(root_check)
         status_cmd = [git, "-C", str(resolved.path), "status", "--porcelain=v1", "-b"]
         if not include_untracked:
             status_cmd.append("--untracked-files=no")
-        completed = subprocess.run(status_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        completed = self._run_git_text(status_cmd, timeout=10)
         if completed.returncode != 0:
             raise ToolFailure("GIT_ERROR", completed.stderr.strip() or "git status failed", category="runtime")
         lines = completed.stdout.splitlines()
@@ -2795,7 +3026,7 @@ class Runtime:
         return {
             "is_repo": True,
             "branch": branch,
-            "head": git_rev_parse(resolved.path, "HEAD"),
+            "head": self._git_rev_parse(resolved.path, "HEAD"),
             "upstream": upstream,
             "ahead": ahead,
             "behind": behind,
@@ -2816,7 +3047,7 @@ class Runtime:
         if isinstance(args.get("paths"), list):
             path_filters.extend(str(item) for item in args["paths"])
         path_filters = [self.git_path_filter(path) for path in path_filters]
-        if not is_git_repo(self.workspace.root):
+        if not self._is_git_repo(self.workspace.root):
             return self._fallback_diff(path_filters, max_bytes)
         chunks: list[bytes] = []
         if unstaged:
@@ -2848,7 +3079,7 @@ class Runtime:
         if path_filters:
             cmd.append("--")
             cmd.extend(path_filters)
-        completed = subprocess.run(cmd, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        completed = self._run_git_bytes(cmd, timeout=10)
         if completed.returncode not in {0, 1}:
             raise ToolFailure("GIT_ERROR", completed.stderr.decode("utf-8", errors="replace"), category="runtime")
         return completed.stdout
@@ -2896,7 +3127,7 @@ class Runtime:
     def git_log(self, args: dict[str, Any]) -> dict[str, Any]:
         git = require_git()
         resolved = self.resolve_existing(str(args.get("path", ".")))
-        if not is_git_repo(resolved.path):
+        if not self._is_git_repo(resolved.path):
             return {"is_repo": False, "commits": [], "truncated": False, "warnings": []}
         ref = validate_git_ref(str(args.get("ref", "HEAD")))
         max_count = int(args.get("max_count", 20))
@@ -2915,7 +3146,7 @@ class Runtime:
         ]
         if path_filter != ".":
             cmd.extend(["--", path_filter])
-        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        completed = self._run_git_text(cmd, timeout=10)
         if completed.returncode != 0:
             raise ToolFailure("GIT_ERROR", completed.stderr.strip() or "git log failed", category="runtime")
         commits: list[dict[str, Any]] = []
@@ -2945,7 +3176,7 @@ class Runtime:
 
     def git_show(self, args: dict[str, Any]) -> dict[str, Any]:
         git = require_git()
-        if not is_git_repo(self.workspace.root):
+        if not self._is_git_repo(self.workspace.root):
             return {"is_repo": False, "content": "", "files": [], "truncated": False, "warnings": []}
         rev = validate_git_ref(str(args.get("rev", "HEAD")))
         context = int(args.get("context_lines", 3))
@@ -2972,7 +3203,7 @@ class Runtime:
         if normalized_filters:
             cmd.append("--")
             cmd.extend(normalized_filters)
-        completed = subprocess.run(cmd, text=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        completed = self._run_git_bytes(cmd, timeout=10)
         if completed.returncode != 0:
             raise ToolFailure("GIT_ERROR", completed.stderr.decode("utf-8", errors="replace").strip() or "git show failed", category="runtime")
         truncation = truncate_text_head(completed.stdout.decode("utf-8", errors="replace"), max_lines=DEFAULT_MAX_LINES, max_bytes=max_bytes)
@@ -2994,7 +3225,7 @@ class Runtime:
         resolved = self.resolve_existing(str(args.get("path", "")))
         if resolved.path.is_dir():
             raise ToolFailure("IS_DIRECTORY", "Path is a directory.", category="validation")
-        if not is_git_repo(self.workspace.root):
+        if not self._is_git_repo(self.workspace.root):
             return {"is_repo": False, "path": resolved.display, "lines": [], "truncated": False, "warnings": []}
         ref_arg = args.get("rev")
         ref = validate_git_ref(str(ref_arg)) if isinstance(ref_arg, str) and ref_arg else None
@@ -3022,7 +3253,7 @@ class Runtime:
         if ref:
             cmd.append(ref)
         cmd.extend(["--", resolved.display])
-        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+        completed = self._run_git_text(cmd, timeout=10)
         if completed.returncode != 0:
             raise ToolFailure("GIT_ERROR", completed.stderr.strip() or "git blame failed", category="runtime")
         lines = parse_git_blame_porcelain(completed.stdout)
@@ -3305,6 +3536,132 @@ def shlex_split(command: str) -> list[str]:
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     return list(lexer)
+
+
+def parse_heredoc_delimiter(command: str, start: int) -> tuple[int, str, bool]:
+    index = start
+    length = len(command)
+    strip_tabs = False
+    if index < length and command[index] == "-":
+        strip_tabs = True
+        index += 1
+    while index < length and command[index] in " \t":
+        index += 1
+    delimiter: list[str] = []
+    while index < length:
+        char = command[index]
+        if char in "'\"":
+            quote = char
+            index += 1
+            while index < length and command[index] != quote:
+                delimiter.append(command[index])
+                index += 1
+            if index < length:
+                index += 1
+            continue
+        if char == "\\" and index + 1 < length:
+            delimiter.append(command[index + 1])
+            index += 2
+            continue
+        if char.isspace() or char in ";&|<>()":
+            break
+        delimiter.append(char)
+        index += 1
+    return index, "".join(delimiter), strip_tabs
+
+
+def strip_heredoc_payloads(command: str) -> str:
+    """Drop heredoc body lines so command scanning sees only live shell code.
+
+    Heredoc bodies are stdin data, not code: scanning XML payloads produces fake
+    escape candidates such as ``/modelVersion`` from ``</modelVersion>``. Bash
+    starts the body on the line after the operator, so everything else stays
+    visible to the scanner: redirections on the operator's own line
+    (``cat <<EOF > /etc/cron.d/evil``) and commands after the closing delimiter.
+    ``<<`` inside quotes or inside ``((...))`` arithmetic never opens a heredoc,
+    which keeps fake heredocs from hiding live commands; an unterminated heredoc
+    swallows the remaining lines exactly as bash treats them (as body).
+    """
+    if "<<" not in command:
+        return command
+    live: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    index = 0
+    length = len(command)
+    in_single = False
+    in_double = False
+    arith_parens = 0
+    while index < length:
+        char = command[index]
+        if in_single:
+            live.append(char)
+            in_single = char != "'"
+            index += 1
+            continue
+        if in_double:
+            if char == "\\" and index + 1 < length:
+                live.append(command[index : index + 2])
+                index += 2
+                continue
+            live.append(char)
+            in_double = char != '"'
+            index += 1
+            continue
+        if char == "\\" and index + 1 < length:
+            live.append(command[index : index + 2])
+            index += 2
+            continue
+        if char == "'":
+            in_single = True
+            live.append(char)
+            index += 1
+            continue
+        if char == '"':
+            in_double = True
+            live.append(char)
+            index += 1
+            continue
+        if arith_parens:
+            if char == "(":
+                arith_parens += 1
+            elif char == ")":
+                arith_parens -= 1
+            live.append(char)
+            index += 1
+            continue
+        if char == "(" and command[index : index + 2] == "((":
+            arith_parens = 2
+            live.append("((")
+            index += 2
+            continue
+        if char == "<" and command[index : index + 3] == "<<<":
+            live.append("<<<")
+            index += 3
+            continue
+        if char == "<" and command[index : index + 2] == "<<":
+            operator_end, delimiter, strip_tabs = parse_heredoc_delimiter(command, index + 2)
+            live.append(command[index:operator_end])
+            index = operator_end
+            if delimiter:
+                pending.append((delimiter, strip_tabs))
+            continue
+        if char == "\n":
+            live.append(char)
+            index += 1
+            for delimiter, strip_tabs in pending:
+                while index < length:
+                    line_end = command.find("\n", index)
+                    if line_end < 0:
+                        line_end = length
+                    line = command[index:line_end].rstrip("\r")
+                    index = line_end + 1
+                    if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                        break
+            pending = []
+            continue
+        live.append(char)
+        index += 1
+    return "".join(live)
 
 
 def command_executables(tokens: list[str]) -> list[str]:
@@ -3666,27 +4023,6 @@ def parse_branch_line(line: str) -> tuple[str, str, int, int]:
     return branch.strip(), upstream.strip(), ahead, behind
 
 
-def git_rev_parse(path: Path, rev: str) -> str:
-    git = shutil.which("git")
-    if not git:
-        return ""
-    completed = subprocess.run([git, "-C", str(path), "rev-parse", rev], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    return completed.stdout.strip() if completed.returncode == 0 else ""
-
-
-def is_git_repo(path: Path) -> bool:
-    git = shutil.which("git")
-    if not git:
-        return False
-    completed = subprocess.run(
-        [git, "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    return completed.returncode == 0 and completed.stdout.strip() == "true"
-
-
 def require_git() -> str:
     git = shutil.which("git")
     if not git:
@@ -3950,6 +4286,7 @@ def _resolved_system_path_root_prefixes() -> tuple[Path, ...]:
 
 def guard_allow_roots() -> list[str]:
     roots = set(TOOLCHAIN_READ_ROOTS)
+    roots.update(OS_METADATA_READ_FILES)
     roots.update(GIT_READ_ROOTS)
     roots.update(DNS_RESOLVER_READ_ROOTS)
     roots.update(
@@ -4400,6 +4737,7 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                 "path": {**string, "minLength": 1},
                 "start_line": {**integer, "minimum": 1, "default": 1},
                 "end_line": {**integer, "minimum": 1},
+                "max_lines": {**integer, "minimum": 1},
                 "max_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 131072},
                 "encoding": {**string, "enum": ["utf-8"], "default": "utf-8"},
             },
@@ -4448,9 +4786,12 @@ def input_schemas() -> dict[str, dict[str, Any]]:
             {
                 "cmd": {**string, "minLength": 1},
                 "workdir": {**string, "default": "."},
+                "cwd": {**string},
                 "timeout_ms": {**integer, "minimum": 1, "maximum": 600000, "default": 30000},
                 "yield_time_ms": {**integer, "minimum": 0, "maximum": 30000, "default": 1000},
                 "max_output_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 65536},
+                "verbosity": {**string, "enum": ["summary", "preview", "full"]},
+                "preview_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 4096},
                 "stdin": {**string, "default": ""},
                 "tty": {**boolean, "default": False},
                 "env": {"type": "object", "additionalProperties": {"type": "string"}, "default": {}},
@@ -4463,6 +4804,8 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                 "chars": {**string, "default": ""},
                 "yield_time_ms": {**integer, "minimum": 0, "maximum": 30000, "default": 1000},
                 "max_output_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 65536},
+                "verbosity": {**string, "enum": ["summary", "preview", "full"]},
+                "preview_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 4096},
             },
             ["session_id"],
         ),
@@ -4472,8 +4815,19 @@ def input_schemas() -> dict[str, dict[str, Any]]:
                 "signal": {**string, "enum": ["TERM", "KILL", "INT"], "default": "TERM"},
                 "wait_ms": {**integer, "minimum": 0, "maximum": 30000, "default": 5000},
                 "max_output_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 65536},
+                "verbosity": {**string, "enum": ["summary", "preview", "full"]},
+                "preview_bytes": {**integer, "minimum": 1, "maximum": 1048576, "default": 4096},
             },
             ["session_id"],
+        ),
+        "read_output": object_schema(
+            {
+                "output_ref": {**string, "minLength": 1},
+                "stream": {**string, "enum": ["stdout", "stderr"]},
+                "offset": {**integer, "minimum": 0, "default": 0},
+                "limit": {**integer, "minimum": 1, "maximum": 1048576, "default": 4096},
+            },
+            ["output_ref"],
         ),
         "git_status": object_schema(
             {
@@ -5517,7 +5871,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def install_sigterm_handler() -> None:
+    """Exit cleanly on SIGTERM (128 + 15), matching the KeyboardInterrupt path.
+
+    Essential as PID 1 in a container: without a handler the kernel ignores
+    SIGTERM for init, so `docker stop` hangs for its grace period and then
+    SIGKILLs the server instead of letting it shut down.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+
+    def _terminate(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _terminate)
+    except (ValueError, OSError, AttributeError):
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    install_sigterm_handler()
     return run_stdio(args) if args.stdio else run_http(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
