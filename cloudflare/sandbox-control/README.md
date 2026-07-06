@@ -63,7 +63,7 @@ The same Worker also exposes a minimal MCP-compatible JSON-RPC endpoint at `/mcp
 
 Recommended agent setup:
 
-1. Configure this Worker as a persistent control MCP server. It is always online and only has one tool: `start_coding_tools_sandbox`.
+1. Configure this Worker as a persistent control MCP server. It is always online and exposes control tools such as `start_coding_tools_sandbox` and `get_coding_tools_sandbox_status`.
 2. Configure the fixed Cloudflare Tunnel hostname as a second MCP server. It may be offline until the GitHub Actions job starts, but the URL stays the same when you use a named tunnel.
 
 Example MCP client configuration shape:
@@ -126,6 +126,45 @@ curl -X POST "https://<worker-host>/mcp" \
     }
   }'
 ```
+
+Check the sandbox Action status through MCP:
+
+```bash
+curl -X POST "https://<worker-host>/mcp" \
+  -H "Authorization: Bearer $CONTROL_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "get_coding_tools_sandbox_status",
+      "arguments": {
+        "run_id": "<workflow_run_id>",
+        "check_endpoint": true,
+        "tunnel_hostname": "mcp.example.com"
+      }
+    }
+  }'
+```
+
+If you do not have a `workflow_run_id`, omit `run_id` and the Worker will return recent `workflow_dispatch` runs for the configured workflow/ref:
+
+```json
+{
+  "ref": "docker-action",
+  "per_page": 5,
+  "check_endpoint": true
+}
+```
+
+Status meanings:
+
+- `queued`: GitHub accepted the run, but it has not started yet.
+- `action_running`: the workflow is running, but the Worker did not probe the MCP endpoint.
+- `action_running_mcp_not_ready`: the workflow is running, but the fixed MCP endpoint is not responding yet.
+- `mcp_ready`: the workflow is running and the fixed MCP endpoint responded to the probe.
+- `completed_success`: the workflow finished successfully, which usually means the long-running sandbox job has ended and the tunnel is no longer live.
 
 ## Safety Notes
 

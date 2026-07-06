@@ -29,6 +29,25 @@ const START_TOOL = {
   },
 };
 
+const STATUS_TOOL = {
+  name: "get_coding_tools_sandbox_status",
+  description: "Query the GitHub Actions workflow run status for a coding-tools-mcp sandbox and optionally probe the fixed MCP tunnel endpoint.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      run_id: { type: "string", description: "Workflow run ID returned by start_coding_tools_sandbox. If omitted, the latest workflow_dispatch run is returned." },
+      ref: { type: "string", description: "Branch/ref to search when run_id is omitted. Defaults to GITHUB_REF." },
+      workflow_id: { type: "string", description: "Workflow YAML filename. Defaults to WORKFLOW_ID." },
+      per_page: { type: "integer", minimum: 1, maximum: 20, description: "Number of recent runs to return when run_id is omitted. Defaults to 5." },
+      check_endpoint: { type: "boolean", description: "Probe https://<tunnel_hostname>/mcp to see whether the tunnel endpoint is responding." },
+      tunnel_hostname: { type: "string", description: "Hostname to probe when check_endpoint=true. Defaults to TUNNEL_HOSTNAME." },
+    },
+    additionalProperties: false,
+  },
+};
+
+const CONTROL_TOOLS = [START_TOOL, STATUS_TOOL];
+
 export default {
   async fetch(request, env) {
     try {
@@ -98,17 +117,23 @@ async function handleMcpRequest(body, env) {
   }
 
   if (body.method === "tools/list") {
-    return jsonRpcResult(id, { tools: [START_TOOL] });
+    return jsonRpcResult(id, { tools: CONTROL_TOOLS });
   }
 
   if (body.method === "tools/call") {
     const name = body.params?.name;
-    if (name !== START_TOOL.name) {
-      return jsonRpcError(id, -32602, `Unknown tool: ${String(name)}`);
-    }
 
     try {
-      const result = await startSandbox(body.params?.arguments ?? {}, env);
+      const args = body.params?.arguments ?? {};
+      let result;
+      if (name === START_TOOL.name) {
+        result = await startSandbox(args, env);
+      } else if (name === STATUS_TOOL.name) {
+        result = await getSandboxStatus(args, env);
+      } else {
+        return jsonRpcError(id, -32602, `Unknown tool: ${String(name)}`);
+      }
+
       return jsonRpcResult(id, {
         content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
         structuredContent: result,
@@ -167,6 +192,159 @@ async function startSandbox(input, env) {
     workflow_run: workflowRun,
     message: "Sandbox workflow dispatch accepted by GitHub.",
   };
+}
+
+async function getSandboxStatus(input, env) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new HttpError(400, "invalid_input", "Tool arguments must be a JSON object.");
+  }
+
+  const owner = requiredEnv(env, "GITHUB_OWNER");
+  const repo = requiredEnv(env, "GITHUB_REPO");
+  const githubToken = requiredEnv(env, "GITHUB_TOKEN");
+  const workflowId = cleanWorkflowId(input.workflow_id ?? env.WORKFLOW_ID ?? DEFAULT_WORKFLOW_ID);
+  const ref = input.ref == null || input.ref === "" ? cleanRef(env.GITHUB_REF ?? "main") : cleanRef(input.ref);
+  const runId = cleanRunId(input.run_id ?? "");
+  const perPage = runId ? 1 : cleanPerPage(input.per_page ?? 5);
+  const checkEndpoint = cleanOptionalBoolean(input.check_endpoint ?? false, "check_endpoint");
+  const tunnelHostname = cleanOptionalHostname(input.tunnel_hostname ?? env.TUNNEL_HOSTNAME ?? "");
+
+  let latestRun = null;
+  let recentRuns = [];
+  if (runId) {
+    const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${encodeURIComponent(runId)}`;
+    latestRun = await fetchGitHubJson(endpoint, githubToken, "github_run_status_failed");
+  } else {
+    const endpoint = new URL(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflowId)}/runs`);
+    endpoint.searchParams.set("branch", ref);
+    endpoint.searchParams.set("event", "workflow_dispatch");
+    endpoint.searchParams.set("per_page", String(perPage));
+    const data = await fetchGitHubJson(endpoint.toString(), githubToken, "github_run_status_failed");
+    recentRuns = Array.isArray(data?.workflow_runs) ? data.workflow_runs : [];
+    latestRun = recentRuns[0] ?? null;
+  }
+
+  const run = summarizeWorkflowRun(latestRun);
+  const endpointProbe = checkEndpoint ? await probeMcpEndpoint(tunnelHostname, env) : null;
+  const mcpUrl = tunnelHostname ? `https://${tunnelHostname}/mcp` : null;
+
+  return {
+    ok: true,
+    owner,
+    repo,
+    workflow_id: workflowId,
+    ref,
+    run_id: run?.id ?? (runId || null),
+    action_state: deriveActionState(run, endpointProbe),
+    run,
+    recent_runs: runId ? undefined : recentRuns.map(summarizeWorkflowRun),
+    mcp_url: mcpUrl,
+    endpoint_probe: endpointProbe,
+    message: run ? "Sandbox workflow run status fetched from GitHub." : "No matching sandbox workflow runs found.",
+  };
+}
+
+async function fetchGitHubJson(endpoint, githubToken, errorCode) {
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${githubToken}`,
+      "User-Agent": "coding-tools-sandbox-control-worker",
+      "X-GitHub-Api-Version": "2026-03-10",
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new HttpError(response.status, errorCode, formatGitHubApiError(text, response.status));
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+function formatGitHubApiError(text, status) {
+  if (!text) return `GitHub returned HTTP ${status}`;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed?.message ? String(parsed.message) : text;
+  } catch {
+    return text;
+  }
+}
+
+function summarizeWorkflowRun(run) {
+  if (!run || typeof run !== "object") return null;
+  return {
+    id: run.id ?? null,
+    name: run.name ?? null,
+    display_title: run.display_title ?? null,
+    status: run.status ?? null,
+    conclusion: run.conclusion ?? null,
+    event: run.event ?? null,
+    head_branch: run.head_branch ?? null,
+    head_sha: run.head_sha ?? null,
+    run_number: run.run_number ?? null,
+    run_attempt: run.run_attempt ?? null,
+    html_url: run.html_url ?? null,
+    created_at: run.created_at ?? null,
+    updated_at: run.updated_at ?? null,
+    run_started_at: run.run_started_at ?? null,
+    jobs_url: run.jobs_url ?? null,
+    logs_url: run.logs_url ?? null,
+  };
+}
+
+function deriveActionState(run, endpointProbe) {
+  if (!run) return "not_found";
+  if (["queued", "requested", "waiting", "pending"].includes(run.status)) return "queued";
+  if (run.status === "in_progress") {
+    if (endpointProbe?.mcp_ready) return "mcp_ready";
+    if (endpointProbe) return "action_running_mcp_not_ready";
+    return "action_running";
+  }
+  if (run.status === "completed") {
+    return run.conclusion ? `completed_${run.conclusion}` : "completed";
+  }
+  return run.status ?? "unknown";
+}
+
+async function probeMcpEndpoint(tunnelHostname, env) {
+  if (!tunnelHostname) {
+    return { checked: false, mcp_ready: false, reachable: false, error: "tunnel_hostname is not configured." };
+  }
+
+  const mcpUrl = `https://${tunnelHostname}/mcp`;
+  const headers = { "Content-Type": "application/json" };
+  if (env.CODING_TOOLS_MCP_AUTH_TOKEN) {
+    headers.Authorization = `Bearer ${env.CODING_TOOLS_MCP_AUTH_TOKEN}`;
+  }
+
+  try {
+    const startedAt = Date.now();
+    const response = await fetch(mcpUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: {} }),
+    });
+    const elapsed_ms = Date.now() - startedAt;
+    const mcpReady = response.status === 200 || response.status === 401;
+    return {
+      checked: true,
+      url: mcpUrl,
+      status: response.status,
+      reachable: response.status < 500,
+      mcp_ready: mcpReady,
+      authenticated: response.status === 200 && Boolean(env.CODING_TOOLS_MCP_AUTH_TOKEN),
+      elapsed_ms,
+    };
+  } catch (error) {
+    return {
+      checked: true,
+      url: mcpUrl,
+      reachable: false,
+      mcp_ready: false,
+      error: error.message,
+    };
+  }
 }
 
 function formatGitHubDispatchError(text, ref, workflowId, status) {
@@ -309,6 +487,35 @@ function cleanWorkflowId(value) {
     throw new HttpError(400, "invalid_workflow_id", "workflow_id must be a workflow YAML filename, for example start-sandbox.yml.");
   }
   return workflowId;
+}
+
+function cleanRunId(value) {
+  if (value == null || value === "") return "";
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) throw new HttpError(400, "invalid_run_id", "run_id must be an integer string.");
+  return text;
+}
+
+function cleanPerPage(value) {
+  const number = typeof value === "number" ? value : Number(String(value).trim());
+  if (!Number.isInteger(number) || number < 1 || number > 20) {
+    throw new HttpError(400, "invalid_per_page", "per_page must be an integer between 1 and 20.");
+  }
+  return number;
+}
+
+function cleanOptionalHostname(value) {
+  const hostname = String(value ?? "").replace(/^https?:\/\//, "").split("/")[0].trim();
+  if (!hostname) return "";
+  if (!/^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/.test(hostname)) {
+    throw new HttpError(400, "invalid_tunnel_hostname", "tunnel_hostname must be a valid hostname, for example mcp.example.com.");
+  }
+  return hostname;
+}
+
+function cleanOptionalBoolean(value, name) {
+  if (value == null || value === "") return false;
+  return cleanBoolean(value, name);
 }
 
 function cleanBoolean(value, name) {
