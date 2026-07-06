@@ -59,7 +59,49 @@ Authorization: Bearer <CODING_TOOLS_MCP_AUTH_TOKEN>
 
 ## MCP-Style Control Tool
 
-The same Worker also exposes a minimal JSON-RPC endpoint at `/mcp` for clients that can call simple MCP-style tools:
+The same Worker also exposes a minimal MCP-compatible JSON-RPC endpoint at `/mcp`. This is the endpoint to configure when you want an agent to start the sandbox itself instead of using `curl /start` manually.
+
+Recommended agent setup:
+
+1. Configure this Worker as a persistent control MCP server. It is always online and only has one tool: `start_coding_tools_sandbox`.
+2. Configure the fixed Cloudflare Tunnel hostname as a second MCP server. It may be offline until the GitHub Actions job starts, but the URL stays the same when you use a named tunnel.
+
+Example MCP client configuration shape:
+
+```json
+{
+  "mcpServers": {
+    "sandbox-control": {
+      "url": "https://<worker-host>/mcp",
+      "headers": {
+        "Authorization": "Bearer <CONTROL_TOKEN>"
+      }
+    },
+    "coding-tools-sandbox": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <CODING_TOOLS_MCP_AUTH_TOKEN>"
+      }
+    }
+  }
+}
+```
+
+After the control MCP is connected, the agent can call `start_coding_tools_sandbox` with arguments equivalent to the `/start` request:
+
+```json
+{
+  "duration_minutes": "120",
+  "permission_mode": "trusted",
+  "tool_profile": "full",
+  "tunnel_type": "named",
+  "tunnel_hostname": "mcp.example.com"
+}
+```
+
+Most MCP hosts do not let an MCP tool rewrite the host's MCP configuration at runtime. The practical closed loop is therefore to preconfigure the second `coding-tools-sandbox` server once with the fixed tunnel URL; the agent uses the first server to start it, then uses the second server after the tunnel becomes reachable.
+
+List the control tool manually:
 
 ```bash
 curl -X POST "https://<worker-host>/mcp" \
@@ -91,3 +133,7 @@ curl -X POST "https://<worker-host>/mcp" \
 - Keep `ALLOW_DANGEROUS=false` unless the sandbox is isolated and the MCP client is trusted.
 - Keep `ALLOW_IMAGE_OVERRIDE=false` unless callers are allowed to choose arbitrary Docker images.
 - The fixed MCP hostname is only live while the GitHub Actions job is running.
+
+## Troubleshooting
+
+If GitHub returns `422` with `Unexpected inputs`, the Worker is newer than the workflow file at the ref being dispatched. Fix it by merging the updated `.github/workflows/start-sandbox.yml` into the configured `GITHUB_REF`, changing the Worker `GITHUB_REF` to a branch that already has the new inputs, or passing `"ref": "<branch-with-updated-workflow>"` in the `/start` or MCP tool request.

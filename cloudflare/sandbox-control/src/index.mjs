@@ -73,12 +73,28 @@ async function handleMcpRequest(body, env) {
     return jsonRpcError(id, -32600, "Invalid Request");
   }
 
+  if (id === null && body.method.startsWith("notifications/")) {
+    return new Response(null, { status: 202 });
+  }
+
   if (body.method === "initialize") {
     return jsonRpcResult(id, {
       protocolVersion: "2025-06-18",
       capabilities: { tools: {} },
       serverInfo: { name: "coding-tools-sandbox-control", version: "0.1.0" },
     });
+  }
+
+  if (body.method === "ping") {
+    return jsonRpcResult(id, {});
+  }
+
+  if (body.method === "resources/list") {
+    return jsonRpcResult(id, { resources: [] });
+  }
+
+  if (body.method === "prompts/list") {
+    return jsonRpcResult(id, { prompts: [] });
   }
 
   if (body.method === "tools/list") {
@@ -115,6 +131,7 @@ async function startSandbox(input, env) {
   const ref = cleanRef(input.ref ?? env.GITHUB_REF ?? "main");
   const workflowId = cleanWorkflowId(input.workflow_id ?? env.WORKFLOW_ID ?? DEFAULT_WORKFLOW_ID);
   const inputs = buildWorkflowInputs(input, env);
+  const mcpUrl = inputs.tunnel_type === "named" ? `https://${inputs.tunnel_hostname}/mcp` : null;
 
   const endpoint = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows/${encodeURIComponent(workflowId)}/dispatches`;
   const response = await fetch(endpoint, {
@@ -134,7 +151,7 @@ async function startSandbox(input, env) {
     workflowRun = await response.json().catch(() => null);
   } else if (response.status !== 204) {
     const text = await response.text();
-    throw new HttpError(response.status, "github_dispatch_failed", text || `GitHub returned HTTP ${response.status}`);
+    throw new HttpError(response.status, "github_dispatch_failed", formatGitHubDispatchError(text, ref, workflowId, response.status));
   }
 
   return {
@@ -145,9 +162,29 @@ async function startSandbox(input, env) {
     workflow_id: workflowId,
     ref,
     inputs,
+    mcp_url: mcpUrl,
+    mcp_authorization: mcpUrl ? "Bearer <CODING_TOOLS_MCP_AUTH_TOKEN>" : null,
     workflow_run: workflowRun,
     message: "Sandbox workflow dispatch accepted by GitHub.",
   };
+}
+
+function formatGitHubDispatchError(text, ref, workflowId, status) {
+  if (!text) return `GitHub returned HTTP ${status}`;
+
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return text;
+  }
+
+  const message = parsed?.message ? String(parsed.message) : text;
+  if (status === 422 && message.includes("Unexpected inputs")) {
+    return `${message}. The workflow '${workflowId}' at ref '${ref}' does not declare one or more inputs sent by this Worker. Merge the updated workflow into that ref, set GITHUB_REF to a branch that has it, or pass a matching 'ref' in the request.`;
+  }
+
+  return text;
 }
 
 function buildWorkflowInputs(input, env) {
