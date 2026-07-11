@@ -1,0 +1,6 @@
+ignored.log
+node_modules/
+dist/
+.reference/
+__pycache__/
+*.pyc

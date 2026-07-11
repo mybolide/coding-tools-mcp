@@ -1,0 +1,7 @@
+[project]
+name = "tiny-python-project"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[tool.coding-tools-mcp-compliance]
+description = "Tiny Python fixture used by MCP compliance tests."

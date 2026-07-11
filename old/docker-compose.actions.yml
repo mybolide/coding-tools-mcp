@@ -1,0 +1,26 @@
+services:
+  coding-tools-actions:
+    build: .
+    image: coding-tools-mcp-sandbox:local
+    init: true
+    entrypoint:
+      - coding-tools-actions
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      ACTIONS_HOST: 0.0.0.0
+      ACTIONS_PORT: 8787
+      ACTIONS_PUBLIC_BASE_URL: ${ACTIONS_PUBLIC_BASE_URL:-https://actions.example.com}
+      ACTIONS_WORKSPACE: /workspace
+      ACTIONS_PERMISSION_MODE: trusted
+      ACTIONS_API_KEY: ${ACTIONS_API_KEY}
+      ACTIONS_ALLOWED_COMMANDS: >-
+        pytest,python,python3,npm,npx,node,pnpm,yarn,
+        make,mvn,mvnw,gradle,gradlew,cargo,go,
+        ruff,mypy,eslint,tsc
+      ACTIONS_MAX_PATCH_BYTES: 200000
+      CODING_TOOLS_MCP_SHELL_ENV_INHERIT: core
+    volumes:
+      - ${TARGET_REPOSITORY_PATH}:/workspace
+    restart: unless-stopped
+

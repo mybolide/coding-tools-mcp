@@ -1,0 +1,85 @@
+{
+  "comparisons": [
+    {
+      "mcp_p95_ms": 0.764,
+      "native_p95_ms": 0.06,
+      "operation": "read_file",
+      "p95_ratio": 12.733
+    },
+    {
+      "mcp_p95_ms": 63.788,
+      "native_p95_ms": 4.167,
+      "operation": "search_text",
+      "p95_ratio": 15.308
+    },
+    {
+      "mcp_p95_ms": 46.678,
+      "native_p95_ms": 23.871,
+      "operation": "exec_command",
+      "p95_ratio": 1.955
+    }
+  ],
+  "conclusion": "PASS",
+  "endpoint": "http://127.0.0.1:54941/mcp",
+  "exec_iterations": 4,
+  "failures": [],
+  "iterations": 8,
+  "max_p95_ms": 5000,
+  "metrics": {
+    "mcp.exec_command": {
+      "max_ms": 46.68,
+      "min_ms": 46.139,
+      "p50_ms": 46.632,
+      "p95_ms": 46.678,
+      "samples": 4
+    },
+    "mcp.read_file": {
+      "max_ms": 0.769,
+      "min_ms": 0.651,
+      "p50_ms": 0.734,
+      "p95_ms": 0.764,
+      "samples": 8
+    },
+    "mcp.search_text": {
+      "max_ms": 63.811,
+      "min_ms": 57.391,
+      "p50_ms": 60.186,
+      "p95_ms": 63.788,
+      "samples": 8
+    },
+    "mcp.tools_list": {
+      "max_ms": 1.129,
+      "min_ms": 1.028,
+      "p50_ms": 1.074,
+      "p95_ms": 1.128,
+      "samples": 8
+    },
+    "native.exec_python": {
+      "max_ms": 23.898,
+      "min_ms": 23.657,
+      "p50_ms": 23.702,
+      "p95_ms": 23.871,
+      "samples": 4
+    },
+    "native.read_text": {
+      "max_ms": 0.066,
+      "min_ms": 0.028,
+      "p50_ms": 0.043,
+      "p95_ms": 0.06,
+      "samples": 8
+    },
+    "native.search": {
+      "max_ms": 4.17,
+      "min_ms": 4.034,
+      "p50_ms": 4.063,
+      "p95_ms": 4.167,
+      "samples": 8
+    }
+  },
+  "notes": [
+    "Native baselines are local developer-tool primitives, not equivalent MCP substitutes.",
+    "Latency thresholds are intentionally broad; this smoke benchmark catches transport regressions and records trend evidence."
+  ],
+  "warmup": 2,
+  "workspace": "/tmp/codex-mcp-latency-m468wc1p/workspace"
+}

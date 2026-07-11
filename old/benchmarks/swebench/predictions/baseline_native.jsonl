@@ -1,0 +1,10 @@
+{"instance_id":"astropy__astropy-12907","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"django__django-11099","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"matplotlib__matplotlib-18869","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"pytest-dev__pytest-5221","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"psf__requests-2317","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"scikit-learn__scikit-learn-10297","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"sphinx-doc__sphinx-10325","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"sympy__sympy-12419","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"pallets__flask-4992","model_name_or_path":"baseline_native_scaffold","model_patch":""}
+{"instance_id":"pydata__xarray-3364","model_name_or_path":"baseline_native_scaffold","model_patch":""}

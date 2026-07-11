@@ -1,0 +1,59 @@
+{
+  "dataset_name": "princeton-nlp/SWE-bench_Lite",
+  "split": "test",
+  "selection_date": "2026-05-16",
+  "selection_source": "Hugging Face datasets-server rows API",
+  "purpose": "Small smoke subset covering the major SWE-bench Lite project families before full benchmark runs.",
+  "instances": [
+    {
+      "instance_id": "astropy__astropy-12907",
+      "project": "astropy",
+      "repo": "astropy/astropy"
+    },
+    {
+      "instance_id": "django__django-11099",
+      "project": "django",
+      "repo": "django/django"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-18869",
+      "project": "matplotlib",
+      "repo": "matplotlib/matplotlib"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5221",
+      "project": "pytest",
+      "repo": "pytest-dev/pytest"
+    },
+    {
+      "instance_id": "psf__requests-2317",
+      "project": "requests",
+      "repo": "psf/requests"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10297",
+      "project": "scikit-learn",
+      "repo": "scikit-learn/scikit-learn"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10325",
+      "project": "sphinx",
+      "repo": "sphinx-doc/sphinx"
+    },
+    {
+      "instance_id": "sympy__sympy-12419",
+      "project": "sympy",
+      "repo": "sympy/sympy"
+    },
+    {
+      "instance_id": "pallets__flask-4992",
+      "project": "flask",
+      "repo": "pallets/flask"
+    },
+    {
+      "instance_id": "pydata__xarray-3364",
+      "project": "xarray",
+      "repo": "pydata/xarray"
+    }
+  ]
+}

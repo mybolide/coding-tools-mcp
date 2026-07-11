@@ -1,0 +1,25 @@
+<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour
+2026-05-17 23:24:05,770 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-05-17 23:24:05,775 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md "HTTP/1.1 200 OK"
+2026-05-17 23:24:05,853 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/SWE-bench_Lite.py "HTTP/1.1 404 Not Found"
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-05-17 23:24:05,853 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+2026-05-17 23:24:06,088 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/princeton-nlp/SWE-bench_Lite/princeton-nlp/SWE-bench_Lite.py "HTTP/1.1 404 Not Found"
+2026-05-17 23:24:06,170 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/revision/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 "HTTP/1.1 200 OK"
+2026-05-17 23:24:06,248 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/.huggingface.yaml "HTTP/1.1 404 Not Found"
+2026-05-17 23:24:06,368 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=princeton-nlp/SWE-bench_Lite "HTTP/1.1 200 OK"
+2026-05-17 23:24:06,452 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/tree/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/data?recursive=true&expand=false "HTTP/1.1 200 OK"
+2026-05-17 23:24:06,530 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/tree/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2?recursive=false&expand=false "HTTP/1.1 200 OK"
+2026-05-17 23:24:06,607 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/dataset_infos.json "HTTP/1.1 404 Not Found"
+2026-05-17 23:24:06,732 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/main/README.md "HTTP/1.1 307 Temporary Redirect"
+2026-05-17 23:24:06,738 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md "HTTP/1.1 200 OK"
+2026-05-17 23:24:06,815 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/SWE-bench_Lite.py "HTTP/1.1 404 Not Found"
+2026-05-17 23:24:06,889 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/princeton-nlp/SWE-bench_Lite/princeton-nlp/SWE-bench_Lite.py "HTTP/1.1 404 Not Found"
+2026-05-17 23:24:06,973 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/.huggingface.yaml "HTTP/1.1 404 Not Found"
+2026-05-17 23:24:07,067 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=princeton-nlp/SWE-bench_Lite "HTTP/1.1 200 OK"
+2026-05-17 23:24:07,142 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/dataset_infos.json "HTTP/1.1 404 Not Found"
+
+Evaluation:   0%|          | 0/1 [00:00<?, ?it/s, error=0, ✓=0, ✖=0]
+Evaluation:   0%|          | 0/1 [00:52<?, ?it/s, ✓=1, ✖=0, error=0]
+Evaluation: 100%|██████████| 1/1 [00:52<00:00, 52.90s/it, ✓=1, ✖=0, error=0]
+Evaluation: 100%|██████████| 1/1 [00:52<00:00, 52.90s/it, ✓=1, ✖=0, error=0]

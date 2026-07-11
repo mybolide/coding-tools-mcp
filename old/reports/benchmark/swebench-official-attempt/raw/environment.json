@@ -1,0 +1,24 @@
+{
+  "cwd": "/home/runner/work/codex-tool-runtime-mcp/codex-tool-runtime-mcp",
+  "executables": {
+    "docker": "/usr/bin/docker",
+    "git": "/usr/bin/git"
+  },
+  "github": {
+    "actions": "true",
+    "ref": "refs/heads/main",
+    "repository": "ytagent/codex-tool-runtime-mcp",
+    "run_attempt": "1",
+    "run_id": "26005718266",
+    "runner_os": "Linux",
+    "sha": "1e05880118dc8419d129f87172315ebce82dce50"
+  },
+  "packages": {
+    "datasets": "4.8.5",
+    "docker": "7.1.0",
+    "swebench": "4.1.0"
+  },
+  "platform": "Linux-6.17.0-1013-azure-x86_64-with-glibc2.39",
+  "python": "3.11.15 (main, Mar  3 2026, 16:10:12) [GCC 13.3.0]",
+  "python_executable": "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python"
+}

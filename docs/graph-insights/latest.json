@@ -1,0 +1,41 @@
+{
+  "updated_at": "2026-07-10T12:30:00Z",
+  "repo_status": "refactor_initial",
+  "has_rust_code": false,
+  "reference_impl": "old/",
+  "core_paths": {
+    "mcp_server": "old/coding_tools_mcp/server.py",
+    "mcp_server_lines": 5419,
+    "desktop_app": "old/apps/desktop-client/mcp_desktop_client/app.py",
+    "desktop_app_lines": 1228,
+    "runtime_manager": "old/apps/desktop-client/mcp_desktop_client/runtime.py",
+    "runtime_manager_lines": 508,
+    "actions_runtime": "old/apps/desktop-client/mcp_desktop_client/actions_runtime.py",
+    "actions_runtime_lines": 537,
+    "profile_spec": "old/docs/profile-v0.1.md",
+    "compliance_tests": "old/tests/compliance/",
+    "compliance_test_count": 71,
+    "compliance_status": "all_pass"
+  },
+  "mcp_tools": [
+    "server_info", "check_exec_environment", "get_default_cwd", "set_default_cwd",
+    "read_file", "list_dir", "list_files", "search_text", "apply_patch",
+    "exec_command", "write_stdin", "kill_session", "read_output",
+    "git_status", "git_diff", "git_log", "git_show", "git_blame",
+    "request_permissions", "view_image"
+  ],
+  "target_architecture": {
+    "desktop_shell": "Tauri 2",
+    "frontend": "Svelte + TypeScript",
+    "mcp_core": "embedded Rust (axum + rmcp)",
+    "tunnel": "external process (cloudflared/frp) supervised by tokio",
+    "secrets": "system keyring"
+  },
+  "key_insights": [
+    "server.py is monolithic high-coupling core - split into Rust crates",
+    "Desktop client bugs stem from external process orchestration - embed MCP to fix",
+    "runtime.py and actions_runtime.py are near-duplicates - unify in Rust",
+    "Compliance tests are the behavioral contract for refactor"
+  ],
+  "active_feature": "rust-desktop-client"
+}

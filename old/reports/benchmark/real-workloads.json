@@ -1,0 +1,256 @@
+{
+  "conclusion": "PASS",
+  "failures": [],
+  "raw_dir": "reports/benchmark/real-workloads/raw",
+  "skips": [],
+  "workloads": [
+    {
+      "category": "python",
+      "checks": [
+        {
+          "count": 133,
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "src/click/core.py"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "class Command"
+        },
+        {
+          "cmd": "python -m compileall -q src tests",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true,
+          "stderr": "",
+          "stdout": ""
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/pallets/click.git",
+          "/tmp/codex-real-workloads-jfos6ieh/python-click"
+        ],
+        "elapsed_seconds": 0.589,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-jfos6ieh/python-click'...\n",
+        "stdout": ""
+      },
+      "commit": "c9e94136b39b1fad4a47ac0d4478fa372bd07ff8",
+      "name": "python-click",
+      "repo": "https://github.com/pallets/click.git",
+      "status": "PASS"
+    },
+    {
+      "category": "node",
+      "checks": [
+        {
+          "count": 7,
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "index.js"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "mime.lookup"
+        },
+        {
+          "cmd": "node -e \"console.log('node-workload-ok')\"",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true,
+          "stderr": "",
+          "stdout": "node-workload-ok\n"
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/jshttp/mime-types.git",
+          "/tmp/codex-real-workloads-jfos6ieh/node-mime-types"
+        ],
+        "elapsed_seconds": 0.457,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-jfos6ieh/node-mime-types'...\n",
+        "stdout": ""
+      },
+      "commit": "3a1187ee21388efe46b916d4991589d595bcb26c",
+      "name": "node-mime-types",
+      "repo": "https://github.com/jshttp/mime-types.git",
+      "status": "PASS"
+    },
+    {
+      "category": "rust",
+      "checks": [
+        {
+          "count": 12,
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "src/lib.rs"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "Buffer"
+        },
+        {
+          "cmd": "python -c \"print('rust-workload-ok')\"",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true,
+          "stderr": "",
+          "stdout": "rust-workload-ok\n"
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/dtolnay/itoa.git",
+          "/tmp/codex-real-workloads-jfos6ieh/rust-itoa"
+        ],
+        "elapsed_seconds": 0.471,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-jfos6ieh/rust-itoa'...\n",
+        "stdout": ""
+      },
+      "commit": "af77385d0daf4d0e949e81f2588be2e44f69f086",
+      "name": "rust-itoa",
+      "repo": "https://github.com/dtolnay/itoa.git",
+      "status": "PASS"
+    },
+    {
+      "category": "go",
+      "checks": [
+        {
+          "count": 29,
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "uuid.go"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "func New"
+        },
+        {
+          "cmd": "python -c \"print('go-workload-ok')\"",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true,
+          "stderr": "",
+          "stdout": "go-workload-ok\n"
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/google/uuid.git",
+          "/tmp/codex-real-workloads-jfos6ieh/go-uuid"
+        ],
+        "elapsed_seconds": 0.47,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-jfos6ieh/go-uuid'...\n",
+        "stdout": ""
+      },
+      "commit": "2d3c2a9cc518326daf99a383f07c4d3c44317e4d",
+      "name": "go-uuid",
+      "repo": "https://github.com/google/uuid.git",
+      "status": "PASS"
+    },
+    {
+      "category": "monorepo",
+      "checks": [
+        {
+          "count": 221,
+          "name": "list_files",
+          "ok": true
+        },
+        {
+          "name": "read_file",
+          "ok": true,
+          "path": "packages/cli/package.json"
+        },
+        {
+          "name": "search_text",
+          "ok": true,
+          "query": "workspaces"
+        },
+        {
+          "cmd": "node -e \"console.log('monorepo-workload-ok')\"",
+          "exit_code": 0,
+          "name": "exec_command",
+          "ok": true,
+          "stderr": "",
+          "stdout": "monorepo-workload-ok\n"
+        },
+        {
+          "bytes": 1048576,
+          "name": "large_file",
+          "ok": true,
+          "path": "mcp-large-workload.txt"
+        },
+        {
+          "exit_code": 0,
+          "name": "large_output",
+          "ok": true,
+          "stdout_truncated": true
+        },
+        {
+          "exit_code": 0,
+          "name": "long_test",
+          "ok": true,
+          "stdout": "long-test-ok\n"
+        }
+      ],
+      "clone": {
+        "command": [
+          "git",
+          "clone",
+          "--depth",
+          "1",
+          "https://github.com/changesets/changesets.git",
+          "/tmp/codex-real-workloads-jfos6ieh/monorepo-changesets"
+        ],
+        "elapsed_seconds": 0.595,
+        "returncode": 0,
+        "stderr": "Cloning into '/tmp/codex-real-workloads-jfos6ieh/monorepo-changesets'...\n",
+        "stdout": ""
+      },
+      "commit": "372523f4c2ee4ffeb8330d444d47ffb6d0af5126",
+      "name": "monorepo-changesets",
+      "repo": "https://github.com/changesets/changesets.git",
+      "status": "PASS"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "projectRootEnv": "MCP_PROJECT_ROOT",
+  "indexPath": "AGENTS.md",
+  "contextRoot": "docs",
+  "modularDir": "docs/project-context",
+  "graphDir": "docs/graph-insights",
+  "indexStyle": "agents",
+  "generatedBy": "init_project_context",
+  "generatedAt": "2026-07-10T12:24:49.820Z",
+  "harness": {
+    "detected": [
+      "agents"
+    ],
+    "skillCanonical": ".agents/skills/mcp-probe-kit/SKILL.md",
+    "adapters": []
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "profile": "coding-tools-mcp-v0.1",
+  "source": "Semantic vectors for patch envelope and shell/session behavior.",
+  "apply_patch": [
+    {
+      "name": "add_file",
+      "patch": "*** Begin Patch\n*** Add File: docs/notes.md\n+# Notes\n+\n+Created by compliance.\n*** End Patch\n",
+      "expect_success": true,
+      "expect_paths": {
+        "docs/notes.md": "Created by compliance."
+      }
+    },
+    {
+      "name": "update_file_with_context",
+      "patch": "*** Begin Patch\n*** Update File: src/math.js\n@@\n export function add(a, b) {\n-  return a - b;\n+  return a + b;\n }\n*** End Patch\n",
+      "expect_success": true,
+      "expect_paths": {
+        "src/math.js": "return a + b;"
+      }
+    },
+    {
+      "name": "delete_file",
+      "patch": "*** Begin Patch\n*** Delete File: TODO.md\n*** End Patch\n",
+      "expect_success": true,
+      "expect_deleted": [
+        "TODO.md"
+      ]
+    },
+    {
+      "name": "move_file",
+      "patch": "*** Begin Patch\n*** Update File: TODO.md\n*** Move to: docs/TODO.md\n*** End Patch\n",
+      "expect_success": true,
+      "expect_paths": {
+        "docs/TODO.md": "Keep this file available"
+      },
+      "expect_deleted": [
+        "TODO.md"
+      ]
+    },
+    {
+      "name": "context_mismatch_rejects_cleanly",
+      "patch": "*** Begin Patch\n*** Update File: src/math.js\n@@\n-  return definitely_not_present;\n+  return a + b;\n*** End Patch\n",
+      "expect_success": false,
+      "expect_paths": {
+        "src/math.js": "return a - b;"
+      }
+    },
+    {
+      "name": "absolute_path_rejected",
+      "patch": "*** Begin Patch\n*** Add File: /tmp/coding-tools-runtime-escape.txt\n+escape\n*** End Patch\n",
+      "expect_success": false
+    },
+    {
+      "name": "path_traversal_rejected",
+      "patch": "*** Begin Patch\n*** Add File: ../outside-secret.txt\n+escape\n*** End Patch\n",
+      "expect_success": false
+    }
+  ],
+  "exec_session": [
+    {
+      "name": "long_running_process_returns_session_id",
+      "tool": "exec_command",
+      "arguments": {
+        "cmd": "python repl.py",
+        "tty": true,
+        "timeout_ms": 1000
+      },
+      "expect_session": true
+    },
+    {
+      "name": "write_stdin_rejects_missing_session",
+      "tool": "write_stdin",
+      "arguments": {
+        "session_id": "missing-session",
+        "chars": "hello\n"
+      },
+      "expect_success": false
+    }
+  ]
+}

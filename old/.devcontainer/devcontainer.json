@@ -1,0 +1,15 @@
+{
+  "name": "coding-tools-mcp-sandbox",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "forwardPorts": [8765],
+  "containerEnv": {
+    "CODING_TOOLS_MCP_WORKSPACE": "/workspace",
+    "CODING_TOOLS_MCP_PERMISSION_MODE": "trusted"
+  },
+  "postCreateCommand": "python -m pip install -e \".[dev]\""
+}

@@ -1,0 +1,198 @@
+{
+  "baseline": {
+    "artifacts": [
+      "reports/benchmark/swebench-official-attempt/raw/baseline-logs-run_evaluation"
+    ],
+    "command": [
+      "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+      "-m",
+      "swebench.harness.run_evaluation",
+      "--dataset_name",
+      "princeton-nlp/SWE-bench_Lite",
+      "--predictions_path",
+      "reports/benchmark/swebench-reference-predictions/baseline_reference.jsonl",
+      "--max_workers",
+      "1",
+      "--run_id",
+      "codex_tool_runtime_native_smoke",
+      "--instance_ids",
+      "sympy__sympy-12419"
+    ],
+    "completed": 1,
+    "count": 1,
+    "errors": [],
+    "expected": 1,
+    "missing_report_ids": [],
+    "model_names": [
+      "baseline_native_reference_patch"
+    ],
+    "path": "reports/benchmark/swebench-reference-predictions/baseline_reference.jsonl",
+    "placeholder": false,
+    "report_paths": [
+      "logs/run_evaluation/codex_tool_runtime_native_smoke/baseline_native_reference_patch/sympy__sympy-12419/report.json"
+    ],
+    "resolved": 1,
+    "resolved_ids": [
+      "sympy__sympy-12419"
+    ],
+    "run": {
+      "command": [
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+        "-m",
+        "swebench.harness.run_evaluation",
+        "--dataset_name",
+        "princeton-nlp/SWE-bench_Lite",
+        "--predictions_path",
+        "reports/benchmark/swebench-reference-predictions/baseline_reference.jsonl",
+        "--max_workers",
+        "1",
+        "--run_id",
+        "codex_tool_runtime_native_smoke",
+        "--instance_ids",
+        "sympy__sympy-12419"
+      ],
+      "ran": true,
+      "returncode": 0,
+      "stderr": "<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-05-17 23:23:09,677 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-17 23:23:09,677 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-17 23:23:09,682 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:09,689 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:09,773 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:09,989 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/princeton-nlp/SWE-bench_Lite/princeton-nlp/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:10,070 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/revision/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:10,150 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:10,264 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=princeton-nlp/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:10,466 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/tree/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:10,540 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/tree/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:10,641 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/dataset_infos.json \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:10,730 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/data/dev-00000-of-00001.parquet \"HTTP/1.1 302 Found\"\n2026-05-17 23:23:10,811 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/xet-read-token/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:11,340 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/data/test-00000-of-00001.parquet \"HTTP/1.1 302 Found\"\n\nGenerating dev split:   0%|          | 0/23 [00:00<?, ? examples/s]\nGenerating dev split: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 23/23 [00:00<00:00, 5429.37 examples/s]\n\nGenerating test split:   0%|          | 0/300 [00:00<?, ? examples/s]\nGenerating test split: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 300/300 [00:00<00:00, 37329.16 examples/s]\n2026-05-17 23:23:11,712 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\n2026-05-17 23:23:11,720 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:11,830 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:11,903 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/princeton-nlp/SWE-bench_Lite/princeton-nlp/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:11,996 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:23:12,087 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=princeton-nlp/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-05-17 23:23:12,165 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/dataset_infos.json \"HTTP/1.1 404 Not Found\"\n\nEvaluation:   0%|          | 0/1 [00:00<?, ?it/s, error=0, \u2713=0, \u2716=0]\nEvaluation:   0%|          | 0/1 [00:51<?, ?it/s, \u2713=1, \u2716=0, error=0]\nEvaluation: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 1/1 [00:51<00:00, 51.94s/it, \u2713=1, \u2716=0, error=0]\nEvaluation: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 1/1 [00:51<00:00, 51.94s/it, \u2713=1, \u2716=0, error=0]\n",
+      "stdout": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to baseline_native_reference_patch.codex_tool_runtime_native_smoke.json\n"
+    },
+    "unresolved_ids": []
+  },
+  "candidate": {
+    "artifacts": [
+      "reports/benchmark/swebench-official-attempt/raw/candidate-logs-run_evaluation"
+    ],
+    "command": [
+      "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+      "-m",
+      "swebench.harness.run_evaluation",
+      "--dataset_name",
+      "princeton-nlp/SWE-bench_Lite",
+      "--predictions_path",
+      "reports/benchmark/swebench-reference-predictions/candidate_reference.jsonl",
+      "--max_workers",
+      "1",
+      "--run_id",
+      "codex_tool_runtime_mcp_smoke",
+      "--instance_ids",
+      "sympy__sympy-12419"
+    ],
+    "completed": 1,
+    "count": 1,
+    "errors": [],
+    "expected": 1,
+    "missing_report_ids": [],
+    "model_names": [
+      "candidate_mcp_reference_patch"
+    ],
+    "path": "reports/benchmark/swebench-reference-predictions/candidate_reference.jsonl",
+    "placeholder": false,
+    "report_paths": [
+      "logs/run_evaluation/codex_tool_runtime_mcp_smoke/candidate_mcp_reference_patch/sympy__sympy-12419/report.json"
+    ],
+    "resolved": 1,
+    "resolved_ids": [
+      "sympy__sympy-12419"
+    ],
+    "run": {
+      "command": [
+        "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+        "-m",
+        "swebench.harness.run_evaluation",
+        "--dataset_name",
+        "princeton-nlp/SWE-bench_Lite",
+        "--predictions_path",
+        "reports/benchmark/swebench-reference-predictions/candidate_reference.jsonl",
+        "--max_workers",
+        "1",
+        "--run_id",
+        "codex_tool_runtime_mcp_smoke",
+        "--instance_ids",
+        "sympy__sympy-12419"
+      ],
+      "ran": true,
+      "returncode": 0,
+      "stderr": "<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n2026-05-17 23:24:05,770 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\n2026-05-17 23:24:05,775 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:05,853 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\nWarning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-17 23:24:05,853 - huggingface_hub.utils._http - WARNING - Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n2026-05-17 23:24:06,088 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/princeton-nlp/SWE-bench_Lite/princeton-nlp/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:24:06,170 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/revision/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2 \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:06,248 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:24:06,368 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=princeton-nlp/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:06,452 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/tree/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/data?recursive=true&expand=false \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:06,530 - httpx - INFO - HTTP Request: GET https://huggingface.co/api/datasets/princeton-nlp/SWE-bench_Lite/tree/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2?recursive=false&expand=false \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:06,607 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/dataset_infos.json \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:24:06,732 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/main/README.md \"HTTP/1.1 307 Temporary Redirect\"\n2026-05-17 23:24:06,738 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/datasets/princeton-nlp/SWE-bench_Lite/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/README.md \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:06,815 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:24:06,889 - httpx - INFO - HTTP Request: HEAD https://s3.amazonaws.com/datasets.huggingface.co/datasets/datasets/princeton-nlp/SWE-bench_Lite/princeton-nlp/SWE-bench_Lite.py \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:24:06,973 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/.huggingface.yaml \"HTTP/1.1 404 Not Found\"\n2026-05-17 23:24:07,067 - httpx - INFO - HTTP Request: GET https://datasets-server.huggingface.co/info?dataset=princeton-nlp/SWE-bench_Lite \"HTTP/1.1 200 OK\"\n2026-05-17 23:24:07,142 - httpx - INFO - HTTP Request: HEAD https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite/resolve/6ec7bb89b9342f664a54a6e0a6ea6501d3437cc2/dataset_infos.json \"HTTP/1.1 404 Not Found\"\n\nEvaluation:   0%|          | 0/1 [00:00<?, ?it/s, error=0, \u2713=0, \u2716=0]\nEvaluation:   0%|          | 0/1 [00:52<?, ?it/s, \u2713=1, \u2716=0, error=0]\nEvaluation: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 1/1 [00:52<00:00, 52.90s/it, \u2713=1, \u2716=0, error=0]\nEvaluation: 100%|\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588| 1/1 [00:52<00:00, 52.90s/it, \u2713=1, \u2716=0, error=0]\n",
+      "stdout": "Running 1 instances...\nAll instances run.\nCleaning cached images...\nRemoved 0 images.\nTotal instances: 1\nInstances submitted: 1\nInstances completed: 1\nInstances incomplete: 0\nInstances resolved: 1\nInstances unresolved: 0\nInstances with empty patches: 0\nInstances with errors: 0\nUnstopped containers: 0\nUnremoved images: 0\nReport written to candidate_mcp_reference_patch.codex_tool_runtime_mcp_smoke.json\n"
+    },
+    "unresolved_ids": []
+  },
+  "conclusion": "PASS",
+  "dataset_name": "princeton-nlp/SWE-bench_Lite",
+  "docker": {
+    "command": [
+      "/usr/bin/docker",
+      "version"
+    ],
+    "ran": true,
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "Client: Docker Engine - Community\n Version:           28.0.4\n API version:       1.48\n Go version:        go1.23.7\n Git commit:        b8034c0\n Built:             Tue Mar 25 15:07:16 2025\n OS/Arch:           linux/amd64\n Context:           default\n\nServer: Docker Engine - Community\n Engine:\n  Version:          28.0.4\n  API version:      1.48 (minimum version 1.24)\n  Go version:       go1.23.7\n  Git commit:       6430e49\n  Built:            Tue Mar 25 15:07:16 2025\n  OS/Arch:          linux/amd64\n  Experimental:     false\n containerd:\n  Version:          v2.2.3\n  GitCommit:        77c84241c7cbdd9b4eca2591793e3d4f4317c590\n runc:\n  Version:          1.3.5\n  GitCommit:        v1.3.5-0-g488fc13e\n docker-init:\n  Version:          0.19.0\n  GitCommit:        de40ad0\n"
+  },
+  "environment": {
+    "cwd": "/home/runner/work/codex-tool-runtime-mcp/codex-tool-runtime-mcp",
+    "executables": {
+      "docker": "/usr/bin/docker",
+      "git": "/usr/bin/git"
+    },
+    "github": {
+      "actions": "true",
+      "ref": "refs/heads/main",
+      "repository": "ytagent/codex-tool-runtime-mcp",
+      "run_attempt": "1",
+      "run_id": "26005718266",
+      "runner_os": "Linux",
+      "sha": "1e05880118dc8419d129f87172315ebce82dce50"
+    },
+    "packages": {
+      "datasets": "4.8.5",
+      "docker": "7.1.0",
+      "swebench": "4.1.0"
+    },
+    "platform": "Linux-6.17.0-1013-azure-x86_64-with-glibc2.39",
+    "python": "3.11.15 (main, Mar  3 2026, 16:10:12) [GCC 13.3.0]",
+    "python_executable": "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python"
+  },
+  "instances": [
+    {
+      "instance_id": "sympy__sympy-12419",
+      "project": "sympy",
+      "repo": "sympy/sympy"
+    }
+  ],
+  "limitations": [],
+  "preflight": [
+    "docker: ok - docker version succeeded",
+    "swebench package: ok - swebench harness help succeeded",
+    "baseline predictions: 1 rows, placeholder=False",
+    "candidate predictions: 1 rows, placeholder=False"
+  ],
+  "raw_dir": "reports/benchmark/swebench-official-attempt/raw",
+  "split": "test",
+  "subset_path": "/home/runner/work/codex-tool-runtime-mcp/codex-tool-runtime-mcp/benchmarks/swebench/subsets/smoke-lite-10.json",
+  "swebench_help": {
+    "command": [
+      "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+      "-m",
+      "swebench.harness.run_evaluation",
+      "--help"
+    ],
+    "ran": true,
+    "returncode": 0,
+    "stderr": "<frozen runpy>:128: RuntimeWarning: 'swebench.harness.run_evaluation' found in sys.modules after import of package 'swebench.harness', but prior to execution of 'swebench.harness.run_evaluation'; this may result in unpredictable behaviour\n",
+    "stdout": "usage: run_evaluation.py [-h] [-d DATASET_NAME] [-s SPLIT]\n                         [-i INSTANCE_IDS [INSTANCE_IDS ...]] -p\n                         PREDICTIONS_PATH [--max_workers MAX_WORKERS]\n                         [--open_file_limit OPEN_FILE_LIMIT] [-t TIMEOUT]\n                         [--force_rebuild FORCE_REBUILD]\n                         [--cache_level {none,base,env,instance}]\n                         [--clean CLEAN] -id RUN_ID [-n NAMESPACE]\n                         [--instance_image_tag INSTANCE_IMAGE_TAG]\n                         [--env_image_tag ENV_IMAGE_TAG]\n                         [--rewrite_reports REWRITE_REPORTS]\n                         [--report_dir REPORT_DIR] [--modal MODAL]\n\nRun evaluation harness for the given dataset and predictions.\n\noptions:\n  -h, --help            show this help message and exit\n  -d DATASET_NAME, --dataset_name DATASET_NAME\n                        Name of dataset or path to JSON file. (default: SWE-\n                        bench/SWE-bench_Lite)\n  -s SPLIT, --split SPLIT\n                        Split of the dataset (default: test)\n  -i INSTANCE_IDS [INSTANCE_IDS ...], --instance_ids INSTANCE_IDS [INSTANCE_IDS ...]\n                        Instance IDs to run (space separated) (default: None)\n  -p PREDICTIONS_PATH, --predictions_path PREDICTIONS_PATH\n                        Path to predictions file - if 'gold', uses gold\n                        predictions (default: None)\n  --max_workers MAX_WORKERS\n                        Maximum number of workers (should be <= 75% of CPU\n                        cores) (default: 4)\n  --open_file_limit OPEN_FILE_LIMIT\n                        Open file limit (default: 4096)\n  -t TIMEOUT, --timeout TIMEOUT\n                        Timeout (in seconds) for running tests for each\n                        instance (default: 1800)\n  --force_rebuild FORCE_REBUILD\n                        Force rebuild of all images (default: False)\n  --cache_level {none,base,env,instance}\n                        Cache level - remove images above this level (default:\n                        env)\n  --clean CLEAN         Clean images above cache level (default: False)\n  -id RUN_ID, --run_id RUN_ID\n                        Run ID - identifies the run (default: None)\n  -n NAMESPACE, --namespace NAMESPACE\n                        Namespace for images. (use \"none\" to use no namespace)\n                        (default: swebench)\n  --instance_image_tag INSTANCE_IMAGE_TAG\n                        Instance image tag (default: latest)\n  --env_image_tag ENV_IMAGE_TAG\n                        Environment image tag (default: latest)\n  --rewrite_reports REWRITE_REPORTS\n                        Doesn't run new instances, only writes reports for\n                        instances with existing test outputs (default: False)\n  --report_dir REPORT_DIR\n                        Directory to write reports to (default: .)\n  --modal MODAL         Run on Modal (default: False)\n"
+  },
+  "swebench_install": {
+    "command": [
+      "/opt/hostedtoolcache/Python/3.11.15/x64/bin/python",
+      "-m",
+      "pip",
+      "install",
+      "swebench"
+    ],
+    "ran": true,
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "g charset_normalizer<4,>=2 (from requests->swebench)\n  Downloading charset_normalizer-3.4.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (40 kB)\nCollecting urllib3<3,>=1.26 (from requests->swebench)\n  Downloading urllib3-2.7.0-py3-none-any.whl.metadata (6.9 kB)\nCollecting click>=8.2.1 (from typer>=0.20.0->huggingface-hub<2.0,>=0.25.0->datasets->swebench)\n  Downloading click-8.4.0-py3-none-any.whl.metadata (2.6 kB)\nCollecting shellingham>=1.3.0 (from typer>=0.20.0->huggingface-hub<2.0,>=0.25.0->datasets->swebench)\n  Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)\nCollecting annotated-doc>=0.0.2 (from typer>=0.20.0->huggingface-hub<2.0,>=0.25.0->datasets->swebench)\n  Downloading annotated_doc-0.0.4-py3-none-any.whl.metadata (6.6 kB)\nCollecting markdown-it-py>=2.2.0 (from rich->swebench)\n  Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)\nCollecting pygments<3.0.0,>=2.13.0 (from rich->swebench)\n  Downloading pygments-2.20.0-py3-none-any.whl.metadata (2.5 kB)\nCollecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich->swebench)\n  Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)\nCollecting fastcore>=1.12.19 (from ghapi->swebench)\n  Downloading fastcore-1.13.2-py3-none-any.whl.metadata (3.4 kB)\nCollecting gitdb<5,>=4.0.1 (from GitPython->swebench)\n  Downloading gitdb-4.0.12-py3-none-any.whl.metadata (1.2 kB)\nCollecting smmap<6,>=3.0.1 (from gitdb<5,>=4.0.1->GitPython->swebench)\n  Downloading smmap-5.0.3-py3-none-any.whl.metadata (4.6 kB)\nCollecting cbor2 (from modal->swebench)\n  Downloading cbor2-6.1.1-cp311-cp311-manylinux_2_28_x86_64.whl.metadata (5.5 kB)\nCollecting grpclib<0.4.10,>=0.4.7 (from modal->swebench)\n  Downloading grpclib-0.4.9-py3-none-any.whl.metadata (6.1 kB)\nCollecting protobuf!=4.24.0,<7.0,>=3.19 (from modal->swebench)\n  Downloading protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl.metadata (593 bytes)\nCollecting synchronicity~=0.12.1 (from modal->swebench)\n  Downloading synchronicity-0.12.2-py3-none-any.whl.metadata (14 kB)\nCollecting toml (from modal->swebench)\n  Downloading toml-0.10.2-py2.py3-none-any.whl.metadata (7.1 kB)\nCollecting types-certifi (from modal->swebench)\n  Downloading types_certifi-2021.10.8.3-py3-none-any.whl.metadata (1.4 kB)\nCollecting types-toml (from modal->swebench)\n  Downloading types_toml-0.10.8.20260508-py3-none-any.whl.metadata (1.7 kB)\nCollecting watchfiles (from modal->swebench)\n  Downloading watchfiles-1.1.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.9 kB)\nCollecting h2<5,>=3.1.0 (from grpclib<0.4.10,>=0.4.7->modal->swebench)\n  Downloading h2-4.3.0-py3-none-any.whl.metadata (5.1 kB)\nCollecting hyperframe<7,>=6.1 (from h2<5,>=3.1.0->grpclib<0.4.10,>=0.4.7->modal->swebench)\n  Downloading hyperframe-6.1.0-py3-none-any.whl.metadata (4.3 kB)\nCollecting hpack<5,>=4.1 (from h2<5,>=3.1.0->grpclib<0.4.10,>=0.4.7->modal->swebench)\n  Downloading hpack-4.1.0-py3-none-any.whl.metadata (4.6 kB)\nCollecting python-dateutil>=2.8.2 (from pandas->datasets->swebench)\n  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)\nCollecting six>=1.5 (from python-dateutil>=2.8.2->pandas->datasets->swebench)\n  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)\nCollecting cfgv>=2.0.0 (from pre-commit->swebench)\n  Downloading cfgv-3.5.0-py2.py3-none-any.whl.metadata (8.9 kB)\nCollecting identify>=1.0.0 (from pre-commit->swebench)\n  Downloading identify-2.6.19-py2.py3-none-any.whl.metadata (4.4 kB)\nCollecting nodeenv>=0.11.1 (from pre-commit->swebench)\n  Downloading nodeenv-1.10.0-py2.py3-none-any.whl.metadata (24 kB)\nCollecting virtualenv>=20.10.0 (from pre-commit->swebench)\n  Downloading virtualenv-21.3.3-py3-none-any.whl.metadata (3.5 kB)\nCollecting distlib<1,>=0.3.7 (from virtualenv>=20.10.0->pre-commit->swebench)\n  Downloading distlib-0.4.0-py2.py3-none-any.whl.metadata (5.2 kB)\nCollecting platformdirs<5,>=3.9.1 (from virtualenv>=20.10.0->pre-commit->swebench)\n  Downloading platformdirs-4.9.6-py3-none-any.whl.metadata (4.7 kB)\nCollecting python-discovery>=1.3.1 (from virtualenv>=20.10.0->pre-commit->swebench)\n  Downloading python_discovery-1.3.1-py3-none-any.whl.metadata (5.6 kB)\nDownloading swebench-4.1.0-py3-none-any.whl (157 kB)\nDownloading beautifulsoup4-4.14.3-py3-none-any.whl (107 kB)\nDownloading soupsieve-2.8.3-py3-none-any.whl (37 kB)\nDownloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)\nDownloading chardet-7.4.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (883 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 883.4/883.4 kB 35.0 MB/s  0:00:00\nDownloading datasets-4.8.5-py3-none-any.whl (528 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 529.0/529.0 kB 71.1 MB/s  0:00:00\nDownloading dill-0.4.1-py3-none-any.whl (120 kB)\nDownloading fsspec-2026.2.0-py3-none-any.whl (202 kB)\nDownloading httpx-0.28.1-py3-none-any.whl (73 kB)\nDownloading httpcore-1.0.9-py3-none-any.whl (78 kB)\nDownloading huggingface_hub-1.15.0-py3-none-any.whl (663 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 663.6/663.6 kB 126.0 MB/s  0:00:00\nDownloading hf_xet-1.5.0-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.5 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 4.5/4.5 MB 147.2 MB/s  0:00:00\nDownloading multiprocess-0.70.19-py311-none-any.whl (144 kB)\nDownloading aiohttp-3.13.5-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (1.8 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 1.8/1.8 MB 248.6 MB/s  0:00:00\nDownloading multidict-6.7.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (246 kB)\nDownloading yarl-1.23.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (102 kB)\nDownloading aiohappyeyeballs-2.6.1-py3-none-any.whl (15 kB)\nDownloading aiosignal-1.4.0-py3-none-any.whl (7.5 kB)\nDownloading attrs-26.1.0-py3-none-any.whl (67 kB)\nDownloading filelock-3.29.0-py3-none-any.whl (39 kB)\nDownloading frozenlist-1.8.0-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (231 kB)\nDownloading h11-0.16.0-py3-none-any.whl (37 kB)\nDownloading idna-3.15-py3-none-any.whl (72 kB)\nDownloading numpy-2.4.5-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.9 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 16.9/16.9 MB 130.5 MB/s  0:00:00\nDownloading packaging-26.2-py3-none-any.whl (100 kB)\nDownloading propcache-0.5.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (58 kB)\nDownloading pyarrow-24.0.0-cp311-cp311-manylinux_2_28_x86_64.whl (48.8 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 48.8/48.8 MB 195.1 MB/s  0:00:00\nDownloading pyyaml-6.0.3-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (806 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 806.6/806.6 kB 150.5 MB/s  0:00:00\nDownloading requests-2.34.2-py3-none-any.whl (73 kB)\nDownloading charset_normalizer-3.4.7-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (214 kB)\nDownloading urllib3-2.7.0-py3-none-any.whl (131 kB)\nDownloading certifi-2026.4.22-py3-none-any.whl (135 kB)\nDownloading tqdm-4.67.3-py3-none-any.whl (78 kB)\nDownloading typer-0.25.1-py3-none-any.whl (58 kB)\nDownloading annotated_doc-0.0.4-py3-none-any.whl (5.3 kB)\nDownloading click-8.4.0-py3-none-any.whl (116 kB)\nDownloading rich-15.0.0-py3-none-any.whl (310 kB)\nDownloading pygments-2.20.0-py3-none-any.whl (1.2 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 1.2/1.2 MB 206.9 MB/s  0:00:00\nDownloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)\nDownloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)\nDownloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)\nDownloading anyio-4.13.0-py3-none-any.whl (114 kB)\nDownloading docker-7.1.0-py3-none-any.whl (147 kB)\nDownloading ghapi-1.0.13-py3-none-any.whl (71 kB)\nDownloading fastcore-1.13.2-py3-none-any.whl (105 kB)\nDownloading gitpython-3.1.50-py3-none-any.whl (212 kB)\nDownloading gitdb-4.0.12-py3-none-any.whl (62 kB)\nDownloading smmap-5.0.3-py3-none-any.whl (24 kB)\nDownloading modal-1.4.2-py3-none-any.whl (802 kB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 802.8/802.8 kB 141.1 MB/s  0:00:00\nDownloading grpclib-0.4.9-py3-none-any.whl (77 kB)\nDownloading h2-4.3.0-py3-none-any.whl (61 kB)\nDownloading hpack-4.1.0-py3-none-any.whl (34 kB)\nDownloading hyperframe-6.1.0-py3-none-any.whl (13 kB)\nDownloading protobuf-6.33.6-cp39-abi3-manylinux2014_x86_64.whl (323 kB)\nDownloading synchronicity-0.12.2-py3-none-any.whl (41 kB)\nDownloading cbor2-6.1.1-cp311-cp311-manylinux_2_28_x86_64.whl (469 kB)\nDownloading pandas-3.0.3-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (11.3 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 11.3/11.3 MB 156.4 MB/s  0:00:00\nDownloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)\nDownloading six-1.17.0-py2.py3-none-any.whl (11 kB)\nDownloading pre_commit-4.6.0-py2.py3-none-any.whl (226 kB)\nDownloading cfgv-3.5.0-py2.py3-none-any.whl (7.4 kB)\nDownloading identify-2.6.19-py2.py3-none-any.whl (99 kB)\nDownloading nodeenv-1.10.0-py2.py3-none-any.whl (23 kB)\nDownloading virtualenv-21.3.3-py3-none-any.whl (7.6 MB)\n   \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 7.6/7.6 MB 263.1 MB/s  0:00:00\nDownloading distlib-0.4.0-py2.py3-none-any.whl (469 kB)\nDownloading platformdirs-4.9.6-py3-none-any.whl (21 kB)\nDownloading python_discovery-1.3.1-py3-none-any.whl (33 kB)\nDownloading python_dotenv-1.2.2-py3-none-any.whl (22 kB)\nDownloading tenacity-9.1.4-py3-none-any.whl (28 kB)\nDownloading toml-0.10.2-py2.py3-none-any.whl (16 kB)\nDownloading types_certifi-2021.10.8.3-py3-none-any.whl (2.1 kB)\nDownloading types_toml-0.10.8.20260508-py3-none-any.whl (9.7 kB)\nDownloading unidiff-0.7.5-py2.py3-none-any.whl (14 kB)\nDownloading watchfiles-1.1.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (456 kB)\nDownloading xxhash-3.7.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (193 kB)\nInstalling collected packages: unidiff, types-certifi, distlib, xxhash, urllib3, typing-extensions, types-toml, tqdm, toml, tenacity, soupsieve, smmap, six, shellingham, pyyaml, python-dotenv, pygments, pyarrow, protobuf, propcache, platformdirs, packaging, numpy, nodeenv, multidict, mdurl, idna, identify, hyperframe, hpack, hf-xet, h11, fsspec, frozenlist, filelock, fastcore, dill, click, charset_normalizer, chardet, cfgv, certifi, cbor2, attrs, annotated-doc, aiohappyeyeballs, yarl, synchronicity, requests, python-discovery, python-dateutil, multiprocess, markdown-it-py, httpcore, h2, gitdb, ghapi, beautifulsoup4, anyio, aiosignal, watchfiles, virtualenv, rich, pandas, httpx, grpclib, GitPython, docker, aiohttp, typer, pre-commit, modal, huggingface-hub, datasets, swebench\n\nSuccessfully installed GitPython-3.1.50 aiohappyeyeballs-2.6.1 aiohttp-3.13.5 aiosignal-1.4.0 annotated-doc-0.0.4 anyio-4.13.0 attrs-26.1.0 beautifulsoup4-4.14.3 cbor2-6.1.1 certifi-2026.4.22 cfgv-3.5.0 chardet-7.4.3 charset_normalizer-3.4.7 click-8.4.0 datasets-4.8.5 dill-0.4.1 distlib-0.4.0 docker-7.1.0 fastcore-1.13.2 filelock-3.29.0 frozenlist-1.8.0 fsspec-2026.2.0 ghapi-1.0.13 gitdb-4.0.12 grpclib-0.4.9 h11-0.16.0 h2-4.3.0 hf-xet-1.5.0 hpack-4.1.0 httpcore-1.0.9 httpx-0.28.1 huggingface-hub-1.15.0 hyperframe-6.1.0 identify-2.6.19 idna-3.15 markdown-it-py-4.2.0 mdurl-0.1.2 modal-1.4.2 multidict-6.7.1 multiprocess-0.70.19 nodeenv-1.10.0 numpy-2.4.5 packaging-26.2 pandas-3.0.3 platformdirs-4.9.6 pre-commit-4.6.0 propcache-0.5.2 protobuf-6.33.6 pyarrow-24.0.0 pygments-2.20.0 python-dateutil-2.9.0.post0 python-discovery-1.3.1 python-dotenv-1.2.2 pyyaml-6.0.3 requests-2.34.2 rich-15.0.0 shellingham-1.5.4 six-1.17.0 smmap-5.0.3 soupsieve-2.8.3 swebench-4.1.0 synchronicity-0.12.2 tenacity-9.1.4 toml-0.10.2 tqdm-4.67.3 typer-0.25.1 types-certifi-2021.10.8.3 types-toml-0.10.8.20260508 typing-extensions-4.15.0 unidiff-0.7.5 urllib3-2.7.0 virtualenv-21.3.3 watchfiles-1.1.1 xxhash-3.7.0 yarl-1.23.0\n"
+  }
+}
