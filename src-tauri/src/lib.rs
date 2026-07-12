@@ -16,10 +16,14 @@ mod workspace;
 use app_state::AppState;
 use commands::{
     create_workspace, delete_frp_profile, delete_workspace, get_actions_runtime_status,
-    get_app_settings, get_frp_snippet, get_last_workspace_id, get_runtime_status, get_workspace_secret,
-    list_frp_profiles, list_workspaces, read_workspace_logs, regenerate_workspace_secret,
-    restart_tunnel, run_health_checks, save_frp_profile, set_last_workspace, set_workspace_secret, start_actions_runtime,
-    start_runtime, start_tunnel, stop_actions_runtime, stop_runtime, stop_tunnel, update_workspace,
+    get_app_settings, get_download_config, get_frp_snippet, get_last_workspace_id, get_proxy,
+    get_runtime_status,
+    get_shared_secret, get_workspace_secret, install_software, list_frp_profiles, list_software,
+    list_workspaces, read_workspace_logs, regenerate_shared_secret, regenerate_workspace_secret,
+    restart_actions_runtime, restart_runtime, restart_tunnel, run_health_checks, save_frp_profile,
+    set_download_config, set_last_workspace, set_shared_secret, set_workspace_secret,
+    start_actions_runtime, start_runtime, start_tunnel, stop_actions_runtime, stop_runtime,
+    stop_tunnel, uninstall_software, update_workspace,
 };
 use tauri::Manager;
 
@@ -42,6 +46,8 @@ pub fn run() {
             start_actions_runtime,
             stop_actions_runtime,
             get_actions_runtime_status,
+            restart_runtime,
+            restart_actions_runtime,
             get_frp_snippet,
             start_tunnel,
             stop_tunnel,
@@ -49,6 +55,9 @@ pub fn run() {
             get_workspace_secret,
             set_workspace_secret,
             regenerate_workspace_secret,
+            get_shared_secret,
+            set_shared_secret,
+            regenerate_shared_secret,
             read_workspace_logs,
             list_frp_profiles,
             save_frp_profile,
@@ -57,7 +66,14 @@ pub fn run() {
             restart_tunnel,
             set_last_workspace,
             get_last_workspace_id,
-        ])
+            list_software,
+            install_software,
+            uninstall_software,
+    get_download_config,
+    set_download_config,
+    get_proxy,
+    set_proxy,
+])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -37,3 +37,16 @@ export async function setLastWorkspace(id: string): Promise<void> {
 export async function deleteFrpProfile(id: string): Promise<void> {
   return invoke("delete_frp_profile", { id });
 }
+
+export interface ProxyConfigDto {
+  mode: string;
+  url: string;
+}
+
+export async function getProxy(): Promise<ProxyConfigDto> {
+  return invoke<ProxyConfigDto>("get_proxy");
+}
+
+export async function setProxy(proxy: ProxyConfigDto): Promise<void> {
+  return invoke("set_proxy", { proxy });
+}

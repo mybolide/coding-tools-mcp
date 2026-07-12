@@ -59,6 +59,18 @@
     goto("/settings/frp");
   }
 
+  function openSoftwareSettings() {
+    goto("/settings/software");
+  }
+
+  function openGeneralSettings() {
+    goto("/settings/general");
+  }
+
+  function openKeysSettings() {
+    goto("/settings/keys");
+  }
+
   onMount(async () => {
     await refreshWorkspaces();
     const path = $page.url.pathname;
@@ -77,10 +89,31 @@
   {#snippet settingsNav()}
     <button
       type="button"
+      class="tx-settings-link {$page.url.pathname === '/settings/general' ? 'active' : ''}"
+      onclick={openGeneralSettings}
+    >
+      通用
+    </button>
+    <button
+      type="button"
+      class="tx-settings-link {$page.url.pathname === '/settings/keys' ? 'active' : ''}"
+      onclick={openKeysSettings}
+    >
+      共享密钥
+    </button>
+    <button
+      type="button"
       class="tx-settings-link {$page.url.pathname === '/settings/frp' ? 'active' : ''}"
       onclick={openFrpSettings}
     >
       FRP 配置
+    </button>
+    <button
+      type="button"
+      class="tx-settings-link {$page.url.pathname === '/settings/software' ? 'active' : ''}"
+      onclick={openSoftwareSettings}
+    >
+      软件管理
     </button>
   {/snippet}
   {#snippet sidebar()}

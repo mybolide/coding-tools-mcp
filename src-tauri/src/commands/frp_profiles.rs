@@ -3,7 +3,7 @@ use tauri::State;
 use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
 use crate::secret::SecretStore;
-use crate::settings::{AppSettings, FrpProfile};
+use crate::settings::{AppSettings, FrpProfile, ProxyConfig};
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +98,20 @@ pub fn delete_frp_profile(state: State<'_, AppState>, id: String) -> AppResult<(
 #[tauri::command]
 pub fn get_app_settings(state: State<'_, AppState>) -> AppResult<AppSettings> {
     state.with_settings(|store| Ok(store.get().clone()))
+}
+
+#[tauri::command]
+pub fn get_proxy(state: State<'_, AppState>) -> AppResult<ProxyConfig> {
+    state.with_settings(|store| Ok(store.get().proxy.clone()))
+}
+
+#[tauri::command]
+pub fn set_proxy(state: State<'_, AppState>, proxy: ProxyConfig) -> AppResult<()> {
+    state.with_settings(|store| {
+        let mut settings = store.get().clone();
+        settings.proxy = proxy;
+        store.update(settings)
+    })
 }
 
 #[tauri::command]

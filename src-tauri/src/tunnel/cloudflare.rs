@@ -8,8 +8,9 @@ use tokio::time;
 
 use crate::error::{AppError, AppResult};
 use crate::platform::platform;
+use crate::settings::ProxyConfig;
 
-const READY_TIMEOUT: Duration = Duration::from_secs(12);
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Handle to a supervised `cloudflared` child process.
 pub struct CloudflareTunnelHandle {
@@ -23,13 +24,151 @@ pub fn resolve_cloudflared() -> AppResult<PathBuf> {
         .cloudflared_candidates()
         .into_iter()
         .find(|path| path.is_file())
+        .or_else(|| cached_cloudflared_path().filter(|path| path.is_file()))
         .ok_or_else(|| {
             AppError::Message(
-                "未找到 cloudflared。请先安装 Cloudflare Tunnel CLI。\n\
+                "未找到 cloudflared。请到「软件管理」安装，或自行安装 Cloudflare Tunnel CLI。\n\
                  Windows 可执行：winget install Cloudflare.cloudflared"
                     .into(),
             )
         })
+}
+
+/// Path where the app caches a self-managed cloudflared binary.
+pub(crate) fn cached_cloudflared_path() -> Option<PathBuf> {
+    platform()
+        .app_config_dir()
+        .ok()
+        .map(|dir| dir.join("bin").join(cloudflared_binary_name()))
+}
+
+pub(crate) fn cloudflared_binary_name() -> &'static str {
+    #[cfg(windows)]
+    {
+        "cloudflared.exe"
+    }
+    #[cfg(not(windows))]
+    {
+        "cloudflared"
+    }
+}
+
+/// GitHub release asset name for the current platform.
+fn cloudflared_release_asset() -> AppResult<&'static str> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        return Ok("cloudflared-windows-amd64.exe");
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        return Ok("cloudflared-windows-arm64.exe");
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        return Ok("cloudflared-linux-amd64");
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        return Ok("cloudflared-linux-arm64");
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        return Ok("cloudflared-darwin-amd64.tgz");
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        return Ok("cloudflared-darwin-arm64.tgz");
+    }
+    #[cfg(not(any(
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "windows", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+    )))]
+    {
+        Err(AppError::Message(
+            "当前平台暂不支持自动下载 cloudflared。".into(),
+        ))
+    }
+}
+
+/// Latest cloudflared release. Pinned for reproducibility; bump as needed.
+const CLOUDFLARED_VERSION: &str = "2025.6.1";
+
+/// Download cloudflared into the app cache `bin/` directory, honoring the
+/// configured mirror + proxy. Windows/Linux assets are raw binaries; macOS
+/// assets are `.tgz` archives that need extraction.
+pub(crate) async fn download_cloudflared_to_cache() -> AppResult<PathBuf> {
+    let settings = crate::settings::AppSettings::load_or_default();
+    let asset = cloudflared_release_asset()?;
+    let url = format!(
+        "https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/{asset}"
+    );
+    let dest = cached_cloudflared_path()
+        .ok_or_else(|| AppError::Message("无法解析缓存目录。".into()))?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let bytes = crate::tunnel::download::download_release_asset(&settings, &url, "cloudflared").await?;
+
+    if asset.ends_with(".tgz") {
+        extract_cloudflared_from_tar_gz(&bytes, &dest)?;
+    } else {
+        std::fs::write(&dest, &bytes)?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&dest) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&dest, perms);
+        }
+    }
+
+    if dest.is_file() {
+        Ok(dest)
+    } else {
+        Err(AppError::Message("cloudflared 自动安装失败。".into()))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn extract_cloudflared_from_tar_gz(bytes: &[u8], dest: &Path) -> AppResult<()> {
+    let decoder = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive
+        .entries()
+        .map_err(|err| AppError::Message(format!("解压 cloudflared 安装包失败: {err}")))?
+    {
+        let mut entry =
+            entry.map_err(|err| AppError::Message(format!("读取 cloudflared 安装包失败: {err}")))?;
+        let path = entry
+            .path()
+            .map_err(|err| AppError::Message(err.to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if path.ends_with("cloudflared") {
+            let mut out = std::fs::File::create(dest)?;
+            std::io::copy(&mut entry, &mut out)?;
+            return Ok(());
+        }
+    }
+    Err(AppError::Message(
+        "cloudflared 安装包中未找到可执行文件。".into(),
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
+fn extract_cloudflared_from_tar_gz(_bytes: &[u8], _dest: &Path) -> AppResult<()> {
+    Err(AppError::Message(
+        "当前平台的 cloudflared 无需解压。".into(),
+    ))
 }
 
 pub fn extract_trycloudflare_url(line: &str) -> Option<String> {
@@ -55,6 +194,24 @@ pub fn extract_trycloudflare_url(line: &str) -> Option<String> {
         search_from = start + PREFIX.len();
     }
     None
+}
+
+/// Apply the global proxy to the cloudflared process environment so the
+/// tunnel can reach Cloudflare's edge through an outbound proxy.
+fn apply_proxy_env(cmd: &mut Command, proxy: &ProxyConfig) {
+    let url = match proxy.mode.as_str() {
+        "manual" if !proxy.url.trim().is_empty() => Some(proxy.url.trim().to_string()),
+        "system" => std::env::var("HTTPS_PROXY")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("HTTP_PROXY").ok().filter(|s| !s.is_empty())),
+        _ => None,
+    };
+    if let Some(url) = url {
+        for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+            cmd.env(key, &url);
+        }
+    }
 }
 
 /// Spawn `cloudflared tunnel --url http://127.0.0.1:{port}` (quick) or named `tunnel run --token`.
@@ -98,6 +255,9 @@ pub async fn spawn_cloudflare_tunnel(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+
+    let settings = crate::settings::AppSettings::load_or_default();
+    apply_proxy_env(&mut cmd, &settings.proxy);
 
     if quick {
         cmd.args([
