@@ -10,7 +10,7 @@ use crate::mcp;
 use crate::platform::platform;
 use crate::secret::SecretStore;
 use crate::tools::policy::PolicySettings;
-use crate::tunnel::{cleanup_orphan_for_runtime, TunnelServiceKind};
+use crate::tunnel::{append_profile_log, cleanup_orphan_for_runtime, TunnelServiceKind};
 use crate::workspace::{RuntimeStatusDto, WorkspaceProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +70,24 @@ impl RuntimeSupervisor {
 
     pub fn stop_actions(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
         self.stop(profile, ServiceKind::Actions)
+    }
+
+    pub fn restart_mcp(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
+        self.restart(profile, ServiceKind::Mcp)
+    }
+
+    pub fn restart_actions(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
+        self.restart(profile, ServiceKind::Actions)
+    }
+
+    /// True when the service for this workspace is currently running.
+    pub fn is_running(&self, workspace_id: &str, kind: ServiceKind) -> bool {
+        matches!(
+            self.entries
+                .get(&(workspace_id.to_string(), kind))
+                .map(|entry| &entry.phase),
+            Some(RuntimePhase::Running)
+        )
     }
 
     pub fn refresh_mcp(&mut self, profile: &WorkspaceProfile) {
@@ -173,18 +191,31 @@ impl RuntimeSupervisor {
                 .process_image_path(pid)?
                 .unwrap_or_else(|| format!("pid {pid}"));
             self.entries.remove(&key);
-            return Err(crate::error::AppError::Message(format!(
+            let message = format!(
                 "{}端口 {} 已被占用：{}",
                 service_label(kind).trim(),
                 port,
                 image
-            )));
+            );
+            append_profile_log(&profile.id, stderr_log_name(kind), &format!("[start] {message}"));
+            return Err(crate::error::AppError::Message(message));
         }
 
         let spawn_result = match kind {
             ServiceKind::Mcp => {
+                let use_shared = profile.auth.use_shared_secrets;
                 let oauth_client_secret = if profile.auth.oauth_enabled() {
-                    SecretStore::get(&profile.id, "oauth_client_secret")?
+                    resolve_secret(&profile.id, "oauth_client_secret", use_shared)?
+                } else {
+                    None
+                };
+                let oauth_password = if profile.auth.oauth_enabled() {
+                    resolve_secret(&profile.id, "oauth_password", use_shared)?
+                } else {
+                    None
+                };
+                let oauth_token_secret = if profile.auth.oauth_enabled() {
+                    resolve_secret(&profile.id, "oauth_token_secret", use_shared)?
                 } else {
                     None
                 };
@@ -195,37 +226,52 @@ impl RuntimeSupervisor {
                     profile.auth.clone(),
                     profile.effective_public_url(),
                     oauth_client_secret,
+                    oauth_password,
+                    oauth_token_secret,
                     profile.runtime.clone(),
                 )
             }
             ServiceKind::Actions => {
                 let auth_type = profile.actions.auth_type.clone();
+                let use_shared = profile.actions.use_shared_secrets;
                 let api_key = if auth_type == "api_key" {
-                    SecretStore::get(&profile.id, "actions_api_key")?
+                    resolve_secret(&profile.id, "actions_api_key", use_shared)?
                 } else {
                     None
                 };
                 let oauth_client_secret = if auth_type == "oauth" {
-                    Some(actions_oauth_secret(
-                        &profile.id,
-                        "actions_oauth_client_secret",
-                    )?)
+                    if use_shared {
+                        resolve_secret(&profile.id, "actions_oauth_client_secret", true)?
+                    } else {
+                        Some(actions_oauth_secret(
+                            &profile.id,
+                            "actions_oauth_client_secret",
+                        )?)
+                    }
                 } else {
                     None
                 };
                 let oauth_password = if auth_type == "oauth" {
-                    Some(actions_oauth_secret(
-                        &profile.id,
-                        "actions_oauth_password",
-                    )?)
+                    if use_shared {
+                        resolve_secret(&profile.id, "actions_oauth_password", true)?
+                    } else {
+                        Some(actions_oauth_secret(
+                            &profile.id,
+                            "actions_oauth_password",
+                        )?)
+                    }
                 } else {
                     None
                 };
                 let oauth_token_secret = if auth_type == "oauth" {
-                    Some(actions_oauth_secret(
-                        &profile.id,
-                        "actions_oauth_token_secret",
-                    )?)
+                    if use_shared {
+                        resolve_secret(&profile.id, "actions_oauth_token_secret", true)?
+                    } else {
+                        Some(actions_oauth_secret(
+                            &profile.id,
+                            "actions_oauth_token_secret",
+                        )?)
+                    }
                 } else {
                     None
                 };
@@ -260,6 +306,15 @@ impl RuntimeSupervisor {
                 );
             }
             Err(err) => {
+                // spawn_listener can fail synchronously before the server task is
+                // ever created (e.g. missing API key / OAuth secret). In that case
+                // serve() never runs, so nothing writes to the stderr log and the
+                // failure was previously invisible in the log viewer. Record it here.
+                append_profile_log(
+                    &profile.id,
+                    stderr_log_name(kind),
+                    &format!("[start] {}启动失败：{err}", service_label(kind).trim()),
+                );
                 self.entries.insert(
                     key,
                     RuntimeEntry {
@@ -280,6 +335,33 @@ impl RuntimeSupervisor {
         Ok(self.status(profile, kind))
     }
 
+    /// Stop the current service (if running), then immediately start a new one.
+    /// This is the canonical "restart" — used when the user regenerates a key or
+    /// toggles the shared-secret switch, so the listener picks up the new value.
+    ///
+    /// stop_internal sends the graceful-shutdown signal but the OS port may not
+    /// be freed instantly (the old listener's socket is closed on the tokio
+    /// event loop). We retry `start` with a short back-off to smooth over this
+    /// window.
+    fn restart(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) -> AppResult<RuntimeStatusDto> {
+        self.stop_internal(&profile.id, kind);
+        // Give the old listener a moment to release the port (≤200 ms).
+        for _ in 0..4 {
+            let port = port_for(profile, kind);
+            if platform()
+                .find_pid_listening_on_port(port)
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                return self.start(profile, kind);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // Last attempt — if it still fails, return the error from start.
+        self.start(profile, kind)
+    }
+
     fn stop_internal(&mut self, workspace_id: &str, kind: ServiceKind) {
         let key = (workspace_id.to_string(), kind);
         let Some(mut entry) = self.entries.remove(&key) else {
@@ -291,8 +373,14 @@ impl RuntimeSupervisor {
             let _ = shutdown.send(());
         }
         if let Some(handle) = entry.handle.take() {
-            let _ = tauri::async_runtime::block_on(async {
-                tokio::time::timeout(Duration::from_secs(3), handle).await
+            // stop_internal runs on a tokio worker thread when reached via the
+            // async stop_runtime / stop_actions_runtime commands. Calling
+            // block_on here panics with "Cannot start a runtime from within a
+            // runtime", which used to make the Stop button silently no-op. The
+            // graceful-shutdown signal was already sent above, so we just await
+            // the listener's completion on a detached task to free the port.
+            tauri::async_runtime::spawn(async move {
+                let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
             });
         }
     }
@@ -345,6 +433,26 @@ fn service_label(kind: ServiceKind) -> &'static str {
     match kind {
         ServiceKind::Mcp => "本地 MCP ",
         ServiceKind::Actions => "本地 Actions ",
+    }
+}
+
+fn stderr_log_name(kind: ServiceKind) -> &'static str {
+    match kind {
+        ServiceKind::Mcp => "stderr.log",
+        ServiceKind::Actions => "actions-stderr.log",
+    }
+}
+
+/// Resolve a secret from the shared pool or per-workspace keyring.
+fn resolve_secret(
+    profile_id: &str,
+    key: &str,
+    use_shared: bool,
+) -> AppResult<Option<String>> {
+    if use_shared {
+        SecretStore::get_shared(key)
+    } else {
+        SecretStore::get(profile_id, key)
     }
 }
 

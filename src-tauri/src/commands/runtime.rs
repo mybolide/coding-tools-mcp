@@ -91,3 +91,18 @@ pub fn get_actions_runtime_status(
         Ok(runtime.actions_status(&profile))
     })
 }
+
+#[tauri::command]
+pub fn restart_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
+    let profile = profile_by_id(&state, &id)?;
+    state.with_runtime(|runtime| runtime.restart_mcp(&profile))
+}
+
+#[tauri::command]
+pub fn restart_actions_runtime(
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<RuntimeStatusDto> {
+    let profile = profile_by_id(&state, &id)?;
+    state.with_runtime(|runtime| runtime.restart_actions(&profile))
+}

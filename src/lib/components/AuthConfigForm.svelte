@@ -1,9 +1,13 @@
 <script lang="ts">
   import CopyButton from "$lib/components/CopyButton.svelte";
+  import { restartRuntime } from "$lib/api/workspaces";
   import {
     getWorkspaceSecret,
     regenerateWorkspaceSecret,
+    getSharedSecret,
+    regenerateSharedSecret,
     type WorkspaceSecretKey,
+    type SharedSecretKey,
   } from "$lib/api/secrets";
   import type { AuthConfig } from "$lib/types";
 
@@ -21,27 +25,37 @@
 
   let { workspaceId, auth, onSaveProfile }: Props = $props();
 
-  let draft = $state<AuthConfig>({ type: "oauth", oauth_client_id: "" });
+  let draft = $state<AuthConfig>({ type: "oauth", oauth_client_id: "", use_shared_secrets: false });
   let saving = $state(false);
   let secrets = $state<Partial<Record<WorkspaceSecretKey, string>>>({});
+  let loadedSecrets = $state<Partial<Record<WorkspaceSecretKey, string>>>({});
   let regenerating = $state<WorkspaceSecretKey | null>(null);
 
+  const secretsDirty = $derived(
+    (Object.keys(secrets) as WorkspaceSecretKey[]).some(
+      (k) => secrets[k] !== loadedSecrets[k],
+    ),
+  );
+
   const dirty = $derived(
-    draft.type !== auth.type || draft.oauth_client_id !== auth.oauth_client_id,
+    draft.type !== auth.type ||
+      draft.oauth_client_id !== auth.oauth_client_id ||
+      draft.use_shared_secrets !== !!auth.use_shared_secrets ||
+      secretsDirty,
   );
 
   const showOAuth = $derived(draft.type === "oauth");
   const showBearer = $derived(draft.type === "bearer");
 
   $effect(() => {
-    draft = { ...auth };
+    draft = { type: auth.type, oauth_client_id: auth.oauth_client_id, use_shared_secrets: !!auth.use_shared_secrets };
   });
 
   $effect(() => {
-    void loadSecrets(workspaceId, draft.type);
+    void loadSecrets(workspaceId, draft.type, draft.use_shared_secrets ?? false);
   });
 
-  async function loadSecrets(id: string, authType: string) {
+  async function loadSecrets(id: string, authType: string, useShared: boolean) {
     const keys: WorkspaceSecretKey[] = [];
     if (authType === "oauth") {
       keys.push("oauth_client_secret", "oauth_password");
@@ -53,9 +67,15 @@
       return;
     }
     const loaded = await Promise.all(
-      keys.map(async (key) => [key, (await getWorkspaceSecret(id, key)) ?? ""] as const),
+      keys.map(async (key) => {
+        const value = useShared
+          ? await getSharedSecret(key as SharedSecretKey)
+          : await getWorkspaceSecret(id, key);
+        return [key, value ?? ""] as const;
+      }),
     );
     secrets = Object.fromEntries(loaded);
+    loadedSecrets = Object.fromEntries(loaded);
   }
 
   async function save() {
@@ -63,6 +83,7 @@
     saving = true;
     try {
       await onSaveProfile({ ...draft });
+      loadedSecrets = { ...secrets };
     } finally {
       saving = false;
     }
@@ -72,7 +93,10 @@
     if (regenerating) return;
     regenerating = key;
     try {
-      const value = await regenerateWorkspaceSecret(workspaceId, key);
+      const value = draft.use_shared_secrets
+        ? await regenerateSharedSecret(key as SharedSecretKey)
+        : await regenerateWorkspaceSecret(workspaceId, key);
+      restartRuntime(workspaceId).catch(() => {});
       secrets = { ...secrets, [key]: value };
     } finally {
       regenerating = null;
@@ -97,6 +121,15 @@
         <option value={option.value}>{option.label}</option>
       {/each}
     </select>
+  </label>
+
+  <label class="flex items-center gap-2">
+    <input
+      type="checkbox"
+      class="h-4 w-4"
+      bind:checked={draft.use_shared_secrets}
+    />
+    <span class="text-xs text-[var(--color-text-muted)]">使用全局共享密钥（在「设置 → 共享密钥」中管理）</span>
   </label>
 
   {#if showOAuth}

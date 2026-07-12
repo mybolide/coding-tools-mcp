@@ -14,6 +14,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> AppResult<Self> {
+        SecretStore::init_shared_secrets()?;
         Ok(Self {
             workspaces: Mutex::new(WorkspaceStore::load()?),
             runtime: Mutex::new(RuntimeSupervisor::default()),

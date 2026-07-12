@@ -70,3 +70,84 @@ pub fn regenerate_workspace_secret(
     ensure_workspace_exists(&state, &id)?;
     SecretStore::regenerate(&id, &key)
 }
+
+/// Shared-secret helpers.
+
+const SHARED_KEYS: &[&str] = &[
+    "bearer_token",
+    "oauth_client_secret",
+    "oauth_password",
+    "oauth_token_secret",
+    "actions_api_key",
+    "actions_oauth_client_secret",
+    "actions_oauth_password",
+    "actions_oauth_token_secret",
+];
+
+/// Keys whose regeneration should restart MCP services on shared-secret workspaces.
+const MCP_SHARED_KEYS: &[&str] = &[
+    "bearer_token",
+    "oauth_client_secret",
+    "oauth_password",
+    "oauth_token_secret",
+];
+
+/// Keys whose regeneration should restart Actions services on shared-secret workspaces.
+const ACTIONS_SHARED_KEYS: &[&str] = &[
+    "actions_api_key",
+    "actions_oauth_client_secret",
+    "actions_oauth_password",
+    "actions_oauth_token_secret",
+];
+
+#[tauri::command]
+pub fn get_shared_secret(key: String) -> AppResult<Option<String>> {
+    if !SHARED_KEYS.contains(&key.as_str()) {
+        return Err(AppError::Message(format!("invalid shared key: {key}")));
+    }
+    SecretStore::get_shared(&key)
+}
+
+#[tauri::command]
+pub fn set_shared_secret(key: String, value: String) -> AppResult<()> {
+    if !SHARED_KEYS.contains(&key.as_str()) {
+        return Err(AppError::Message(format!("invalid shared key: {key}")));
+    }
+    if value.is_empty() {
+        return Err(AppError::Message("密钥不能为空。".into()));
+    }
+    let mut settings = crate::settings::AppSettings::load_or_default();
+    settings.shared_secrets.insert(key.clone(), value);
+    settings.save()
+}
+
+#[tauri::command]
+pub fn regenerate_shared_secret(state: State<'_, AppState>, key: String) -> AppResult<String> {
+    if !SHARED_KEYS.contains(&key.as_str()) {
+        return Err(AppError::Message(format!("invalid shared key: {key}")));
+    }
+    let value = SecretStore::regenerate_shared(&key)?;
+
+    // Restart running services on workspaces that use shared secrets.
+    let workspaces = state.with_workspaces(|store| Ok(store.list().to_vec()))?;
+    for ws in &workspaces {
+        if MCP_SHARED_KEYS.contains(&key.as_str()) && ws.auth.use_shared_secrets {
+            state.with_runtime(|rt| {
+                if rt.is_running(&ws.id, crate::runtime::ServiceKind::Mcp) {
+                    let _ = rt.restart_mcp(ws);
+                }
+                AppResult::Ok(())
+            })?;
+        }
+        if ACTIONS_SHARED_KEYS.contains(&key.as_str()) && ws.actions.use_shared_secrets {
+            state.with_runtime(|rt| {
+                if rt.is_running(&ws.id, crate::runtime::ServiceKind::Actions) {
+                    let _ = rt.restart_actions(ws);
+                }
+                AppResult::Ok(())
+            })?;
+        }
+    }
+
+    Ok(value)
+}

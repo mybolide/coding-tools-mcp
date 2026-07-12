@@ -2,6 +2,20 @@ use crate::error::AppResult;
 
 const SERVICE: &str = "coding-tools-mcp-desktop";
 
+/// Keys that can be shared across workspaces. When a workspace opts into shared
+/// secrets, each key defaults to the shared value instead of the per-workspace
+/// one. The set mirrors `init_workspace_secrets`.
+const SHARED_KEYS: &[&str] = &[
+    "bearer_token",
+    "oauth_client_secret",
+    "oauth_password",
+    "oauth_token_secret",
+    "actions_api_key",
+    "actions_oauth_client_secret",
+    "actions_oauth_password",
+    "actions_oauth_token_secret",
+];
+
 pub struct SecretStore;
 
 impl SecretStore {
@@ -53,6 +67,39 @@ impl SecretStore {
     pub fn regenerate(profile_id: &str, key: &str) -> AppResult<String> {
         let value = random_secret();
         Self::set(profile_id, key, &value)?;
+        Ok(value)
+    }
+
+    /// Seed all shared secrets with random values (idempotent — skips existing).
+    pub fn init_shared_secrets() -> AppResult<()> {
+        let mut settings = crate::settings::AppSettings::load_or_default();
+        let mut changed = false;
+        for key in SHARED_KEYS {
+            if !settings.shared_secrets.contains_key(*key) {
+                settings
+                    .shared_secrets
+                    .insert(key.to_string(), random_secret());
+                changed = true;
+            }
+        }
+        if changed {
+            settings.save()?;
+        }
+        Ok(())
+    }
+
+    /// Read a shared secret from the app settings JSON. Returns None if never set.
+    pub fn get_shared(key: &str) -> AppResult<Option<String>> {
+        let settings = crate::settings::AppSettings::load_or_default();
+        Ok(settings.shared_secrets.get(key).cloned())
+    }
+
+    /// Generate a new random shared secret, persist it in app settings, and return it.
+    pub fn regenerate_shared(key: &str) -> AppResult<String> {
+        let value = random_secret();
+        let mut settings = crate::settings::AppSettings::load_or_default();
+        settings.shared_secrets.insert(key.to_string(), value.clone());
+        settings.save()?;
         Ok(value)
     }
 

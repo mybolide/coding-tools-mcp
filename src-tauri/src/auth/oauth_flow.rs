@@ -14,6 +14,7 @@ use super::bearer::constant_time_eq_str;
 
 pub const OAUTH_CODE_TTL_SECONDS: u64 = 300;
 pub const OAUTH_TOKEN_TTL_SECONDS: i64 = 60 * 60 * 24 * 30;
+#[allow(dead_code)]
 pub const OAUTH_MAX_BODY_BYTES: usize = 8_192;
 
 #[derive(Clone)]
@@ -27,6 +28,7 @@ pub struct OAuthRuntime {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct PendingCode {
     code_challenge: String,
     client_id: String,

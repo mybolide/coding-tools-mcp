@@ -48,6 +48,30 @@ export const setSecret = setWorkspaceSecret;
 /** @deprecated use regenerateWorkspaceSecret */
 export const regenerateSecret = regenerateWorkspaceSecret;
 
+// ── Shared secrets ───────────────────────────────────────────────────────
+
+export type SharedSecretKey =
+  | "bearer_token"
+  | "oauth_client_secret"
+  | "oauth_password"
+  | "oauth_token_secret"
+  | "actions_api_key"
+  | "actions_oauth_client_secret"
+  | "actions_oauth_password"
+  | "actions_oauth_token_secret";
+
+export async function getSharedSecret(key: SharedSecretKey): Promise<string | null> {
+  return invoke<string | null>("get_shared_secret", { key });
+}
+
+export async function setSharedSecret(key: SharedSecretKey, value: string): Promise<void> {
+  return invoke("set_shared_secret", { key, value });
+}
+
+export async function regenerateSharedSecret(key: SharedSecretKey): Promise<string> {
+  return invoke<string>("regenerate_shared_secret", { key });
+}
+
 export async function secretIsSet(id: string, key: WorkspaceSecretKey): Promise<boolean> {
   const value = await getWorkspaceSecret(id, key);
   return Boolean(value);

@@ -42,6 +42,8 @@ pub fn spawn_listener(
     auth: AuthConfig,
     public_base_url: String,
     oauth_client_secret: Option<String>,
+    oauth_password: Option<String>,
+    oauth_token_secret: Option<String>,
     runtime: RuntimeConfig,
 ) -> Result<(ShutdownSender, tauri::async_runtime::JoinHandle<()>), String> {
     let workspace = Workspace::new(workspace_path).map_err(|e| e.message())?;
@@ -54,17 +56,20 @@ pub fn spawn_listener(
         runtime.permission_mode.clone(),
     );
     let bearer_token = if auth.bearer_enabled() {
-        SecretStore::get(&workspace_id, "bearer_token").map_err(|e| e.to_string())?
+        let key = "bearer_token";
+        if auth.use_shared_secrets {
+            SecretStore::get_shared(key).map_err(|e| e.to_string())?
+        } else {
+            SecretStore::get(&workspace_id, key).map_err(|e| e.to_string())?
+        }
     } else {
         None
     };
     let oauth_base = oauth_base_url(&public_base_url, port);
     let oauth = if auth.oauth_enabled() {
-        let password = SecretStore::get(&workspace_id, "oauth_password")
-            .map_err(|e| e.to_string())?
+        let password = oauth_password
             .unwrap_or_default();
-        let token_secret = SecretStore::get(&workspace_id, "oauth_token_secret")
-            .map_err(|e| e.to_string())?
+        let token_secret = oauth_token_secret
             .unwrap_or_default();
         Some(Arc::new(OAuthRuntime::new(
             oauth_base.clone(),

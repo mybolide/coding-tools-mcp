@@ -1,21 +1,31 @@
 mod client;
 
-use crate::settings::{AppSettings, FrpProfile};
+use crate::settings::AppSettings;
+#[allow(unused_imports)]
+use crate::settings::FrpProfile;
 use crate::workspace::WorkspaceProfile;
 
 use super::TunnelServiceKind;
 
 pub use client::{resolve_frpc, spawn_frpc, FrpcHandle};
+pub(crate) use client::{cached_frpc_path, download_frpc_to_cache};
 
 const FRP_VERSION: &str = "0.61.2";
 pub(crate) const VERSION: &str = FRP_VERSION;
 
+#[allow(dead_code)]
+pub(crate) fn frp_version() -> &'static str {
+    FRP_VERSION
+}
+
 /// FRP proxy snippet for the MCP listener (`profile.tunnel` + `profile.runtime`).
+#[allow(dead_code)]
 pub fn mcp_frp_snippet(profile: &WorkspaceProfile, settings: &AppSettings) -> String {
     frp_snippet(profile, TunnelServiceKind::Mcp, settings)
 }
 
 /// FRP proxy snippet for the Actions listener (`profile.actions`).
+#[allow(dead_code)]
 pub fn actions_frp_snippet(profile: &WorkspaceProfile, settings: &AppSettings) -> String {
     frp_snippet(profile, TunnelServiceKind::Actions, settings)
 }
@@ -42,6 +52,7 @@ pub(crate) struct FrpServerConfig {
     pub proxy: FrpProxyConfig,
 }
 
+#[allow(dead_code)]
 pub fn frp_public_url(
     profile: &WorkspaceProfile,
     kind: TunnelServiceKind,

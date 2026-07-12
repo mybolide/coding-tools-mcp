@@ -16,6 +16,7 @@ export interface TunnelConfig {
 export interface AuthConfig {
   type: string;
   oauth_client_id: string;
+  use_shared_secrets?: boolean;
 }
 
 export interface RuntimeConfig {
@@ -42,6 +43,7 @@ export interface ActionsConfig {
   oauth_scopes?: string;
   allowed_commands?: string;
   max_patch_bytes?: number;
+  use_shared_secrets?: boolean;
 }
 
 export interface WorkspaceProfile {
@@ -92,6 +94,7 @@ export interface ActionsAuthDraft {
   authType: string;
   oauthClientId: string;
   oauthScopes: string;
+  useSharedSecrets?: boolean;
 }
 
 export interface FrpProfileSummary {

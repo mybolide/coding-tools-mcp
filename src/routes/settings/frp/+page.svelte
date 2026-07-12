@@ -92,7 +92,7 @@
     </p>
   </header>
 
-  <div class="page-body grid flex-1 gap-8 lg:grid-cols-2">
+  <div class="page-body flex flex-col gap-6">
     <div class="tx-card p-4">
       <h3 class="text-sm font-semibold">{editingId ? "编辑配置" : "新建配置"}</h3>
       <form

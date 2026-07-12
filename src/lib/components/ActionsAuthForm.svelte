@@ -1,6 +1,7 @@
 <script lang="ts">
   import CopyButton from "$lib/components/CopyButton.svelte";
-  import { getSecret, regenerateSecret } from "$lib/api/secrets";
+  import { getSecret, regenerateSecret, getSharedSecret, regenerateSharedSecret } from "$lib/api/secrets";
+  import { restartActionsRuntime } from "$lib/api/workspaces";
   import type { ActionsAuthDraft } from "$lib/types";
 
   export const ACTIONS_AUTH_OPTIONS = [
@@ -20,6 +21,7 @@
     privacyUrl: string;
     oauthAuthorizeUrl: string;
     oauthTokenUrl: string;
+    useSharedSecrets?: boolean;
     onSave: (draft: ActionsAuthDraft) => void | Promise<void>;
   }
 
@@ -32,16 +34,22 @@
     privacyUrl,
     oauthAuthorizeUrl,
     oauthTokenUrl,
+    useSharedSecrets = false,
     onSave,
   }: Props = $props();
 
   let draftAuthType = $state("api_key");
   let draftOauthClientId = $state("");
   let draftOauthScopes = $state("");
+  let draftUseShared = $state(false);
   let apiKey = $state("");
+  let loadedApiKey = $state("");
   let oauthClientSecret = $state("");
+  let loadedOauthClientSecret = $state("");
   let oauthPassword = $state("");
+  let loadedOauthPassword = $state("");
   let oauthTokenSecret = $state("");
+  let loadedOauthTokenSecret = $state("");
   let loadingKey = $state(true);
   let loadingOAuthSecret = $state(true);
   let loadingOAuthPassword = $state(true);
@@ -52,10 +60,18 @@
   let regeneratingOAuthTokenSecret = $state(false);
   let saving = $state(false);
 
+  const secretsDirty = $derived(
+    apiKey !== loadedApiKey ||
+      oauthClientSecret !== loadedOauthClientSecret ||
+      oauthPassword !== loadedOauthPassword ||
+      oauthTokenSecret !== loadedOauthTokenSecret,
+  );
+
   const dirty = $derived(
     draftAuthType !== authType ||
       draftOauthClientId !== oauthClientId ||
-      draftOauthScopes !== oauthScopes,
+      draftOauthScopes !== oauthScopes ||
+      secretsDirty,
   );
   const showApiKey = $derived(draftAuthType === "api_key");
   const showOAuth = $derived(draftAuthType === "oauth");
@@ -64,10 +80,12 @@
     draftAuthType = authType;
     draftOauthClientId = oauthClientId;
     draftOauthScopes = oauthScopes;
+    draftUseShared = useSharedSecrets;
   });
 
   $effect(() => {
     workspaceId;
+    draftUseShared;
     void loadSecrets();
   });
 
@@ -78,15 +96,27 @@
     loadingOAuthTokenSecret = true;
     try {
       const [key, secret, password, tokenSecret] = await Promise.all([
-        getSecret(workspaceId, "actions_api_key"),
-        getSecret(workspaceId, "actions_oauth_client_secret"),
-        getSecret(workspaceId, "actions_oauth_password"),
-        getSecret(workspaceId, "actions_oauth_token_secret"),
+        draftUseShared
+          ? getSharedSecret("actions_api_key")
+          : getSecret(workspaceId, "actions_api_key"),
+        draftUseShared
+          ? getSharedSecret("actions_oauth_client_secret")
+          : getSecret(workspaceId, "actions_oauth_client_secret"),
+        draftUseShared
+          ? getSharedSecret("actions_oauth_password")
+          : getSecret(workspaceId, "actions_oauth_password"),
+        draftUseShared
+          ? getSharedSecret("actions_oauth_token_secret")
+          : getSecret(workspaceId, "actions_oauth_token_secret"),
       ]);
       apiKey = key ?? "";
+      loadedApiKey = key ?? "";
       oauthClientSecret = secret ?? "";
+      loadedOauthClientSecret = secret ?? "";
       oauthPassword = password ?? "";
+      loadedOauthPassword = password ?? "";
       oauthTokenSecret = tokenSecret ?? "";
+      loadedOauthTokenSecret = tokenSecret ?? "";
     } finally {
       loadingKey = false;
       loadingOAuthSecret = false;
@@ -103,7 +133,12 @@
         authType: draftAuthType,
         oauthClientId: draftOauthClientId.trim(),
         oauthScopes: draftOauthScopes.trim(),
+        useSharedSecrets: draftUseShared,
       });
+      loadedApiKey = apiKey;
+      loadedOauthClientSecret = oauthClientSecret;
+      loadedOauthPassword = oauthPassword;
+      loadedOauthTokenSecret = oauthTokenSecret;
     } finally {
       saving = false;
     }
@@ -113,7 +148,10 @@
     if (regenerating) return;
     regenerating = true;
     try {
-      apiKey = await regenerateSecret(workspaceId, "actions_api_key");
+      apiKey = draftUseShared
+        ? await regenerateSharedSecret("actions_api_key")
+        : await regenerateSecret(workspaceId, "actions_api_key");
+      restartActionsRuntime(workspaceId).catch(() => {});
     } finally {
       regenerating = false;
     }
@@ -123,7 +161,10 @@
     if (regeneratingOAuthSecret) return;
     regeneratingOAuthSecret = true;
     try {
-      oauthClientSecret = await regenerateSecret(workspaceId, "actions_oauth_client_secret");
+      oauthClientSecret = draftUseShared
+        ? await regenerateSharedSecret("actions_oauth_client_secret")
+        : await regenerateSecret(workspaceId, "actions_oauth_client_secret");
+      restartActionsRuntime(workspaceId).catch(() => {});
     } finally {
       regeneratingOAuthSecret = false;
     }
@@ -133,7 +174,10 @@
     if (regeneratingOAuthPassword) return;
     regeneratingOAuthPassword = true;
     try {
-      oauthPassword = await regenerateSecret(workspaceId, "actions_oauth_password");
+      oauthPassword = draftUseShared
+        ? await regenerateSharedSecret("actions_oauth_password")
+        : await regenerateSecret(workspaceId, "actions_oauth_password");
+      restartActionsRuntime(workspaceId).catch(() => {});
     } finally {
       regeneratingOAuthPassword = false;
     }
@@ -143,7 +187,10 @@
     if (regeneratingOAuthTokenSecret) return;
     regeneratingOAuthTokenSecret = true;
     try {
-      oauthTokenSecret = await regenerateSecret(workspaceId, "actions_oauth_token_secret");
+      oauthTokenSecret = draftUseShared
+        ? await regenerateSharedSecret("actions_oauth_token_secret")
+        : await regenerateSecret(workspaceId, "actions_oauth_token_secret");
+      restartActionsRuntime(workspaceId).catch(() => {});
     } finally {
       regeneratingOAuthTokenSecret = false;
     }
@@ -203,6 +250,15 @@
         <option value={option.value}>{option.label}</option>
       {/each}
     </select>
+  </label>
+
+  <label class="flex items-center gap-2">
+    <input
+      type="checkbox"
+      class="h-4 w-4"
+      bind:checked={draftUseShared}
+    />
+    <span class="text-xs text-[var(--color-text-muted)]">使用全局共享密钥（在「设置 → 共享密钥」中管理）</span>
   </label>
 
   {#if showApiKey}

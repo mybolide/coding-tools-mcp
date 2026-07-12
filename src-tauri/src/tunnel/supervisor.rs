@@ -52,6 +52,7 @@ impl Default for TunnelSupervisor {
     }
 }
 
+#[allow(dead_code)]
 impl TunnelSupervisor {
     pub fn new() -> Self {
         Self {

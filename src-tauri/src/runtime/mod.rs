@@ -1,3 +1,3 @@
 mod supervisor;
 
-pub use supervisor::RuntimeSupervisor;
+pub use supervisor::{RuntimeSupervisor, ServiceKind};

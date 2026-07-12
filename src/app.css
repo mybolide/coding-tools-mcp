@@ -363,28 +363,21 @@ button {
   gap: 6px;
   padding: 9px 14px;
   border: none;
-  border-radius: 12px;
-  background: var(--accent-gradient);
+  border-radius: 10px;
+  background: var(--primary);
   color: #fff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--duration-fast) ease, transform var(--duration-fast) ease;
-  box-shadow: 0 8px 20px rgba(59, 115, 255, 0.22);
+  transition: background var(--duration-fast) ease;
 }
 
 .tx-btn-primary:hover {
-  background: var(--accent-gradient-hover);
-}
-
-.tx-btn-primary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+  background: var(--primary-dark);
 }
 
 .tx-btn-danger {
-  background: linear-gradient(135deg, #f87171, #ef4444);
-  box-shadow: 0 8px 20px rgba(239, 68, 68, 0.18);
+  background: var(--danger);
 }
 
 .tx-btn-ghost {
@@ -410,6 +403,79 @@ button {
 .tx-btn-sidebar {
   width: 100%;
   margin-top: 14px;
+}
+
+/* ─── Tabs ─── */
+.tx-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tx-tab {
+  position: relative;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--duration-fast) ease;
+}
+
+.tx-tab:hover {
+  color: var(--text-main);
+}
+
+.tx-tab.active {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.tx-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+/* ─── Status pill (read-only service switcher) ─── */
+.tx-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card-bg);
+  color: var(--text-main);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) ease, background var(--duration-fast) ease;
+}
+
+.tx-status-pill:hover {
+  background: var(--surface-hover);
+}
+
+.tx-status-pill.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+/* ─── Section label (within config card) ─── */
+.tx-section-label {
+  margin-bottom: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 /* ─── Form fields ─── */

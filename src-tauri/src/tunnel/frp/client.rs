@@ -104,6 +104,7 @@ pub async fn spawn_frpc(
     })
 }
 
+#[allow(dead_code)]
 pub async fn stop_frpc(child: Child, pid: Option<u32>) -> AppResult<()> {
     stop_child(child, pid).await
 }
@@ -145,14 +146,14 @@ fn bundled_frpc() -> Option<PathBuf> {
     None
 }
 
-fn cached_frpc_path() -> Option<PathBuf> {
+pub(crate) fn cached_frpc_path() -> Option<PathBuf> {
     platform()
         .app_config_dir()
         .ok()
         .map(|dir| dir.join("bin").join(frpc_binary_name()))
 }
 
-fn frpc_binary_name() -> &'static str {
+pub(crate) fn frpc_binary_name() -> &'static str {
     #[cfg(windows)]
     {
         "frpc.exe"
@@ -238,7 +239,8 @@ where
     }
 }
 
-async fn download_frpc_to_cache() -> AppResult<PathBuf> {
+pub(crate) async fn download_frpc_to_cache() -> AppResult<PathBuf> {
+    let settings = crate::settings::AppSettings::load_or_default();
     let (archive_name, binary_in_archive) = frp_release_asset()?;
     let url = format!(
         "https://github.com/fatedier/frp/releases/download/v{FRP_VERSION}/{archive_name}"
@@ -249,20 +251,7 @@ async fn download_frpc_to_cache() -> AppResult<PathBuf> {
     let dest = cached_frpc_path().expect("cache path");
 
     if !archive_path.is_file() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|err| AppError::Message(err.to_string()))?;
-        let bytes = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|err| AppError::Message(format!("下载 frpc 失败: {err}")))?
-            .error_for_status()
-            .map_err(|err| AppError::Message(format!("下载 frpc 失败: {err}")))?
-            .bytes()
-            .await
-            .map_err(|err| AppError::Message(format!("读取 frpc 安装包失败: {err}")))?;
+        let bytes = crate::tunnel::download::download_release_asset(&settings, &url, "frpc").await?;
         std::fs::write(&archive_path, bytes)?;
     }
 

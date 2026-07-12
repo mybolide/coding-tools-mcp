@@ -47,6 +47,7 @@ impl WorkspaceStore {
         self.profiles.iter().find(|p| p.id == id)
     }
 
+    #[allow(dead_code)]
     pub fn get_mut(&mut self, id: &str) -> Option<&mut WorkspaceProfile> {
         self.profiles.iter_mut().find(|p| p.id == id)
     }

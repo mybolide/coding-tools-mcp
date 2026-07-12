@@ -9,15 +9,17 @@
   import AuthConfigForm from "$lib/components/AuthConfigForm.svelte";
   import HealthPanel from "$lib/components/HealthPanel.svelte";
   import LogViewer from "$lib/components/LogViewer.svelte";
+  import RuntimePolicyForm, {
+    type RuntimePolicyDraft,
+  } from "$lib/components/RuntimePolicyForm.svelte";
   import ServicePanel from "$lib/components/ServicePanel.svelte";
+  import StatusOrb from "$lib/components/StatusOrb.svelte";
+  import Tabs from "$lib/components/Tabs.svelte";
   import TunnelConfigForm, {
     type TunnelFormConfig,
   } from "$lib/components/TunnelConfigForm.svelte";
   import TunnelStrip from "$lib/components/TunnelStrip.svelte";
   import WorkspaceMetaForm from "$lib/components/WorkspaceMetaForm.svelte";
-  import RuntimePolicyForm, {
-    type RuntimePolicyDraft,
-  } from "$lib/components/RuntimePolicyForm.svelte";
   import {
     deleteWorkspace,
     getActionsRuntimeStatus,
@@ -25,6 +27,8 @@
     listWorkspaces,
     startActionsRuntime,
     startRuntime,
+    restartRuntime,
+    restartActionsRuntime,
     stopActionsRuntime,
     stopRuntime,
     updateWorkspace,
@@ -50,6 +54,9 @@
     type WorkspaceProfile,
   } from "$lib/types";
 
+  type ServiceTab = "mcp" | "actions";
+  type SubTab = "config" | "logs" | "health";
+
   let profile = $state<WorkspaceProfile | null>(null);
   let mcpStatus = $state<RuntimeState>("stopped");
   let actionsStatus = $state<RuntimeState>("stopped");
@@ -59,13 +66,17 @@
   let mcpPublic = $state("");
   let actionsLocal = $state("");
   let actionsPublic = $state("");
-  let mcpTunnelOpen = $state(false);
-  let actionsTunnelOpen = $state(false);
-  let mcpAuthOpen = $state(false);
-  let mcpPolicyOpen = $state(false);
-  let actionsAuthOpen = $state(false);
-  let actionsPolicyOpen = $state(false);
   let frpProfiles = $state<FrpProfileDto[]>([]);
+
+  let activeService = $state<ServiceTab>("mcp");
+  let mcpSubTab = $state<SubTab>("config");
+  let actionsSubTab = $state<SubTab>("config");
+
+  const subTabs = [
+    { value: "config", label: "配置" },
+    { value: "logs", label: "日志" },
+    { value: "health", label: "健康" },
+  ];
 
   const workspaceId = $derived($page.params.id);
   const actions = $derived(profile ? actionsConfig(profile) : null);
@@ -89,6 +100,21 @@
     frp_server_port: actions?.frp_server_port ?? 7000,
     cloudflare_mode: actions?.cloudflare_mode ?? "quick",
   });
+
+  function stateLabel(state: RuntimeState): string {
+    switch (state) {
+      case "running":
+        return "运行中";
+      case "starting":
+        return "启动中";
+      case "stopping":
+        return "停止中";
+      case "error":
+        return "错误";
+      default:
+        return "已停止";
+    }
+  }
 
   function applyMcpRuntime(runtime: { state: RuntimeState; localEndpoint: string; publicEndpoint: string }) {
     mcpStatus = runtime.state;
@@ -303,16 +329,18 @@
   }
 
   async function saveMcpAuth(auth: AuthConfig) {
-    if (!profile) return;
+    if (!profile || !workspaceId) return;
     const next: WorkspaceProfile = { ...profile, auth };
     await updateWorkspace(next);
     profile = next;
     await load();
-    await promptServiceRestart(mcpStatus === "running", "MCP 服务");
+    if (mcpStatus === "running") {
+      try { await restartRuntime(workspaceId); } catch { /* ignore */ }
+    }
   }
 
   async function saveActionsAuth(draft: ActionsAuthDraft) {
-    if (!profile) return;
+    if (!profile || !workspaceId) return;
     const current = actionsConfig(profile);
     const next: WorkspaceProfile = {
       ...profile,
@@ -321,12 +349,15 @@
         auth_type: draft.authType,
         oauth_client_id: draft.oauthClientId || current.oauth_client_id,
         oauth_scopes: draft.oauthScopes,
+        use_shared_secrets: draft.useSharedSecrets,
       },
     };
     await updateWorkspace(next);
     profile = next;
     await load();
-    await promptServiceRestart(actionsStatus === "running", "Actions 服务");
+    if (actionsStatus === "running") {
+      try { await restartActionsRuntime(workspaceId); } catch { /* ignore */ }
+    }
   }
 
   async function saveWorkspaceName(name: string) {
@@ -359,54 +390,86 @@
 {#if profile && actions}
   <section class="page-scroll">
     <header class="page-header">
-      <p class="page-kicker">工作区</p>
-      <h2 class="page-title">{profile.name}</h2>
-      <div class="mt-4 flex items-start justify-between gap-4">
-        <WorkspaceMetaForm name={profile.name} path={profile.path} onSave={saveWorkspaceName} />
-        <button type="button" class="tx-btn-ghost text-[var(--danger)]" onclick={() => void removeWorkspace()}>
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <p class="page-kicker">工作区</p>
+          <h2 class="page-title">{profile.name}</h2>
+        </div>
+        <button
+          type="button"
+          class="tx-btn-ghost text-[var(--danger)]"
+          onclick={() => void removeWorkspace()}
+        >
           删除工作区
+        </button>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          class="tx-status-pill"
+          class:active={activeService === "mcp"}
+          onclick={() => (activeService = "mcp")}
+        >
+          <StatusOrb state={mcpStatus} />
+          <span class="font-medium">MCP</span>
+          <span class="text-[var(--color-text-muted)]">{stateLabel(mcpStatus)}</span>
+        </button>
+        <button
+          type="button"
+          class="tx-status-pill"
+          class:active={activeService === "actions"}
+          onclick={() => (activeService = "actions")}
+        >
+          <StatusOrb state={actionsStatus} />
+          <span class="font-medium">Actions</span>
+          <span class="text-[var(--color-text-muted)]">{stateLabel(actionsStatus)}</span>
         </button>
       </div>
     </header>
 
-    <div class="page-body grid flex-1 gap-6 lg:grid-cols-2">
-      <div class="flex flex-col gap-3">
-        <ServicePanel
-          title="MCP"
-          subtitle="Streamable HTTP · 工具运行时"
-          status={mcpStatus}
-          port={profile.runtime.local_port}
-          portEditable={true}
-          busy={mcpBusy}
-          localEndpoint={mcpLocal || mcpLocalEndpoint(profile.runtime.local_port)}
-          publicEndpoint={mcpPublic}
-          publicLabel="公网 MCP"
-          onToggle={toggleMcp}
-          onPortChange={saveMcpPort}
-        />
-        <TunnelStrip
-          workspaceId={workspaceId!}
-          service="mcp"
-          tunnelType={profile.tunnel.type}
-          publicUrl={profile.tunnel.public_url}
-          onPublicUrlChange={(url) => {
-            profile = { ...profile!, tunnel: { ...profile!.tunnel, public_url: url } };
-            mcpPublic = url ? `${url.replace(/\/$/, "")}/mcp` : "";
-          }}
-        />
-        <div class="tx-panel">
-          <button
-            type="button"
-            class="tx-panel-toggle"
-            onclick={() => {
-              mcpTunnelOpen = !mcpTunnelOpen;
+    <div class="page-body">
+      {#if activeService === "mcp"}
+        <div class="mt-4 flex flex-col gap-3">
+          <ServicePanel
+            title="MCP"
+            subtitle="Streamable HTTP · 工具运行时"
+            status={mcpStatus}
+            port={profile.runtime.local_port}
+            portEditable={true}
+            busy={mcpBusy}
+            localEndpoint={mcpLocal || mcpLocalEndpoint(profile.runtime.local_port)}
+            publicEndpoint={mcpPublic}
+            publicLabel="公网 MCP"
+            onToggle={toggleMcp}
+            onPortChange={saveMcpPort}
+          />
+          <TunnelStrip
+            workspaceId={workspaceId!}
+            service="mcp"
+            tunnelType={profile.tunnel.type}
+            publicUrl={profile.tunnel.public_url}
+            onPublicUrlChange={(url) => {
+              profile = { ...profile!, tunnel: { ...profile!.tunnel, public_url: url } };
+              mcpPublic = url ? `${url.replace(/\/$/, "")}/mcp` : "";
             }}
-          >
-            <span>隧道配置</span>
-            <span class="text-xs text-[var(--color-text-muted)]">{mcpTunnelOpen ? "收起" : "展开"}</span>
-          </button>
-          {#if mcpTunnelOpen}
-            <div class="tx-panel-body">
+          />
+        </div>
+
+        <div class="mt-5">
+          <Tabs
+            items={subTabs}
+            value={mcpSubTab}
+            onchange={(v) => {
+              mcpSubTab = v as SubTab;
+            }}
+          />
+        </div>
+
+        {#if mcpSubTab === "config"}
+          <div class="tx-card mt-4 grid gap-6 p-5">
+            <div>
+              <p class="tx-section-label">隧道</p>
               <TunnelConfigForm
                 workspaceId={workspaceId!}
                 service="mcp"
@@ -414,92 +477,74 @@
                 onSave={saveMcpTunnel}
               />
             </div>
-          {/if}
-        </div>
-        <div class="tx-panel">
-          <button
-            type="button"
-            class="tx-panel-toggle"
-            onclick={() => {
-              mcpPolicyOpen = !mcpPolicyOpen;
-            }}
-          >
-            <span>MCP 策略</span>
-            <span class="text-xs text-[var(--color-text-muted)]">{mcpPolicyOpen ? "收起" : "展开"}</span>
-          </button>
-          {#if mcpPolicyOpen}
-            <div class="tx-panel-body">
-              <RuntimePolicyForm
-                toolProfile={profile.runtime.tool_profile}
-                permissionMode={profile.runtime.permission_mode}
-                onSave={saveMcpPolicy}
-              />
-            </div>
-          {/if}
-        </div>
-        <div class="tx-panel">
-          <button
-            type="button"
-            class="tx-panel-toggle"
-            onclick={() => {
-              mcpAuthOpen = !mcpAuthOpen;
-            }}
-          >
-            <span>MCP 认证</span>
-            <span class="text-xs text-[var(--color-text-muted)]">{mcpAuthOpen ? "收起" : "展开"}</span>
-          </button>
-          {#if mcpAuthOpen}
-            <div class="tx-panel-body">
+            <div>
+              <p class="tx-section-label">认证</p>
               <AuthConfigForm
                 workspaceId={workspaceId!}
                 auth={profile.auth}
                 onSaveProfile={saveMcpAuth}
               />
             </div>
-          {/if}
-        </div>
-      </div>
-
-      <div class="flex flex-col gap-3">
-        <ServicePanel
-          title="Actions"
-          subtitle="OpenAPI 网关 · ChatGPT Actions"
-          status={actionsStatus}
-          port={actions.local_port}
-          portEditable={true}
-          busy={actionsBusy}
-          localEndpoint={actionsLocal || actionsLocalEndpoint(actions.local_port)}
-          publicEndpoint={actionsPublic || actionsOpenApiUrl(profile, frpProfiles)}
-          publicLabel="OpenAPI"
-          onToggle={toggleActions}
-          onPortChange={saveActionsPort}
-        />
-        <TunnelStrip
-          workspaceId={workspaceId!}
-          service="actions"
-          tunnelType={actions.tunnel_type}
-          publicUrl={actions.public_url}
-          onPublicUrlChange={(url) => {
-            const next = actionsConfig({ ...profile!, actions: { ...actions, public_url: url } });
-            profile = { ...profile!, actions: next };
-            actionsPublic = url ? `${url.replace(/\/$/, "")}/openapi.json` : "";
-          }}
-        />
-        <div class="tx-panel">
-          <button
-            type="button"
-            class="tx-panel-toggle"
-            onclick={() => {
-              actionsTunnelOpen = !actionsTunnelOpen;
+            <div>
+              <p class="tx-section-label">策略</p>
+              <RuntimePolicyForm
+                toolProfile={profile.runtime.tool_profile}
+                permissionMode={profile.runtime.permission_mode}
+                onSave={saveMcpPolicy}
+              />
+            </div>
+          </div>
+        {:else if mcpSubTab === "logs"}
+          <div class="mt-4">
+            <LogViewer workspaceId={workspaceId!} service="mcp" />
+          </div>
+        {:else}
+          <div class="mt-4">
+            <HealthPanel workspaceId={workspaceId!} />
+          </div>
+        {/if}
+      {:else}
+        <div class="mt-4 flex flex-col gap-3">
+          <ServicePanel
+            title="Actions"
+            subtitle="OpenAPI 网关 · ChatGPT Actions"
+            status={actionsStatus}
+            port={actions.local_port}
+            portEditable={true}
+            busy={actionsBusy}
+            localEndpoint={actionsLocal || actionsLocalEndpoint(actions.local_port)}
+            publicEndpoint={actionsPublic || actionsOpenApiUrl(profile, frpProfiles)}
+            publicLabel="OpenAPI"
+            onToggle={toggleActions}
+            onPortChange={saveActionsPort}
+          />
+          <TunnelStrip
+            workspaceId={workspaceId!}
+            service="actions"
+            tunnelType={actions.tunnel_type}
+            publicUrl={actions.public_url}
+            onPublicUrlChange={(url) => {
+              const next = actionsConfig({ ...profile!, actions: { ...actions, public_url: url } });
+              profile = { ...profile!, actions: next };
+              actionsPublic = url ? `${url.replace(/\/$/, "")}/openapi.json` : "";
             }}
-          >
-            <span>隧道配置</span>
-            <span class="text-xs text-[var(--color-text-muted)]"
-              >{actionsTunnelOpen ? "收起" : "展开"}</span
-            >
-          </button>
-          {#if actionsTunnelOpen}
-            <div class="tx-panel-body">
+          />
+        </div>
+
+        <div class="mt-5">
+          <Tabs
+            items={subTabs}
+            value={actionsSubTab}
+            onchange={(v) => {
+              actionsSubTab = v as SubTab;
+            }}
+          />
+        </div>
+
+        {#if actionsSubTab === "config"}
+          <div class="tx-card mt-4 grid gap-6 p-5">
+            <div>
+              <p class="tx-section-label">隧道</p>
               <TunnelConfigForm
                 workspaceId={workspaceId!}
                 service="actions"
@@ -507,23 +552,8 @@
                 onSave={saveActionsTunnel}
               />
             </div>
-          {/if}
-        </div>
-        <div class="tx-panel">
-          <button
-            type="button"
-            class="tx-panel-toggle"
-            onclick={() => {
-              actionsAuthOpen = !actionsAuthOpen;
-            }}
-          >
-            <span>Actions 认证</span>
-            <span class="text-xs text-[var(--color-text-muted)]"
-              >{actionsAuthOpen ? "收起" : "展开"}</span
-            >
-          </button>
-          {#if actionsAuthOpen}
-            <div class="tx-panel-body">
+            <div>
+              <p class="tx-section-label">认证</p>
               <ActionsAuthForm
                 workspaceId={workspaceId!}
                 authType={actions.auth_type}
@@ -533,26 +563,12 @@
                 privacyUrl={actionsPrivacyUrl(profile, frpProfiles)}
                 oauthAuthorizeUrl={actionsOAuthAuthorizeUrl(profile, frpProfiles)}
                 oauthTokenUrl={actionsOAuthTokenUrl(profile, frpProfiles)}
+                useSharedSecrets={actions.use_shared_secrets ?? false}
                 onSave={saveActionsAuth}
               />
             </div>
-          {/if}
-        </div>
-        <div class="tx-panel">
-          <button
-            type="button"
-            class="tx-panel-toggle"
-            onclick={() => {
-              actionsPolicyOpen = !actionsPolicyOpen;
-            }}
-          >
-            <span>Actions 策略</span>
-            <span class="text-xs text-[var(--color-text-muted)]"
-              >{actionsPolicyOpen ? "收起" : "展开"}</span
-            >
-          </button>
-          {#if actionsPolicyOpen}
-            <div class="tx-panel-body">
+            <div>
+              <p class="tx-section-label">策略</p>
               <ActionsPolicyForm
                 allowedCommands={actions.allowed_commands ?? ""}
                 maxPatchBytes={actions.max_patch_bytes ?? 200_000}
@@ -560,18 +576,17 @@
                 onSave={saveActionsPolicy}
               />
             </div>
-          {/if}
-        </div>
-      </div>
-    </div>
-
-    <div class="grid gap-6 px-8 pb-6 lg:grid-cols-2">
-      <LogViewer workspaceId={workspaceId!} service="mcp" />
-      <LogViewer workspaceId={workspaceId!} service="actions" />
-    </div>
-
-    <div class="px-8 pb-6">
-      <HealthPanel workspaceId={workspaceId!} />
+          </div>
+        {:else if actionsSubTab === "logs"}
+          <div class="mt-4">
+            <LogViewer workspaceId={workspaceId!} service="actions" />
+          </div>
+        {:else}
+          <div class="mt-4">
+            <HealthPanel workspaceId={workspaceId!} />
+          </div>
+        {/if}
+      {/if}
     </div>
 
     <footer class="border-t border-[var(--color-border)] px-8 py-4 text-xs text-[var(--color-text-muted)]">
