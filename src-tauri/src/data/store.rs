@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use crate::error::{AppError, AppResult};
-use crate::settings::{AppSettings, FrpProfile};
+use crate::settings::AppSettings;
 use crate::workspace::legacy_import::import_legacy_profiles_if_empty;
 use crate::workspace::WorkspaceProfile;
 
@@ -59,10 +59,6 @@ impl DataStore {
 
     pub fn data(&self) -> &AppData {
         &self.data
-    }
-
-    pub fn data_mut(&mut self) -> &mut AppData {
-        &mut self.data
     }
 
     pub fn save(&self) -> AppResult<()> {
@@ -230,12 +226,6 @@ impl DataStore {
         self.save()
     }
 
-    pub fn find_frp_profile(&self, id: &str) -> Option<&FrpProfile> {
-        if id.trim().is_empty() {
-            return None;
-        }
-        self.data.frp_profiles.iter().find(|profile| profile.id == id)
-    }
 }
 
 fn lock_data_file() -> AppResult<std::sync::MutexGuard<'static, ()>> {

@@ -1,34 +1,10 @@
 use crate::data::DataStore;
 use crate::error::AppResult;
 
-const SHARED_KEYS: &[&str] = &[
-    "bearer_token",
-    "oauth_client_secret",
-    "oauth_password",
-    "oauth_token_secret",
-    "actions_api_key",
-    "actions_oauth_client_secret",
-    "actions_oauth_password",
-    "actions_oauth_token_secret",
-];
-
 pub struct SecretStore;
 
 impl SecretStore {
-    pub fn init_workspace_secrets(profile_id: &str) -> AppResult<()> {
-        DataStore::update_file(|data| {
-            let store = workspace_secret_map(data, profile_id);
-            store.insert("oauth_password".into(), random_secret());
-            store.insert("oauth_token_secret".into(), random_secret());
-            store.insert("bearer_token".into(), random_secret());
-            store.insert("actions_api_key".into(), random_secret());
-            store.insert("actions_oauth_client_secret".into(), random_secret());
-            store.insert("actions_oauth_password".into(), random_secret());
-            store.insert("actions_oauth_token_secret".into(), random_secret());
-            Ok(())
-        })
-    }
-
+    #[cfg(test)]
     pub fn remove_workspace_secrets(profile_id: &str) -> AppResult<()> {
         DataStore::update_file(|data| {
             data.workspace_secrets.remove(profile_id);
@@ -60,28 +36,8 @@ impl SecretStore {
         Ok(value)
     }
 
-    pub fn init_shared_secrets() -> AppResult<()> {
-        DataStore::update_file(|data| {
-            for key in SHARED_KEYS {
-                if !data.shared_secrets.contains_key(*key) {
-                    data.shared_secrets.insert(key.to_string(), random_secret());
-                }
-            }
-            Ok(())
-        })
-    }
-
     pub fn get_shared(key: &str) -> AppResult<Option<String>> {
         DataStore::read_file(|data| Ok(data.shared_secrets.get(key).cloned()))
-    }
-
-    pub fn regenerate_shared(key: &str) -> AppResult<String> {
-        let value = random_secret();
-        DataStore::update_file(|data| {
-            data.shared_secrets.insert(key.to_string(), value.clone());
-            Ok(())
-        })?;
-        Ok(value)
     }
 
     pub fn get_app(scope: &str, item_id: &str) -> AppResult<Option<String>> {
@@ -95,6 +51,7 @@ impl SecretStore {
         })
     }
 
+    #[cfg(test)]
     pub fn set_app(scope: &str, item_id: &str, value: &str) -> AppResult<()> {
         DataStore::update_file(|data| {
             data.app_secrets
@@ -105,17 +62,6 @@ impl SecretStore {
         })
     }
 
-    pub fn delete_app(scope: &str, item_id: &str) -> AppResult<()> {
-        DataStore::update_file(|data| {
-            if let Some(items) = data.app_secrets.get_mut(scope) {
-                items.remove(item_id);
-                if items.is_empty() {
-                    data.app_secrets.remove(scope);
-                }
-            }
-            Ok(())
-        })
-    }
 }
 
 fn workspace_secret_map<'a>(

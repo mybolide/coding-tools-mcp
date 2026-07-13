@@ -127,14 +127,6 @@ impl AppSettings {
             .unwrap_or_default()
     }
 
-    /// Persist settings fields into the unified data file.
-    pub fn save(&self) -> crate::error::AppResult<()> {
-        crate::data::DataStore::update_file(|data| {
-            self.apply_to(data);
-            Ok(())
-        })
-    }
-
     pub fn find_frp_profile(&self, id: &str) -> Option<&FrpProfile> {
         if id.trim().is_empty() {
             return None;

@@ -57,8 +57,10 @@ fn exec_command_rejects_shell_chaining() {
 
 #[test]
 fn safe_permission_mode_blocks_network_looking_command() {
-    let mut policy = coding_tools_mcp_desktop_lib::tools::policy::PolicySettings::default();
-    policy.permission_mode = "safe".into();
+    let policy = coding_tools_mcp_desktop_lib::tools::policy::PolicySettings {
+        permission_mode: "safe".into(),
+        ..Default::default()
+    };
     let err = coding_tools_mcp_desktop_lib::tools::policy::validate_tool_arguments(
         "exec_command",
         &json!({"cmd": "curl https://example.com"}),

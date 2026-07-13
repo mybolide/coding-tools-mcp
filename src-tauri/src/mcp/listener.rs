@@ -37,6 +37,7 @@ struct ListenerState {
     oauth_client_secret: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_listener(
     port: u16,
     workspace_path: PathBuf,

@@ -343,6 +343,7 @@ impl Matcher {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_dir_entries(
     ws: &Workspace,
     dir: &Path,

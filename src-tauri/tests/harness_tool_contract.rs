@@ -18,7 +18,7 @@ fn 写工具没有活动任务时返回任务门禁错误() {
 }
 
 #[test]
-fn Harness工具支持启动恢复和完成任务上下文闭环() {
+fn harness_tools_support_task_lifecycle() {
     let temp = tempfile::tempdir().expect("创建临时目录");
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).expect("创建工作区");

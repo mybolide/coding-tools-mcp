@@ -17,17 +17,8 @@ impl AuthConfig {
     }
 }
 
-pub fn oauth_base_url(public_url: &str, local_port: u16) -> String {
-    let trimmed = public_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        format!("http://127.0.0.1:{local_port}")
-    } else {
-        trimmed.to_string()
-    }
-}
-
 /// Resolve the external OAuth/MCP base URL for a request.
-/// Matches the Python server's `oauth_base_url()` behavior: prefer configured URL,
+/// Matches the Python server's behavior: prefer configured URL,
 /// then `X-Forwarded-*` / `Host`, then localhost.
 pub fn external_base_url(headers: &HeaderMap, bind_port: u16, configured_url: &str) -> String {
     let configured = configured_url.trim().trim_end_matches('/');
@@ -193,15 +184,6 @@ mod tests {
     fn protected_resource_metadata_lists_authorization_servers() {
         let meta = protected_resource_metadata("https://example.com");
         assert_eq!(meta["authorization_servers"], json!(["https://example.com"]));
-    }
-
-    #[test]
-    fn oauth_base_url_falls_back_to_localhost() {
-        assert_eq!(oauth_base_url("", 28766), "http://127.0.0.1:28766");
-        assert_eq!(
-            oauth_base_url("https://mcp.example.com/", 28766),
-            "https://mcp.example.com"
-        );
     }
 
     #[test]

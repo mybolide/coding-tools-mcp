@@ -19,7 +19,6 @@ pub const OAUTH_MAX_BODY_BYTES: usize = 8_192;
 
 #[derive(Clone)]
 pub struct OAuthRuntime {
-    pub base_url: String,
     pub client_id: String,
     pub client_secret: Option<String>,
     pub password: String,
@@ -49,14 +48,13 @@ struct TokenClaims {
 
 impl OAuthRuntime {
     pub fn new(
-        base_url: String,
+        _base_url: String,
         client_id: String,
         client_secret: Option<String>,
         password: String,
         token_secret: String,
     ) -> Self {
         Self {
-            base_url,
             client_id,
             client_secret,
             password,

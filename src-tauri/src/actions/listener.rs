@@ -39,6 +39,7 @@ struct AppState {
     write_lock: Arc<Mutex<()>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_listener(
     workspace_id: &str,
     actions_port: u16,
@@ -116,6 +117,7 @@ pub fn spawn_listener(
     Ok((shutdown_tx, handle))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     actions_port: u16,
     profile_id: &str,

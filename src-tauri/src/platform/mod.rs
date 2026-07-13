@@ -61,15 +61,15 @@ pub fn platform() -> &'static dyn Platform {
 fn create_platform() -> Box<dyn Platform> {
     #[cfg(target_os = "windows")]
     {
-        return Box::new(WindowsPlatform);
+        Box::new(WindowsPlatform)
     }
     #[cfg(target_os = "macos")]
     {
-        return Box::new(MacPlatform);
+        Box::new(MacPlatform)
     }
     #[cfg(target_os = "linux")]
     {
-        return Box::new(LinuxPlatform);
+        Box::new(LinuxPlatform)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {

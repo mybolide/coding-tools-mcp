@@ -72,6 +72,7 @@ fn persist_tunnel_url(state: &AppState, id: &str, kind: TunnelServiceKind, url: 
 
 
 
+#[allow(clippy::collapsible_if)]
 async fn ensure_port_available(port: u16, service_label: &str) -> AppResult<()> {
 
     let Some(pid) = platform().find_pid_listening_on_port(port)? else {

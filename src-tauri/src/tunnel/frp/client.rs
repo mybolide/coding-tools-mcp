@@ -251,8 +251,7 @@ fn frpc_log_summary(log_path: &Path) -> String {
     cleaned
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .last()
+        .rfind(|line| !line.is_empty())
         .unwrap_or("请检查 FRP 服务器、端口与 Token")
         .to_string()
 }
@@ -393,23 +392,23 @@ fn extract_frpc_from_tar_gz(archive_path: &Path, dest: &Path, binary_suffix: &st
 fn frp_release_asset() -> AppResult<(&'static str, &'static str)> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        return Ok(("frp_0.61.2_windows_amd64.zip", "frpc.exe"));
+        Ok(("frp_0.61.2_windows_amd64.zip", "frpc.exe"))
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        return Ok(("frp_0.61.2_linux_amd64.tar.gz", "frpc"));
+        Ok(("frp_0.61.2_linux_amd64.tar.gz", "frpc"))
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        return Ok(("frp_0.61.2_linux_arm64.tar.gz", "frpc"));
+        Ok(("frp_0.61.2_linux_arm64.tar.gz", "frpc"))
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        return Ok(("frp_0.61.2_darwin_amd64.tar.gz", "frpc"));
+        Ok(("frp_0.61.2_darwin_amd64.tar.gz", "frpc"))
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        return Ok(("frp_0.61.2_darwin_arm64.tar.gz", "frpc"));
+        Ok(("frp_0.61.2_darwin_arm64.tar.gz", "frpc"))
     }
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),

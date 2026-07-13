@@ -37,16 +37,9 @@ struct RuntimeEntry {
     started_at: Option<std::time::Instant>,
 }
 
+#[derive(Default)]
 pub struct RuntimeSupervisor {
     entries: HashMap<(String, ServiceKind), RuntimeEntry>,
-}
-
-impl Default for RuntimeSupervisor {
-    fn default() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
 }
 
 impl RuntimeSupervisor {
@@ -62,16 +55,8 @@ impl RuntimeSupervisor {
         self.start(profile, ServiceKind::Mcp)
     }
 
-    pub fn stop_mcp(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
-        self.stop(profile, ServiceKind::Mcp)
-    }
-
     pub fn start_actions(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
         self.start(profile, ServiceKind::Actions)
-    }
-
-    pub fn stop_actions(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
-        self.stop(profile, ServiceKind::Actions)
     }
 
     pub fn restart_mcp(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
@@ -107,9 +92,7 @@ impl RuntimeSupervisor {
 
     pub fn begin_stop(&mut self, workspace_id: &str, kind: ServiceKind) -> Option<JoinHandle<()>> {
         let key = (workspace_id.to_string(), kind);
-        let Some(entry) = self.entries.get_mut(&key) else {
-            return None;
-        };
+        let entry = self.entries.get_mut(&key)?;
 
         entry.phase = RuntimePhase::Stopping;
         let shutdown = entry.shutdown.take();
@@ -360,11 +343,6 @@ impl RuntimeSupervisor {
             }
         }
 
-        Ok(self.status(profile, kind))
-    }
-
-    fn stop(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) -> AppResult<RuntimeStatusDto> {
-        self.sync_stop_and_wait(profile, kind);
         Ok(self.status(profile, kind))
     }
 

@@ -12,15 +12,14 @@ use serde_json::{json, Value};
 
 const SESSION_BUFFER_BYTES: usize = 1_048_576;
 
+#[derive(Default)]
 pub struct SessionStore {
     sessions: Mutex<HashMap<String, Arc<ExecSession>>>,
 }
 
 impl SessionStore {
     pub fn new() -> Self {
-        Self {
-            sessions: Mutex::new(HashMap::new()),
-        }
+        Self::default()
     }
 
     pub fn insert(&self, session: ExecSession) -> Arc<ExecSession> {

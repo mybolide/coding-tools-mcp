@@ -96,10 +96,11 @@ pub fn validate_tool_arguments(
 
 /// Actions OpenAPI 暴露层校验：仅限制「能否调用」，不参与执行逻辑。
 pub fn validate_actions_exposure(tool_name: &str) -> Result<(), PolicyError> {
-    if !is_allowed_tool(tool_name) {
-        return Err(PolicyError(format!("Tool is not exposed: {tool_name}")));
+    if is_allowed_tool(tool_name) {
+        Ok(())
+    } else {
+        Err(PolicyError(format!("Tool is not exposed: {tool_name}")))
     }
-    Ok(())
 }
 
 pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<(), PolicyError> {
@@ -118,12 +119,13 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
             "Shell chaining, redirection and expansion are not allowed".into(),
         ));
     }
-    if !policy.skip_permission_gates() && network_command_pattern().is_match(command) {
-        if !policy.network_allowed() {
-            return Err(PolicyError(
-                "Network-looking commands are blocked in safe permission mode".into(),
-            ));
-        }
+    if !policy.skip_permission_gates()
+        && network_command_pattern().is_match(command)
+        && !policy.network_allowed()
+    {
+        return Err(PolicyError(
+            "Network-looking commands are blocked in safe permission mode".into(),
+        ));
     }
 
     let parts = shell_words::split(command)
@@ -177,7 +179,7 @@ pub fn validate_patch(arguments: &Value, policy: &PolicySettings) -> Result<(), 
         return Err(PolicyError("apply_patch requires a patch".into()));
     }
 
-    if patch.as_bytes().len() > policy.max_patch_bytes {
+    if patch.len() > policy.max_patch_bytes {
         return Err(PolicyError("Patch is too large".into()));
     }
 
@@ -206,8 +208,10 @@ mod tests {
 
     #[test]
     fn workspace_allowed_commands_override_defaults() {
-        let mut actions = ActionsConfig::default();
-        actions.allowed_commands = "cargo,go".into();
+        let actions = ActionsConfig {
+            allowed_commands: "cargo,go".into(),
+            ..ActionsConfig::default()
+        };
         let policy = PolicySettings::from_actions_config(&actions);
         assert!(policy.allowed_commands.contains("cargo"));
         assert!(!policy.allowed_commands.contains("pytest"));
@@ -215,8 +219,10 @@ mod tests {
 
     #[test]
     fn patch_size_uses_workspace_limit() {
-        let mut actions = ActionsConfig::default();
-        actions.max_patch_bytes = 10;
+        let actions = ActionsConfig {
+            max_patch_bytes: 10,
+            ..ActionsConfig::default()
+        };
         let policy = PolicySettings::from_actions_config(&actions);
         let err = validate_patch(&json!({ "patch": "01234567890" }), &policy).unwrap_err();
         assert!(err.0.contains("too large"));

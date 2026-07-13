@@ -21,6 +21,7 @@ fn local_port_from_dw(dw_local_port: u32) -> u16 {
     ((dw_local_port >> 8) & 0xFF) as u16 | ((dw_local_port & 0xFF) as u16) << 8
 }
 
+#[cfg(test)]
 fn port_to_dw(port: u16) -> u32 {
     ((port as u32) << 8) | ((port as u32) >> 8)
 }

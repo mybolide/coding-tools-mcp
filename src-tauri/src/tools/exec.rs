@@ -58,6 +58,7 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_command(
     ctx: &ToolContext,
     cmd: &str,

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -44,7 +44,7 @@ pub fn import_legacy_profiles_if_empty(data: &mut AppData) -> AppResult<usize> {
     Ok(imported)
 }
 
-fn load_legacy_secrets(legacy_home: &PathBuf) -> AppResult<HashMap<String, HashMap<String, String>>> {
+fn load_legacy_secrets(legacy_home: &Path) -> AppResult<HashMap<String, HashMap<String, String>>> {
     let secrets_path = legacy_home.join("secrets.json");
     if !secrets_path.is_file() {
         return Ok(HashMap::new());

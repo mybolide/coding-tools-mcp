@@ -16,8 +16,8 @@ pub fn open_path_in_file_manager(path: &Path) -> AppResult<()> {
         Command::new("explorer")
             .arg(path)
             .spawn()
-            .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))?;
-        return Ok(());
+            .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))
+            .map(|_| ())
     }
 
     #[cfg(target_os = "macos")]
@@ -25,8 +25,8 @@ pub fn open_path_in_file_manager(path: &Path) -> AppResult<()> {
         Command::new("open")
             .arg(path)
             .spawn()
-            .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))?;
-        return Ok(());
+            .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))
+            .map(|_| ())
     }
 
     #[cfg(target_os = "linux")]
@@ -34,8 +34,8 @@ pub fn open_path_in_file_manager(path: &Path) -> AppResult<()> {
         Command::new("xdg-open")
             .arg(path)
             .spawn()
-            .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))?;
-        return Ok(());
+            .map_err(|err| AppError::Message(format!("无法打开目录: {err}")))
+            .map(|_| ())
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

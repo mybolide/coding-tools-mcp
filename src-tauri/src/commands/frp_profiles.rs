@@ -11,9 +11,7 @@ use crate::settings::{AppSettings, FrpProfile, ProxyConfig};
 
 
 #[derive(serde::Serialize)]
-
 #[serde(rename_all = "camelCase")]
-
 pub struct FrpProfileDto {
 
     pub id: String,

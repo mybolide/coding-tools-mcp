@@ -57,27 +57,27 @@ pub(crate) fn cloudflared_binary_name() -> &'static str {
 fn cloudflared_release_asset() -> AppResult<&'static str> {
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        return Ok("cloudflared-windows-amd64.exe");
+        Ok("cloudflared-windows-amd64.exe")
     }
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     {
-        return Ok("cloudflared-windows-arm64.exe");
+        Ok("cloudflared-windows-arm64.exe")
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        return Ok("cloudflared-linux-amd64");
+        Ok("cloudflared-linux-amd64")
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        return Ok("cloudflared-linux-arm64");
+        Ok("cloudflared-linux-arm64")
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
-        return Ok("cloudflared-darwin-amd64.tgz");
+        Ok("cloudflared-darwin-amd64.tgz")
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        return Ok("cloudflared-darwin-arm64.tgz");
+        Ok("cloudflared-darwin-arm64.tgz")
     }
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
