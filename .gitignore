@@ -23,4 +23,5 @@ src-tauri/target
 src-tauri/icons/64x64.png
 src-tauri/icons/android/
 src-tauri/icons/ios/
+src-tauri/icons/icons/
 src-tauri/icons/logo-design.png
