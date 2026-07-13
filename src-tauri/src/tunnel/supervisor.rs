@@ -145,6 +145,7 @@ impl TunnelSupervisor {
         }
 
         let (port, mode, token, named_url, log_name) = cloudflare_config(profile, kind)?;
+        let use_proxy = tunnel_use_proxy(profile, kind);
         let log_path = log_dir_for_profile(&profile.id).join(log_name);
         let handle = cloudflare::spawn_cloudflare_tunnel(
             port,
@@ -153,6 +154,7 @@ impl TunnelSupervisor {
             mode,
             &token,
             &named_url,
+            use_proxy,
         )
         .await?;
 
@@ -225,6 +227,13 @@ fn tunnel_type_for(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> &str 
     match kind {
         TunnelServiceKind::Mcp => profile.tunnel.tunnel_type.as_str(),
         TunnelServiceKind::Actions => profile.actions.tunnel_type.as_str(),
+    }
+}
+
+fn tunnel_use_proxy(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> bool {
+    match kind {
+        TunnelServiceKind::Mcp => profile.tunnel.use_proxy,
+        TunnelServiceKind::Actions => profile.actions.use_proxy,
     }
 }
 

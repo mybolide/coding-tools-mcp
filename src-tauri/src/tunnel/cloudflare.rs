@@ -196,21 +196,30 @@ pub fn extract_trycloudflare_url(line: &str) -> Option<String> {
     None
 }
 
-/// Apply the global proxy to the cloudflared process environment so the
-/// tunnel can reach Cloudflare's edge through an outbound proxy.
-fn apply_proxy_env(cmd: &mut Command, proxy: &ProxyConfig) {
+/// Apply the global proxy to a tunnel child process environment.
+pub(crate) fn apply_proxy_env(cmd: &mut Command, proxy: &ProxyConfig) {
     let url = match proxy.mode.as_str() {
         "manual" if !proxy.url.trim().is_empty() => Some(proxy.url.trim().to_string()),
         "system" => std::env::var("HTTPS_PROXY")
             .ok()
             .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("HTTP_PROXY").ok().filter(|s| !s.is_empty())),
+            .or_else(|| std::env::var("HTTP_PROXY").ok().filter(|s| !s.is_empty()))
+            .or_else(|| std::env::var("ALL_PROXY").ok().filter(|s| !s.is_empty())),
         _ => None,
     };
     if let Some(url) = url {
-        for key in ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"] {
+        for key in [
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
             cmd.env(key, &url);
         }
+        // Some cloudflared builds consult this dedicated variable.
+        cmd.env("TUNNEL_HTTP_PROXY", &url);
     }
 }
 
@@ -222,6 +231,7 @@ pub async fn spawn_cloudflare_tunnel(
     cloudflare_mode: &str,
     cloudflare_token: &str,
     named_public_url: &str,
+    use_proxy: bool,
 ) -> AppResult<CloudflareTunnelHandle> {
     let cloudflared = resolve_cloudflared()?;
     let quick = cloudflare_mode != "named";
@@ -257,7 +267,9 @@ pub async fn spawn_cloudflare_tunnel(
     }
 
     let settings = crate::settings::AppSettings::load_or_default();
-    apply_proxy_env(&mut cmd, &settings.proxy);
+    if use_proxy {
+        apply_proxy_env(&mut cmd, &settings.proxy);
+    }
 
     if quick {
         cmd.args([
@@ -286,6 +298,7 @@ pub async fn spawn_cloudflare_tunnel(
     let (ready_tx, ready_rx) = oneshot::channel();
     let log_path = log_path.to_path_buf();
     let named_url = named_public_url.trim_end_matches('/').to_string();
+    let log_path_for_error = log_path.clone();
 
     if let Some(stdout) = child.stdout.take() {
         let stderr = child.stderr.take();
@@ -306,17 +319,22 @@ pub async fn spawn_cloudflare_tunnel(
     let ready = time::timeout(READY_TIMEOUT, ready_rx)
         .await
         .map_err(|_| {
-            AppError::Message(
-                "cloudflared 已启动，但在预期时间内没有返回 trycloudflare.com 公网地址。".into(),
-            )
+            AppError::Message(format!(
+                "cloudflared 已启动，但在 {} 秒内没有返回 trycloudflare.com 公网地址。\n\
+                 请检查：1) MCP 服务是否已在本机端口 {port} 运行；2) 设置 → 通用 → 网络代理 是否配置为手动代理（如 http://127.0.0.1:7890）；\
+                 3) 查看日志 {log_hint}",
+                READY_TIMEOUT.as_secs(),
+                log_hint = log_path_for_error.display()
+            ))
         })?
         .map_err(|_| AppError::Message("cloudflared 输出流意外结束。".into()))?;
 
     let public_url = if quick {
         ready.public_url.ok_or_else(|| {
-            AppError::Message(
-                "cloudflared 已启动，但在预期时间内没有返回 trycloudflare.com 公网地址。".into(),
-            )
+            AppError::Message(format!(
+                "cloudflared 已启动，但没有解析到 trycloudflare.com 地址。请查看日志：{}",
+                log_path_for_error.display()
+            ))
         })?
     } else {
         named_public_url.trim_end_matches('/').to_string()
@@ -367,21 +385,25 @@ async fn stream_cloudflare_output<R, E>(
         }
     };
 
-    let mut send_ready = |url: Option<String>, named_ready: bool| {
-        if let Some(tx) = ready_tx.take() {
-            let _ = tx.send(QuickTunnelReady {
+    let send_ready = |tx: &mut Option<oneshot::Sender<QuickTunnelReady>>,
+                      url: Option<String>,
+                      named_ready: bool| {
+        if let Some(sender) = tx.take() {
+            let _ = sender.send(QuickTunnelReady {
                 public_url: url,
                 named_ready,
             });
         }
     };
 
-    let mut handle_line = |line: &str| {
+    let handle_line = |line: &str,
+                           public_url: &mut Option<String>,
+                           ready_tx: &mut Option<oneshot::Sender<QuickTunnelReady>>| {
         if quick {
             if public_url.is_none() {
                 if let Some(url) = extract_trycloudflare_url(line) {
-                    public_url = Some(url.clone());
-                    send_ready(Some(url), false);
+                    *public_url = Some(url.clone());
+                    send_ready(ready_tx, Some(url), false);
                 }
             }
         } else {
@@ -389,30 +411,43 @@ async fn stream_cloudflare_output<R, E>(
             if lowered.contains("registered tunnel connection")
                 || lowered.contains("starting metrics server")
             {
-                send_ready(Some(named_url.clone()), true);
+                send_ready(ready_tx, Some(named_url.clone()), true);
             }
         }
     };
 
-    let mut stdout = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = stdout.next_line().await {
+    // cloudflared logs primarily to stderr; read stdout and stderr concurrently.
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let stderr_line_tx = line_tx.clone();
+
+    tokio::spawn(async move {
+        let mut stdout = BufReader::new(stdout).lines();
+        while let Ok(Some(line)) = stdout.next_line().await {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+
+    if let Some(stderr) = stderr {
+        tokio::spawn(async move {
+            let mut stderr = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = stderr.next_line().await {
+                if stderr_line_tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    while let Some(line) = line_rx.recv().await {
         let _ = log.write_all(line.as_bytes()).await;
         let _ = log.write_all(b"\n").await;
         let _ = log.flush().await;
-        handle_line(&line);
+        handle_line(&line, &mut public_url, &mut ready_tx);
     }
 
-    if let Some(stderr) = stderr {
-        let mut stderr = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = stderr.next_line().await {
-            let _ = log.write_all(line.as_bytes()).await;
-            let _ = log.write_all(b"\n").await;
-            let _ = log.flush().await;
-            handle_line(&line);
-        }
-    }
-
-    send_ready(public_url, !quick);
+    send_ready(&mut ready_tx, public_url, !quick);
 }
 
 pub async fn stop_child(mut child: Child, pid: Option<u32>) -> AppResult<()> {

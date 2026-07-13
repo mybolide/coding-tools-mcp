@@ -75,10 +75,11 @@ impl OAuthRuntime {
         constant_time_eq_str(client_id, &self.client_id)
     }
 
-    pub fn verify_access_token(&self, token: &str) -> bool {
+    pub fn verify_access_token(&self, token: &str, server_url: &str) -> bool {
+        let server_url = server_url.trim_end_matches('/');
         let mut validation = Validation::new(Algorithm::HS256);
-        validation.set_audience(&[self.base_url.as_str()]);
-        validation.set_issuer(&[self.base_url.as_str()]);
+        validation.set_audience(&[server_url]);
+        validation.set_issuer(&[server_url]);
         decode::<TokenClaims>(
             token,
             &DecodingKey::from_secret(self.token_secret.as_bytes()),
@@ -88,7 +89,11 @@ impl OAuthRuntime {
     }
 }
 
-pub fn verify_oauth_bearer_header(headers: &HeaderMap, oauth: &OAuthRuntime) -> Option<Response> {
+pub fn verify_oauth_bearer_header(
+    headers: &HeaderMap,
+    oauth: &OAuthRuntime,
+    server_url: &str,
+) -> Option<Response> {
     let Some(header_value) = headers.get(AUTHORIZATION) else {
         return Some((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response());
     };
@@ -98,7 +103,7 @@ pub fn verify_oauth_bearer_header(headers: &HeaderMap, oauth: &OAuthRuntime) -> 
     let Some(token) = header_str.strip_prefix("Bearer ").map(str::trim) else {
         return Some((StatusCode::UNAUTHORIZED, "Invalid bearer token").into_response());
     };
-    if oauth.verify_access_token(token) {
+    if oauth.verify_access_token(token, server_url) {
         None
     } else {
         Some((StatusCode::UNAUTHORIZED, "Invalid bearer token").into_response())
@@ -138,7 +143,11 @@ pub struct TokenForm {
     pub client_secret: String,
 }
 
-pub fn authorize_get(oauth: &OAuthRuntime, params: AuthorizeParams) -> Response {
+pub fn authorize_get(
+    oauth: &OAuthRuntime,
+    params: AuthorizeParams,
+    workspace_path: Option<&str>,
+) -> Response {
     if params.response_type != "code" {
         return html_error("response_type must be 'code'", StatusCode::BAD_REQUEST);
     }
@@ -158,11 +167,12 @@ pub fn authorize_get(oauth: &OAuthRuntime, params: AuthorizeParams) -> Response 
         &params.code_challenge_method,
         &params.state,
         "",
+        workspace_path,
     ))
     .into_response()
 }
 
-pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm) -> Response {
+pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm, server_url: &str) -> Response {
     if !oauth.client_id_allowed(&form.client_id) {
         return Html(login_page(
             &form.client_id,
@@ -171,6 +181,7 @@ pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm) -> Response {
             &form.code_challenge_method,
             &form.state,
             "Invalid client",
+            None,
         ))
         .into_response();
     }
@@ -182,6 +193,7 @@ pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm) -> Response {
             &form.code_challenge_method,
             &form.state,
             "Invalid PKCE parameters",
+            None,
         ))
         .into_response();
     }
@@ -195,11 +207,13 @@ pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm) -> Response {
                 &form.code_challenge_method,
                 &form.state,
                 "Invalid password",
+                None,
             )),
         )
             .into_response();
     }
 
+    let server_url = server_url.trim_end_matches('/').to_string();
     let code = uuid::Uuid::new_v4().to_string().replace('-', "");
     let now = unix_now();
     {
@@ -213,7 +227,7 @@ pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm) -> Response {
                 redirect_uri: form.redirect_uri.clone(),
                 state: form.state.clone(),
                 expires_at: now + OAUTH_CODE_TTL_SECONDS,
-                server_url: oauth.base_url.clone(),
+                server_url: server_url.clone(),
             },
         );
     }
@@ -223,13 +237,16 @@ pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm) -> Response {
         qs.push_str(&format!("&state={}", urlencoding_encode(&form.state)));
     }
     let sep = if form.redirect_uri.contains('?') { '&' } else { '?' };
-    Redirect::temporary(&format!("{}{}{}", form.redirect_uri, sep, qs)).into_response()
+    // 授权页面通过 POST 表单提交，但客户端回调必须使用 GET。
+    // 307 会保留 POST 并把表单体转发到 ChatGPT connector，导致 Bad Request。
+    Redirect::to(&format!("{}{}{}", form.redirect_uri, sep, qs)).into_response()
 }
 
 pub fn token_exchange(
     oauth: &OAuthRuntime,
     headers: &HeaderMap,
     mut form: TokenForm,
+    server_url: &str,
 ) -> Response {
     if form.grant_type != "authorization_code" {
         return token_error("unsupported_grant_type", "Only authorization_code is supported");
@@ -279,8 +296,12 @@ pub fn token_exchange(
         return token_error("invalid_grant", "PKCE verification failed");
     }
 
-    let server_url = code_data.server_url.trim_end_matches('/').to_string();
-    match create_access_token(&server_url, &oauth.token_secret, OAUTH_TOKEN_TTL_SECONDS) {
+    let issuer = if code_data.server_url.trim().is_empty() {
+        server_url.trim_end_matches('/').to_string()
+    } else {
+        code_data.server_url.trim_end_matches('/').to_string()
+    };
+    match create_access_token(&issuer, &oauth.token_secret, OAUTH_TOKEN_TTL_SECONDS) {
         Ok(access_token) => (
             StatusCode::OK,
             axum::Json(json!({
@@ -357,12 +378,17 @@ fn login_page(
     code_challenge_method: &str,
     state: &str,
     error: &str,
+    workspace_path: Option<&str>,
 ) -> String {
     let error_block = if error.is_empty() {
         String::new()
     } else {
         format!("<p style=\"color:red\">{}</p>", html_escape(error))
     };
+    let workspace_block = workspace_path
+        .filter(|path| !path.is_empty())
+        .map(|path| format!("<p>Workspace: <code>{}</code></p>", html_escape(path)))
+        .unwrap_or_default();
     format!(
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>\
         <title>Authorize MCP Server</title>\
@@ -371,6 +397,7 @@ fn login_page(
         button{{width:100%;padding:.7rem;background:#0066cc;color:#fff;border:none;cursor:pointer}}</style>\
         </head><body>\
         <h2>Authorize Coding Tools MCP</h2>\
+        {workspace_block}\
         <p>Client: <strong>{}</strong></p>\
         <p>Redirect URI: <code>{}</code></p>\
         {error_block}\
@@ -424,6 +451,54 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_exchange_without_client_secret() {
+        use axum::http::HeaderMap;
+
+        let oauth = OAuthRuntime::new(
+            "https://lb.example.com".into(),
+            "chatgpt-client-test".into(),
+            None,
+            "test-password".into(),
+            "token-signing-secret".into(),
+        );
+        let verifier = "dBjftJeZ4CVP-mB92Kpru-AEJvkQlLgi3ThpmQ45N_Xyo";
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+        let redirect_uri = "https://chatgpt.com/connector/oauth/test";
+        let redirect = authorize_post(
+            &oauth,
+            AuthorizeForm {
+                client_id: "chatgpt-client-test".into(),
+                redirect_uri: redirect_uri.into(),
+                code_challenge: challenge,
+                code_challenge_method: "S256".into(),
+                state: "state".into(),
+                password: "test-password".into(),
+            },
+            "https://lb.example.com",
+        );
+        assert_eq!(redirect.status(), StatusCode::SEE_OTHER);
+        let code = {
+            let pending = oauth.pending.lock().expect("lock");
+            pending.keys().next().cloned().unwrap()
+        };
+
+        let response = token_exchange(
+            &oauth,
+            &HeaderMap::new(),
+            TokenForm {
+                grant_type: "authorization_code".into(),
+                code,
+                redirect_uri: redirect_uri.into(),
+                code_verifier: verifier.into(),
+                client_id: "chatgpt-client-test".into(),
+                client_secret: String::new(),
+            },
+            "https://lb.example.com",
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+    }
 
     #[test]
     fn pkce_round_trip() {

@@ -95,7 +95,7 @@ pub fn frp_server_config(
         (server_addr, server_port)
     };
 
-    let token = token_override.or_else(|| resolve_frp_token(profile_id, profile, kind));
+    let token = token_override.or_else(|| resolve_frp_token(profile_id, profile, kind, settings));
 
     FrpServerConfig {
         server_addr,
@@ -109,6 +109,7 @@ fn resolve_frp_token(
     profile_id: &str,
     workspace: &WorkspaceProfile,
     kind: TunnelServiceKind,
+    settings: &AppSettings,
 ) -> Option<String> {
     if !profile_id.trim().is_empty() {
         if let Ok(Some(token)) = crate::secret::SecretStore::get_app("frp_profile_token", profile_id)
@@ -118,14 +119,38 @@ fn resolve_frp_token(
             }
         }
     }
+
     let workspace_key = match kind {
         TunnelServiceKind::Mcp => "frp_token",
         TunnelServiceKind::Actions => "actions_frp_token",
     };
-    crate::secret::SecretStore::get(&workspace.id, workspace_key)
-        .ok()
-        .flatten()
-        .filter(|value| !value.trim().is_empty())
+    if let Ok(Some(token)) = crate::secret::SecretStore::get(&workspace.id, workspace_key) {
+        if !token.trim().is_empty() {
+            return Some(token);
+        }
+    }
+
+    // Manual inline server: reuse token from a global profile with the same host.
+    let inline_server = match kind {
+        TunnelServiceKind::Mcp => workspace.tunnel.frp_server.as_str(),
+        TunnelServiceKind::Actions => workspace.actions.frp_server.as_str(),
+    };
+    let inline_server = inline_server.trim();
+    if !inline_server.is_empty() {
+        for profile in &settings.frp_profiles {
+            if profile.server.trim().eq_ignore_ascii_case(inline_server) {
+                if let Ok(Some(token)) =
+                    crate::secret::SecretStore::get_app("frp_profile_token", &profile.id)
+                {
+                    if !token.trim().is_empty() {
+                        return Some(token);
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 pub fn build_frpc_toml(config: &FrpServerConfig) -> String {
@@ -235,5 +260,24 @@ mod tests {
         let toml = build_frpc_toml(&config);
         assert!(toml.contains("serverAddr = \"frp.example.com\""));
         assert!(toml.contains("auth.token = \"secret\""));
+    }
+
+    #[test]
+    fn resolve_token_from_matching_global_profile_when_manual_server() {
+        let mut profile = WorkspaceProfile::new("/tmp/demo".into(), Some("Demo".into()));
+        profile.tunnel.frp_server = "frp.example.com".into();
+        profile.tunnel.frp_subdomain = "demo".into();
+        let settings = AppSettings {
+            frp_profiles: vec![FrpProfile {
+                id: "p1".into(),
+                name: "Main".into(),
+                server: "frp.example.com".into(),
+                server_port: 7000,
+            }],
+            ..AppSettings::default()
+        };
+        crate::secret::SecretStore::set_app("frp_profile_token", "p1", "shared-token").unwrap();
+        let config = frp_server_config(&profile, TunnelServiceKind::Mcp, &settings, None);
+        assert_eq!(config.token.as_deref(), Some("shared-token"));
     }
 }

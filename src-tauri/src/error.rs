@@ -6,8 +6,6 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("keyring error: {0}")]
-    Keyring(#[from] keyring::Error),
     #[error("{0}")]
     Message(String),
 }

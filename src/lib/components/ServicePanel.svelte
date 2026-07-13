@@ -7,9 +7,11 @@
     title: string;
     subtitle: string;
     status: RuntimeState;
+    statusMessage?: string;
     port: number;
     portEditable?: boolean;
     busy?: boolean;
+    tunnelType?: string;
     localEndpoint: string;
     publicEndpoint?: string;
     publicLabel?: string;
@@ -21,9 +23,11 @@
     title,
     subtitle,
     status,
+    statusMessage = "",
     port,
     portEditable = false,
     busy = false,
+    tunnelType = "none",
     localEndpoint,
     publicEndpoint = "",
     publicLabel = "公网",
@@ -38,7 +42,12 @@
   });
 
   const running = $derived(status === "running");
+  const showError = $derived(status === "error" && Boolean(statusMessage));
   const canEditPort = $derived(portEditable && !running && status !== "starting");
+  const tunnelEnabled = $derived(tunnelType === "cloudflare" || tunnelType === "frp");
+  const tunnelLabel = $derived(
+    tunnelType === "cloudflare" ? "Cloudflare" : tunnelType === "frp" ? "FRP" : "",
+  );
 
   async function commitPort() {
     if (!onPortChange || draftPort === port) return;
@@ -58,6 +67,11 @@
         <h3 class="text-[15px] font-semibold tracking-tight">{title}</h3>
       </div>
       <p class="mt-1 text-sm text-[var(--color-text-muted)]">{subtitle}</p>
+      {#if tunnelEnabled}
+        <p class="mt-1 text-xs text-[var(--color-text-muted)]">
+          {tunnelLabel} 隧道随服务自动连接，停止服务时一并断开
+        </p>
+      {/if}
     </div>
     <button
       type="button"
@@ -76,40 +90,48 @@
     </button>
   </div>
 
+  {#if showError}
+    <div class="tx-alert tx-alert--error mt-4" role="alert">
+      {statusMessage}
+    </div>
+  {/if}
+
   <div class="mt-5 grid gap-3">
-    <div class="flex items-center justify-between gap-3 rounded-[10px] bg-[var(--surface-hover)] px-3 py-2.5">
-      <span class="text-xs font-medium text-[var(--color-text-muted)]">端口</span>
-      {#if canEditPort}
-        <input
-          type="number"
-          min="1024"
-          max="65535"
-          class="tx-input w-24 text-right"
-          bind:value={draftPort}
-          onchange={commitPort}
-        />
-      {:else}
-        <span class="tx-mono text-sm">{port}</span>
-      {/if}
+    <div class="tx-info-block">
+      <div class="tx-info-row">
+        <span class="tx-info-label">端口</span>
+        {#if canEditPort}
+          <input
+            type="number"
+            min="1024"
+            max="65535"
+            class="tx-input tx-input-inline"
+            bind:value={draftPort}
+            onchange={commitPort}
+          />
+        {:else}
+          <span class="tx-mono text-sm">{port}</span>
+        {/if}
+      </div>
     </div>
 
-    <div class="rounded-[10px] bg-[var(--surface-hover)] px-3 py-2.5">
-      <div class="flex items-center justify-between gap-2">
-        <p class="text-xs font-medium text-[var(--color-text-muted)]">本地地址</p>
+    <div class="tx-info-block">
+      <div class="tx-info-row">
+        <span class="tx-info-label">本地地址</span>
         <CopyButton value={localEndpoint} />
       </div>
-      <p class="tx-mono mt-1 truncate text-sm">{localEndpoint}</p>
+      <p class="tx-mono mt-1.5 truncate text-sm">{localEndpoint}</p>
     </div>
 
     {#if publicEndpoint || publicLabel}
-      <div class="rounded-[10px] bg-[var(--surface-hover)] px-3 py-2.5">
-        <div class="flex items-center justify-between gap-2">
-          <p class="text-xs font-medium text-[var(--color-text-muted)]">{publicLabel}</p>
+      <div class="tx-info-block">
+        <div class="tx-info-row">
+          <span class="tx-info-label">{publicLabel}</span>
           {#if publicEndpoint}
             <CopyButton value={publicEndpoint} />
           {/if}
         </div>
-        <p class="tx-mono mt-1 truncate text-sm text-[var(--color-text-secondary)]">
+        <p class="tx-mono mt-1.5 truncate text-sm text-[var(--color-text-secondary)]">
           {publicEndpoint || "未配置隧道"}
         </p>
       </div>

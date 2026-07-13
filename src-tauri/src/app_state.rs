@@ -1,48 +1,45 @@
 use std::sync::Mutex;
 
+use crate::data::DataStore;
 use crate::error::AppResult;
 use crate::runtime::RuntimeSupervisor;
-use crate::secret::SecretStore;
-use crate::settings::AppSettingsStore;
-use crate::workspace::WorkspaceStore;
 
 pub struct AppState {
-    pub workspaces: Mutex<WorkspaceStore>,
+    pub data: Mutex<DataStore>,
     pub runtime: Mutex<RuntimeSupervisor>,
-    pub settings: Mutex<AppSettingsStore>,
 }
 
 impl AppState {
     pub fn new() -> AppResult<Self> {
-        SecretStore::init_shared_secrets()?;
+        let mut store = DataStore::load()?;
+        store.init_shared_secrets()?;
         Ok(Self {
-            workspaces: Mutex::new(WorkspaceStore::load()?),
+            data: Mutex::new(store),
             runtime: Mutex::new(RuntimeSupervisor::default()),
-            settings: Mutex::new(AppSettingsStore::load()?),
         })
     }
 
-    pub fn with_workspaces<R>(&self, f: impl FnOnce(&mut WorkspaceStore) -> AppResult<R>) -> AppResult<R> {
+    pub fn with_data<R>(&self, f: impl FnOnce(&mut DataStore) -> AppResult<R>) -> AppResult<R> {
         let mut guard = self
-            .workspaces
+            .data
             .lock()
-            .map_err(|_| crate::error::AppError::Message("workspace store poisoned".into()))?;
+            .map_err(|_| crate::error::AppError::Message("data store poisoned".into()))?;
         f(&mut guard)
+    }
+
+    pub fn with_workspaces<R>(&self, f: impl FnOnce(&mut DataStore) -> AppResult<R>) -> AppResult<R> {
+        self.with_data(f)
+    }
+
+    pub fn with_settings<R>(&self, f: impl FnOnce(&mut DataStore) -> AppResult<R>) -> AppResult<R> {
+        self.with_data(f)
     }
 
     pub fn with_runtime<R>(&self, f: impl FnOnce(&mut RuntimeSupervisor) -> AppResult<R>) -> AppResult<R> {
         let mut guard = self
             .runtime
             .lock()
-            .map_err(|_| crate::error::AppError::Message("runtime supervisor poisoned".into()))?;
-        f(&mut guard)
-    }
-
-    pub fn with_settings<R>(&self, f: impl FnOnce(&mut AppSettingsStore) -> AppResult<R>) -> AppResult<R> {
-        let mut guard = self
-            .settings
-            .lock()
-            .map_err(|_| crate::error::AppError::Message("app settings poisoned".into()))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         f(&mut guard)
     }
 }
@@ -53,10 +50,10 @@ impl Default for AppState {
     }
 }
 
-pub fn bootstrap_workspace(profile_id: &str) -> AppResult<()> {
-    SecretStore::init_workspace_secrets(profile_id)
+pub fn bootstrap_workspace(store: &mut DataStore, profile_id: &str) -> AppResult<()> {
+    store.init_workspace_secrets(profile_id)
 }
 
-pub fn teardown_workspace(profile_id: &str) -> AppResult<()> {
-    SecretStore::remove_workspace_secrets(profile_id)
+pub fn teardown_workspace(store: &mut DataStore, profile_id: &str) -> AppResult<()> {
+    store.remove_workspace_secrets(profile_id)
 }

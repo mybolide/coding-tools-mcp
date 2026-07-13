@@ -1,5 +1,5 @@
 <script lang="ts">
-  import CopyButton from "$lib/components/CopyButton.svelte";
+  import SecretInput from "$lib/components/SecretInput.svelte";
   import { restartRuntime } from "$lib/api/workspaces";
   import {
     getWorkspaceSecret,
@@ -30,6 +30,8 @@
   let secrets = $state<Partial<Record<WorkspaceSecretKey, string>>>({});
   let loadedSecrets = $state<Partial<Record<WorkspaceSecretKey, string>>>({});
   let regenerating = $state<WorkspaceSecretKey | null>(null);
+  let secretsLoadSeq = 0;
+  let suppressSecretsReload = $state(false);
 
   const secretsDirty = $derived(
     (Object.keys(secrets) as WorkspaceSecretKey[]).some(
@@ -52,10 +54,15 @@
   });
 
   $effect(() => {
-    void loadSecrets(workspaceId, draft.type, draft.use_shared_secrets ?? false);
+    if (suppressSecretsReload) return;
+    const id = workspaceId;
+    const authType = draft.type;
+    const useShared = draft.use_shared_secrets ?? false;
+    void loadSecrets(id, authType, useShared);
   });
 
   async function loadSecrets(id: string, authType: string, useShared: boolean) {
+    const seq = ++secretsLoadSeq;
     const keys: WorkspaceSecretKey[] = [];
     if (authType === "oauth") {
       keys.push("oauth_client_secret", "oauth_password");
@@ -63,7 +70,9 @@
       keys.push("bearer_token");
     }
     if (keys.length === 0) {
+      if (seq !== secretsLoadSeq) return;
       secrets = {};
+      loadedSecrets = {};
       return;
     }
     const loaded = await Promise.all(
@@ -74,6 +83,7 @@
         return [key, value ?? ""] as const;
       }),
     );
+    if (seq !== secretsLoadSeq) return;
     secrets = Object.fromEntries(loaded);
     loadedSecrets = Object.fromEntries(loaded);
   }
@@ -81,10 +91,13 @@
   async function save() {
     if (saving || !dirty) return;
     saving = true;
+    suppressSecretsReload = true;
     try {
       await onSaveProfile({ ...draft });
+      // Auth save only persists profile fields; secrets are already stored by regenerate.
       loadedSecrets = { ...secrets };
     } finally {
+      suppressSecretsReload = false;
       saving = false;
     }
   }
@@ -111,6 +124,10 @@
     void save();
   }}
 >
+  <p class="text-xs text-[var(--color-text-muted)]">
+    复制 Client ID / 密钥等请用上方「GPT 配置」卡片；此处可修改认证类型与重新生成密钥。
+  </p>
+
   <label class="grid gap-1">
     <span class="text-xs text-[var(--color-text-muted)]">认证类型</span>
     <select
@@ -144,76 +161,37 @@
 
     <div class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">OAuth 客户端密钥</span>
-      <div class="flex gap-2">
-        <input
-          type="password"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={secrets.oauth_client_secret ?? ""}
-          placeholder="加载中…"
-        />
-        <CopyButton value={secrets.oauth_client_secret ?? ""} />
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          disabled={regenerating === "oauth_client_secret"}
-          onclick={() => {
-            void regenerate("oauth_client_secret");
-          }}
-        >
-          {regenerating === "oauth_client_secret" ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={secrets.oauth_client_secret ?? ""}
+        placeholder="加载中…"
+        readonly
+        onRegenerate={() => void regenerate("oauth_client_secret")}
+        regenerating={regenerating === "oauth_client_secret"}
+      />
     </div>
 
     <div class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">授权口令</span>
-      <div class="flex gap-2">
-        <input
-          type="password"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={secrets.oauth_password ?? ""}
-          placeholder="ChatGPT 首次授权时输入这个口令"
-        />
-        <CopyButton value={secrets.oauth_password ?? ""} />
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          disabled={regenerating === "oauth_password"}
-          onclick={() => {
-            void regenerate("oauth_password");
-          }}
-        >
-          {regenerating === "oauth_password" ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={secrets.oauth_password ?? ""}
+        placeholder="ChatGPT 首次授权时输入这个口令"
+        readonly
+        onRegenerate={() => void regenerate("oauth_password")}
+        regenerating={regenerating === "oauth_password"}
+      />
     </div>
   {/if}
 
   {#if showBearer}
     <div class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">Bearer Token</span>
-      <div class="flex gap-2">
-        <input
-          type="password"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={secrets.bearer_token ?? ""}
-          placeholder="加载中…"
-        />
-        <CopyButton value={secrets.bearer_token ?? ""} />
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          disabled={regenerating === "bearer_token"}
-          onclick={() => {
-            void regenerate("bearer_token");
-          }}
-        >
-          {regenerating === "bearer_token" ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={secrets.bearer_token ?? ""}
+        placeholder="加载中…"
+        readonly
+        onRegenerate={() => void regenerate("bearer_token")}
+        regenerating={regenerating === "bearer_token"}
+      />
     </div>
   {/if}
 

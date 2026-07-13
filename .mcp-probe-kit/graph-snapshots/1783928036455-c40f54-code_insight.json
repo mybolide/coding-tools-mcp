@@ -1,0 +1,137 @@
+{
+  "id": "1783928036455-c40f54",
+  "uri": "probe://graph/1783928036455-c40f54",
+  "toolName": "code_insight",
+  "createdAt": "2026-07-13T07:33:56.455Z",
+  "status": "ok",
+  "summary": "GitNexus 图谱增强已启用（1/1 成功）: context: { \"error\": \"Symbol 'start_runtime' not found\" } --- **Next:** If planning changes, use impact({target: \"sta...",
+  "payload": {
+    "status": "ok",
+    "provider": "gitnexus",
+    "mode": {
+      "requested": "context",
+      "resolved": "context"
+    },
+    "summary": "GitNexus 图谱增强已启用（1/1 成功）: context: { \"error\": \"Symbol 'start_runtime' not found\" } --- **Next:** If planning changes, use impact({target: \"sta...",
+    "warnings": [
+      "index_refresh_failed"
+    ],
+    "executions": [
+      {
+        "tool": "context",
+        "args": {
+          "name": "start_runtime",
+          "repo": "coding-tools-mcp"
+        },
+        "ok": true,
+        "durationMs": 211,
+        "text": "{\n  \"error\": \"Symbol 'start_runtime' not found\"\n}\n\n---\n**Next:** If planning changes, use impact({target: \"start_runtime\", direction: \"upstream\", repo: \"coding-tools-mcp\"}) to check blast radius. To see execution flows, READ gitnexus://repo/coding-tools-mcp/processes."
+      }
+    ],
+    "repo": "coding-tools-mcp",
+    "launcherStrategy": "local",
+    "ambiguities": [],
+    "workspaceMode": "direct",
+    "sourceRoot": "E:\\workspace\\github\\coding-tools-mcp-rust",
+    "analysisRoot": "E:\\workspace\\github\\coding-tools-mcp-rust",
+    "pathMapped": false,
+    "projectDocs": {
+      "docsDir": "docs",
+      "projectContextFilePath": "E:/workspace/github/coding-tools-mcp-rust/AGENTS.md",
+      "latestMarkdownFilePath": "docs/graph-insights/latest.md",
+      "latestJsonFilePath": "docs/graph-insights/latest.json",
+      "archiveMarkdownFilePath": "E:/workspace/github/coding-tools-mcp-rust/docs/graph-insights/2026-07-13T07-33-56-454Z-context-gitnexus-1-1-context-error-symbol-start_runtime-.md",
+      "archiveJsonFilePath": "E:/workspace/github/coding-tools-mcp-rust/docs/graph-insights/2026-07-13T07-33-56-454Z-context-gitnexus-1-1-context-error-symbol-start_runtime-.json",
+      "navigationSnippet": "### [代码图谱洞察](./graph-insights/latest.md)\n最近一次 code_insight 分析结果，包含调用链、上下文与影响面摘要\n",
+      "devGuideSnippet": "- **代码图谱洞察**: [graph-insights/latest.md](./graph-insights/latest.md) - 需要理解模块依赖、调用链和影响面时优先查看\n"
+    },
+    "plan": {
+      "mode": "delegated",
+      "kind": "docs",
+      "steps": [
+        {
+          "id": "consume-result",
+          "action": "先消费本次分析结果（processes/symbols/impact），确认是否满足当前问题"
+        },
+        {
+          "id": "optional-save",
+          "action": "如需保存，再写入 docs/graph-insights/latest.md（文本）和 docs/graph-insights/latest.json（结构化）",
+          "outputs": [
+            "docs/graph-insights/latest.md",
+            "docs/graph-insights/latest.json"
+          ],
+          "note": "可选同步更新 E:/workspace/github/coding-tools-mcp-rust/AGENTS.md 的图谱入口"
+        }
+      ]
+    },
+    "nextAction": "请按 delegated plan 由 Agent 落盘图谱文档，并更新 E:/workspace/github/coding-tools-mcp-rust/AGENTS.md 的索引入口",
+    "handles": {
+      "graph_resource": "probe://graph/latest"
+    },
+    "mcp_probe_bootstrap": {
+      "projectRoot": "E:\\workspace\\github\\coding-tools-mcp-rust",
+      "skill": {
+        "skillPath": "E:\\workspace\\github\\coding-tools-mcp-rust\\.agents\\skills\\mcp-probe-kit\\SKILL.md",
+        "skillRelPath": ".agents/skills/mcp-probe-kit/SKILL.md",
+        "existed": true,
+        "created": false,
+        "updated": false,
+        "version": "3.6.11",
+        "previousVersion": "3.6.11"
+      },
+      "agentsMd": {
+        "path": "AGENTS.md",
+        "existed": true,
+        "created": false,
+        "updated": false
+      },
+      "harness": {
+        "detection": {
+          "markerHarnesses": [
+            "cursor",
+            "claude"
+          ],
+          "detected": [
+            "cursor",
+            "claude"
+          ],
+          "skillCanonical": ".agents/skills/mcp-probe-kit/SKILL.md",
+          "adaptersToWrite": [
+            {
+              "id": "claude-pointer",
+              "harnessId": "claude",
+              "relPath": "CLAUDE.md",
+              "kind": "claude-pointer",
+              "markerDir": ".claude"
+            }
+          ]
+        },
+        "adapters": [
+          {
+            "id": "claude-pointer",
+            "path": "CLAUDE.md",
+            "kind": "claude-pointer",
+            "created": false,
+            "updated": true,
+            "skipped": false
+          }
+        ],
+        "layoutHarness": {
+          "detected": [
+            "cursor",
+            "claude"
+          ],
+          "skillCanonical": ".agents/skills/mcp-probe-kit/SKILL.md",
+          "adapters": [
+            {
+              "id": "claude-pointer",
+              "kind": "claude-pointer",
+              "path": "CLAUDE.md"
+            }
+          ]
+        }
+      },
+      "workspaceWarning": null
+    }
+  }
+}

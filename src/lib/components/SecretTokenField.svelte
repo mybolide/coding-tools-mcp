@@ -1,5 +1,6 @@
 <script lang="ts">
   import { secretIsSet, setSecret, type SecretKey } from "$lib/api/secrets";
+  import SecretInput from "$lib/components/SecretInput.svelte";
 
   interface Props {
     workspaceId: string;
@@ -59,12 +60,10 @@
 
 <label class="grid gap-1">
   <span class="text-xs text-[var(--color-text-muted)]">{label}</span>
-  <input
-    type="password"
-    class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-    placeholder={loading ? "加载中…" : placeholder}
+  <SecretInput
     bind:value={draft}
+    {placeholder}
     disabled={loading}
-    autocomplete="off"
+    showCopy={false}
   />
 </label>

@@ -4,9 +4,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::app_state::bootstrap_workspace;
+use crate::data::AppData;
 use crate::error::AppResult;
-use crate::secret::SecretStore;
 use crate::workspace::model::WorkspaceProfile;
 
 #[derive(Deserialize)]
@@ -18,8 +17,8 @@ pub fn legacy_app_home() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".coding-tools-mcp-desktop"))
 }
 
-pub fn import_legacy_profiles_if_empty(store_profiles: &mut Vec<WorkspaceProfile>) -> AppResult<usize> {
-    if !store_profiles.is_empty() {
+pub fn import_legacy_profiles_if_empty(data: &mut AppData) -> AppResult<usize> {
+    if !data.profiles.is_empty() {
         return Ok(0);
     }
     let Some(legacy_home) = legacy_app_home() else {
@@ -37,10 +36,9 @@ pub fn import_legacy_profiles_if_empty(store_profiles: &mut Vec<WorkspaceProfile
         if profile.path.trim().is_empty() || !PathBuf::from(&profile.path).exists() {
             continue;
         }
-        migrate_legacy_secrets(&profile.id, secrets.get(&profile.id))?;
+        migrate_legacy_secrets(data, &profile.id, secrets.get(&profile.id));
         normalize_legacy_profile(&mut profile);
-        let _ = bootstrap_workspace(&profile.id);
-        store_profiles.push(profile);
+        data.profiles.push(profile);
         imported += 1;
     }
     Ok(imported)
@@ -55,9 +53,13 @@ fn load_legacy_secrets(legacy_home: &PathBuf) -> AppResult<HashMap<String, HashM
     Ok(serde_json::from_str(&raw).unwrap_or_default())
 }
 
-fn migrate_legacy_secrets(profile_id: &str, secrets: Option<&HashMap<String, String>>) -> AppResult<()> {
+fn migrate_legacy_secrets(
+    data: &mut AppData,
+    profile_id: &str,
+    secrets: Option<&HashMap<String, String>>,
+) {
     let Some(secrets) = secrets else {
-        return Ok(());
+        return;
     };
     let mappings = [
         ("cloudflare_token", "cloudflare_token"),
@@ -69,12 +71,15 @@ fn migrate_legacy_secrets(profile_id: &str, secrets: Option<&HashMap<String, Str
         ("oauth_token_secret", "oauth_token_secret"),
         ("bearer_token", "bearer_token"),
     ];
+    let store = data
+        .workspace_secrets
+        .entry(profile_id.to_string())
+        .or_default();
     for (legacy_key, store_key) in mappings {
         if let Some(value) = secrets.get(legacy_key).filter(|value| !value.trim().is_empty()) {
-            SecretStore::set(profile_id, store_key, value)?;
+            store.insert(store_key.to_string(), value.clone());
         }
     }
-    Ok(())
 }
 
 fn normalize_legacy_profile(profile: &mut WorkspaceProfile) {

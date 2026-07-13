@@ -10,6 +10,7 @@ use crate::mcp;
 use crate::platform::platform;
 use crate::secret::SecretStore;
 use crate::tools::policy::PolicySettings;
+use crate::runtime::port::{is_own_process, port_busy_message, wait_for_port_free_blocking};
 use crate::tunnel::{append_profile_log, cleanup_orphan_for_runtime, TunnelServiceKind};
 use crate::workspace::{RuntimeStatusDto, WorkspaceProfile};
 
@@ -33,6 +34,7 @@ struct RuntimeEntry {
     shutdown: Option<mcp::ShutdownSender>,
     handle: Option<JoinHandle<()>>,
     error_message: Option<String>,
+    started_at: Option<std::time::Instant>,
 }
 
 pub struct RuntimeSupervisor {
@@ -98,9 +100,28 @@ impl RuntimeSupervisor {
         self.refresh(profile, ServiceKind::Actions);
     }
 
-    pub fn drop_workspace(&mut self, workspace_id: &str) {
-        self.stop_internal(workspace_id, ServiceKind::Mcp);
-        self.stop_internal(workspace_id, ServiceKind::Actions);
+    pub fn drop_workspace(&mut self, profile: &WorkspaceProfile) {
+        self.sync_stop_and_wait(profile, ServiceKind::Mcp);
+        self.sync_stop_and_wait(profile, ServiceKind::Actions);
+    }
+
+    pub fn begin_stop(&mut self, workspace_id: &str, kind: ServiceKind) -> Option<JoinHandle<()>> {
+        let key = (workspace_id.to_string(), kind);
+        let Some(entry) = self.entries.get_mut(&key) else {
+            return None;
+        };
+
+        entry.phase = RuntimePhase::Stopping;
+        let shutdown = entry.shutdown.take();
+        let handle = entry.handle.take();
+        if let Some(shutdown) = shutdown {
+            let _ = shutdown.send(());
+        }
+        handle
+    }
+
+    pub fn finish_stop(&mut self, workspace_id: &str, kind: ServiceKind) {
+        self.entries.remove(&(workspace_id.to_string(), kind));
     }
 
     fn status(&self, profile: &WorkspaceProfile, kind: ServiceKind) -> RuntimeStatusDto {
@@ -174,6 +195,15 @@ impl RuntimeSupervisor {
         ) {
             return Ok(self.status(profile, kind));
         }
+        if matches!(
+            self.entries.get(&key).map(|e| &e.phase),
+            Some(RuntimePhase::Stopping)
+        ) {
+            return Err(crate::error::AppError::Message(format!(
+                "{}正在停止，请稍后再试",
+                service_label(kind).trim()
+            )));
+        }
 
         self.entries.insert(
             key.clone(),
@@ -182,33 +212,29 @@ impl RuntimeSupervisor {
                 shutdown: None,
                 handle: None,
                 error_message: None,
+                started_at: Some(std::time::Instant::now()),
             },
         );
 
         let port = port_for(profile, kind);
         if let Some(pid) = platform().find_pid_listening_on_port(port)? {
-            let image = platform()
-                .process_image_path(pid)?
-                .unwrap_or_else(|| format!("pid {pid}"));
-            self.entries.remove(&key);
-            let message = format!(
-                "{}端口 {} 已被占用：{}",
-                service_label(kind).trim(),
-                port,
-                image
-            );
-            append_profile_log(&profile.id, stderr_log_name(kind), &format!("[start] {message}"));
-            return Err(crate::error::AppError::Message(message));
+            if is_own_process(pid) {
+                wait_for_port_free_blocking(port, Duration::from_secs(3));
+            }
+            if let Some(pid) = platform().find_pid_listening_on_port(port)? {
+                self.entries.remove(&key);
+                let message = port_busy_message(port, service_label(kind).trim(), pid);
+                append_profile_log(&profile.id, stderr_log_name(kind), &format!("[start] {message}"));
+                return Err(crate::error::AppError::Message(message));
+            }
         }
 
         let spawn_result = match kind {
             ServiceKind::Mcp => {
                 let use_shared = profile.auth.use_shared_secrets;
-                let oauth_client_secret = if profile.auth.oauth_enabled() {
-                    resolve_secret(&profile.id, "oauth_client_secret", use_shared)?
-                } else {
-                    None
-                };
+                // MCP OAuth matches legacy Python: client_secret is optional.
+                // ChatGPT connectors use PKCE only and do not send client_secret.
+                let oauth_client_secret = None;
                 let oauth_password = if profile.auth.oauth_enabled() {
                     resolve_secret(&profile.id, "oauth_password", use_shared)?
                 } else {
@@ -295,6 +321,11 @@ impl RuntimeSupervisor {
 
         match spawn_result {
             Ok((shutdown, handle)) => {
+                let started_at = self
+                    .entries
+                    .get(&key)
+                    .and_then(|entry| entry.started_at)
+                    .or_else(|| Some(std::time::Instant::now()));
                 self.entries.insert(
                     key,
                     RuntimeEntry {
@@ -302,6 +333,7 @@ impl RuntimeSupervisor {
                         shutdown: Some(shutdown),
                         handle: Some(handle),
                         error_message: None,
+                        started_at,
                     },
                 );
             }
@@ -322,6 +354,7 @@ impl RuntimeSupervisor {
                         shutdown: None,
                         handle: None,
                         error_message: Some(err.to_string()),
+                        started_at: None,
                     },
                 );
             }
@@ -331,7 +364,7 @@ impl RuntimeSupervisor {
     }
 
     fn stop(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) -> AppResult<RuntimeStatusDto> {
-        self.stop_internal(&profile.id, kind);
+        self.sync_stop_and_wait(profile, kind);
         Ok(self.status(profile, kind))
     }
 
@@ -344,49 +377,76 @@ impl RuntimeSupervisor {
     /// event loop). We retry `start` with a short back-off to smooth over this
     /// window.
     fn restart(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) -> AppResult<RuntimeStatusDto> {
-        self.stop_internal(&profile.id, kind);
-        // Give the old listener a moment to release the port (≤200 ms).
-        for _ in 0..4 {
-            let port = port_for(profile, kind);
-            if platform()
-                .find_pid_listening_on_port(port)
-                .ok()
-                .flatten()
-                .is_none()
-            {
-                return self.start(profile, kind);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        // Last attempt — if it still fails, return the error from start.
+        self.sync_stop_and_wait(profile, kind);
         self.start(profile, kind)
     }
 
-    fn stop_internal(&mut self, workspace_id: &str, kind: ServiceKind) {
-        let key = (workspace_id.to_string(), kind);
-        let Some(mut entry) = self.entries.remove(&key) else {
-            return;
-        };
-
-        entry.phase = RuntimePhase::Stopping;
-        if let Some(shutdown) = entry.shutdown.take() {
-            let _ = shutdown.send(());
+    fn sync_stop_and_wait(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) {
+        let port = port_for(profile, kind);
+        let handle = self.begin_stop(&profile.id, kind);
+        if handle.is_some() {
+            crate::runtime::port::await_listener_shutdown_blocking(handle, port);
+        } else if platform()
+            .find_pid_listening_on_port(port)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            wait_for_port_free_blocking(port, Duration::from_secs(3));
         }
-        if let Some(handle) = entry.handle.take() {
-            // stop_internal runs on a tokio worker thread when reached via the
-            // async stop_runtime / stop_actions_runtime commands. Calling
-            // block_on here panics with "Cannot start a runtime from within a
-            // runtime", which used to make the Stop button silently no-op. The
-            // graceful-shutdown signal was already sent above, so we just await
-            // the listener's completion on a detached task to free the port.
-            tauri::async_runtime::spawn(async move {
-                let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
-            });
-        }
+        self.finish_stop(&profile.id, kind);
     }
 
     fn refresh(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) {
+        let key = (profile.id.clone(), kind);
         let port = port_for(profile, kind);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            if entry.phase == RuntimePhase::Running {
+                let listening = platform()
+                    .find_pid_listening_on_port(port)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if !listening {
+                    let startup_grace_elapsed = entry
+                        .started_at
+                        .map(|started| started.elapsed() > Duration::from_millis(200))
+                        .unwrap_or(true);
+                    if startup_grace_elapsed {
+                        if let Some(handle) = entry.handle.take() {
+                            handle.abort();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = handle.await;
+                            });
+                        }
+                        entry.shutdown.take();
+                        let occupied_by_self = platform()
+                            .find_pid_listening_on_port(port)
+                            .ok()
+                            .flatten()
+                            .map(is_own_process)
+                            .unwrap_or(false);
+                        let message = if occupied_by_self {
+                            format!(
+                                "{}端口 {} 未能成功启动，可能仍被本应用上一次服务占用，请先停止后再试",
+                                service_label(kind).trim(),
+                                port
+                            )
+                        } else {
+                            format!(
+                                "{}端口 {} 未能成功启动，可能已被其他程序占用",
+                                service_label(kind).trim(),
+                                port
+                            )
+                        };
+                        entry.phase = RuntimePhase::Error;
+                        entry.error_message = Some(message);
+                        entry.started_at = None;
+                    }
+                }
+            }
+        }
+
         let runtime_listening = platform()
             .find_pid_listening_on_port(port)
             .map(|pid| pid.is_some())
@@ -397,11 +457,10 @@ impl RuntimeSupervisor {
             ServiceKind::Actions => TunnelServiceKind::Actions,
         };
 
-        tauri::async_runtime::block_on(cleanup_orphan_for_runtime(
-            profile,
-            tunnel_kind,
-            runtime_listening,
-        ));
+        let profile = profile.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = cleanup_orphan_for_runtime(&profile, tunnel_kind, runtime_listening).await;
+        });
     }
 }
 

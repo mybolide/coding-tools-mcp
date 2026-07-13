@@ -13,6 +13,13 @@ pub trait Platform: Send + Sync {
 
     fn find_pid_listening_on_port(&self, port: u16) -> AppResult<Option<u32>>;
 
+    /// Best-effort reclaim of a TCP listener on the given port. Windows uses
+    /// `SetTcpEntry`; other platforms return `Ok(false)`.
+    fn reclaim_listening_port(&self, port: u16) -> AppResult<bool> {
+        let _ = port;
+        Ok(false)
+    }
+
     fn process_image_path(&self, pid: u32) -> AppResult<Option<String>>;
 
     fn is_process_alive(&self, pid: u32) -> bool;
@@ -33,7 +40,10 @@ mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
 
+mod open;
 mod paths;
+
+pub use open::open_path_in_file_manager;
 
 #[cfg(target_os = "windows")]
 pub use windows::WindowsPlatform;

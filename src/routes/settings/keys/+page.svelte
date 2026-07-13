@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { message } from "@tauri-apps/plugin-dialog";
-  import CopyButton from "$lib/components/CopyButton.svelte";
+  import SecretInput from "$lib/components/SecretInput.svelte";
   import {
     getSharedSecret,
     setSharedSecret,
@@ -114,22 +114,12 @@
             {#each MCP_KEYS as { key, label }}
               <div class="grid gap-1">
                 <span class="text-xs text-[var(--color-text-muted)]">{label}</span>
-                <div class="flex gap-2">
-                  <input
-                    type="password"
-                    class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-                    bind:value={secrets[key]}
-                  />
-                  <CopyButton value={secrets[key] ?? ""} />
-                  <button
-                    type="button"
-                    class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-                    disabled={regenerating === key || loading}
-                    onclick={() => regenerate(key)}
-                  >
-                    {regenerating === key ? "生成中…" : "重新生成"}
-                  </button>
-                </div>
+                <SecretInput
+                  bind:value={secrets[key]}
+                  disabled={loading}
+                  onRegenerate={() => regenerate(key)}
+                  regenerating={regenerating === key}
+                />
               </div>
             {/each}
           </div>
@@ -146,22 +136,12 @@
             {#each ACTIONS_KEYS as { key, label }}
               <div class="grid gap-1">
                 <span class="text-xs text-[var(--color-text-muted)]">{label}</span>
-                <div class="flex gap-2">
-                  <input
-                    type="password"
-                    class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-                    bind:value={secrets[key]}
-                  />
-                  <CopyButton value={secrets[key] ?? ""} />
-                  <button
-                    type="button"
-                    class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-                    disabled={regenerating === key || loading}
-                    onclick={() => regenerate(key)}
-                  >
-                    {regenerating === key ? "生成中…" : "重新生成"}
-                  </button>
-                </div>
+                <SecretInput
+                  bind:value={secrets[key]}
+                  disabled={loading}
+                  onRegenerate={() => regenerate(key)}
+                  regenerating={regenerating === key}
+                />
               </div>
             {/each}
           </div>

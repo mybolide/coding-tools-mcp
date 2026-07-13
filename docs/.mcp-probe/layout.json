@@ -7,12 +7,19 @@
   "graphDir": "docs/graph-insights",
   "indexStyle": "agents",
   "generatedBy": "init_project_context",
-  "generatedAt": "2026-07-10T12:24:49.820Z",
+  "generatedAt": "2026-07-13T07:03:48.536Z",
   "harness": {
     "detected": [
-      "agents"
+      "cursor",
+      "claude"
     ],
     "skillCanonical": ".agents/skills/mcp-probe-kit/SKILL.md",
-    "adapters": []
+    "adapters": [
+      {
+        "id": "claude-pointer",
+        "kind": "claude-pointer",
+        "path": "CLAUDE.md"
+      }
+    ]
   }
 }

@@ -30,17 +30,18 @@
     </div>
 
     <div class="tx-sidebar-body">
-      {#if settingsNav}
-        <p class="tx-sidebar-section-label">设置</p>
-        <div class="mb-4">
-          {@render settingsNav()}
-        </div>
-      {/if}
       {#if onAddWorkspace}
         <p class="tx-sidebar-section-label">工作区</p>
       {/if}
       {@render sidebar()}
     </div>
+
+    {#if settingsNav}
+      <div class="tx-sidebar-footer">
+        <p class="tx-sidebar-section-label">设置</p>
+        {@render settingsNav()}
+      </div>
+    {/if}
   </aside>
 
   <main class="tx-main">

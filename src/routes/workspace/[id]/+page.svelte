@@ -13,12 +13,13 @@
     type RuntimePolicyDraft,
   } from "$lib/components/RuntimePolicyForm.svelte";
   import ServicePanel from "$lib/components/ServicePanel.svelte";
+  import GptQuickCopy from "$lib/components/GptQuickCopy.svelte";
   import StatusOrb from "$lib/components/StatusOrb.svelte";
   import Tabs from "$lib/components/Tabs.svelte";
   import TunnelConfigForm, {
     type TunnelFormConfig,
+    type SaveTunnelOptions,
   } from "$lib/components/TunnelConfigForm.svelte";
-  import TunnelStrip from "$lib/components/TunnelStrip.svelte";
   import WorkspaceMetaForm from "$lib/components/WorkspaceMetaForm.svelte";
   import {
     deleteWorkspace,
@@ -36,7 +37,8 @@
   import { listFrpProfiles, setLastWorkspace, type FrpProfileDto } from "$lib/api/settings";
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { restartTunnel } from "$lib/api/tunnel";
-  import { runServiceToggle } from "$lib/runtime/service";
+  import { runServiceToggle, notifyStartFailure } from "$lib/runtime/service";
+  import { showToast } from "$lib/stores/toast";
   import { promptServiceRestart } from "$lib/runtime/restart-hint";
   import { actionsRuntimeStates, mcpRuntimeStates, workspaces } from "$lib/stores/app";
   import {
@@ -60,6 +62,8 @@
   let profile = $state<WorkspaceProfile | null>(null);
   let mcpStatus = $state<RuntimeState>("stopped");
   let actionsStatus = $state<RuntimeState>("stopped");
+  let mcpStatusMessage = $state("");
+  let actionsStatusMessage = $state("");
   let mcpBusy = $state(false);
   let actionsBusy = $state(false);
   let mcpLocal = $state("");
@@ -89,6 +93,7 @@
     frp_profile_id: profile?.tunnel.frp_profile_id ?? "",
     frp_server_port: profile?.tunnel.frp_server_port ?? 7000,
     cloudflare_mode: profile?.tunnel.cloudflare_mode ?? "quick",
+    use_proxy: profile?.tunnel.use_proxy ?? true,
   });
 
   const actionsTunnelForm = $derived<TunnelFormConfig>({
@@ -99,6 +104,7 @@
     frp_profile_id: actions?.frp_profile_id ?? "",
     frp_server_port: actions?.frp_server_port ?? 7000,
     cloudflare_mode: actions?.cloudflare_mode ?? "quick",
+    use_proxy: actions?.use_proxy ?? true,
   });
 
   function stateLabel(state: RuntimeState): string {
@@ -116,8 +122,9 @@
     }
   }
 
-  function applyMcpRuntime(runtime: { state: RuntimeState; localEndpoint: string; publicEndpoint: string }) {
+  function applyMcpRuntime(runtime: { state: RuntimeState; localEndpoint: string; publicEndpoint: string; localMessage?: string }) {
     mcpStatus = runtime.state;
+    mcpStatusMessage = runtime.localMessage ?? "";
     mcpLocal = runtime.localEndpoint;
     mcpPublic = runtime.publicEndpoint;
     if (workspaceId) {
@@ -129,8 +136,10 @@
     state: RuntimeState;
     localEndpoint: string;
     publicEndpoint: string;
+    localMessage?: string;
   }) {
     actionsStatus = runtime.state;
+    actionsStatusMessage = runtime.localMessage ?? "";
     actionsLocal = runtime.localEndpoint;
     actionsPublic = runtime.publicEndpoint;
     if (workspaceId) {
@@ -160,16 +169,57 @@
     applyActionsRuntime(actionsRuntime);
   }
 
+  async function refreshProfile() {
+    if (!workspaceId) return;
+    const items = await listWorkspaces();
+    workspaces.set(items);
+    profile = items.find((item) => item.id === workspaceId) ?? profile;
+  }
+
+  function tunnelConfigured(type: string | undefined): boolean {
+    return type === "cloudflare" || type === "frp";
+  }
+
+  async function afterServiceStart(
+    service: "mcp" | "actions",
+    runtime: { state: RuntimeState; publicEndpoint: string },
+  ) {
+    await refreshProfile();
+    const tunnelType =
+      service === "mcp"
+        ? profile?.tunnel.type
+        : profile
+          ? actionsConfig(profile).tunnel_type
+          : undefined;
+    if (runtime.state === "running" && tunnelConfigured(tunnelType) && !runtime.publicEndpoint) {
+      showToast(
+        "本地服务已启动，但隧道未能自动连接。请检查代理设置与隧道配置，或查看日志。",
+        { title: "隧道未连接", kind: "warning", duration: 8000 },
+      );
+    }
+  }
+
   async function toggleMcp() {
     if (!workspaceId || mcpBusy) return;
+    const wasRunning = mcpStatus === "running";
     mcpBusy = true;
     try {
       const runtime = await runServiceToggle(
-        mcpStatus === "running",
+        wasRunning,
         () => startRuntime(workspaceId),
         () => stopRuntime(workspaceId),
+        "MCP",
       );
-      if (runtime) applyMcpRuntime(runtime);
+      if (runtime) {
+        applyMcpRuntime(runtime);
+        if (!wasRunning) {
+          if (runtime.state === "running") {
+            await afterServiceStart("mcp", runtime);
+          } else {
+            notifyStartFailure("MCP", runtime);
+          }
+        }
+      }
     } finally {
       mcpBusy = false;
     }
@@ -177,14 +227,25 @@
 
   async function toggleActions() {
     if (!workspaceId || actionsBusy) return;
+    const wasRunning = actionsStatus === "running";
     actionsBusy = true;
     try {
       const runtime = await runServiceToggle(
-        actionsStatus === "running",
+        wasRunning,
         () => startActionsRuntime(workspaceId),
         () => stopActionsRuntime(workspaceId),
+        "Actions",
       );
-      if (runtime) applyActionsRuntime(runtime);
+      if (runtime) {
+        applyActionsRuntime(runtime);
+        if (!wasRunning) {
+          if (runtime.state === "running") {
+            await afterServiceStart("actions", runtime);
+          } else {
+            notifyStartFailure("Actions", runtime);
+          }
+        }
+      }
     } finally {
       actionsBusy = false;
     }
@@ -231,8 +292,8 @@
     return "";
   }
 
-  async function restartTunnelIfFrp(config: TunnelFormConfig, service: "mcp" | "actions") {
-    if (!workspaceId || config.type !== "frp") return;
+  async function restartTunnelIfConfigured(config: TunnelFormConfig, service: "mcp" | "actions") {
+    if (!workspaceId || config.type === "none") return;
     try {
       const status = await restartTunnel(workspaceId, service);
       if (status.publicUrl) {
@@ -247,7 +308,7 @@
     }
   }
 
-  async function saveMcpTunnel(config: TunnelFormConfig) {
+  async function saveMcpTunnel(config: TunnelFormConfig, options?: SaveTunnelOptions) {
     if (!profile) return;
     const next: WorkspaceProfile = {
       ...profile,
@@ -260,17 +321,24 @@
         frp_profile_id: config.frp_profile_id,
         frp_server_port: config.frp_server_port,
         cloudflare_mode: config.cloudflare_mode,
+        use_proxy: config.use_proxy,
       },
     };
     await updateWorkspace(next);
     profile = next;
     mcpPublic = publicEndpointFromTunnel(config, "/mcp");
-    await load();
-    await restartTunnelIfFrp(config, "mcp");
-    await promptServiceRestart(mcpStatus === "running", "MCP 服务");
+    if (!options?.skipTunnelRestart && !options?.skipServicePrompt) {
+      await load();
+    }
+    if (!options?.skipTunnelRestart) {
+      await restartTunnelIfConfigured(config, "mcp");
+    }
+    if (!options?.skipServicePrompt) {
+      await promptServiceRestart(mcpStatus === "running", "MCP 服务");
+    }
   }
 
-  async function saveActionsTunnel(config: TunnelFormConfig) {
+  async function saveActionsTunnel(config: TunnelFormConfig, options?: SaveTunnelOptions) {
     if (!profile) return;
     const current = actionsConfig(profile);
     const next: WorkspaceProfile = {
@@ -284,14 +352,21 @@
         frp_profile_id: config.frp_profile_id,
         frp_server_port: config.frp_server_port,
         cloudflare_mode: config.cloudflare_mode,
+        use_proxy: config.use_proxy,
       },
     };
     await updateWorkspace(next);
     profile = next;
     actionsPublic = publicEndpointFromTunnel(config, "/openapi.json");
-    await load();
-    await restartTunnelIfFrp(config, "actions");
-    await promptServiceRestart(actionsStatus === "running", "Actions 服务");
+    if (!options?.skipTunnelRestart && !options?.skipServicePrompt) {
+      await load();
+    }
+    if (!options?.skipTunnelRestart) {
+      await restartTunnelIfConfigured(config, "actions");
+    }
+    if (!options?.skipServicePrompt) {
+      await promptServiceRestart(actionsStatus === "running", "Actions 服务");
+    }
   }
 
   async function saveMcpPolicy(draft: RuntimePolicyDraft) {
@@ -333,7 +408,6 @@
     const next: WorkspaceProfile = { ...profile, auth };
     await updateWorkspace(next);
     profile = next;
-    await load();
     if (mcpStatus === "running") {
       try { await restartRuntime(workspaceId); } catch { /* ignore */ }
     }
@@ -354,7 +428,6 @@
     };
     await updateWorkspace(next);
     profile = next;
-    await load();
     if (actionsStatus === "running") {
       try { await restartActionsRuntime(workspaceId); } catch { /* ignore */ }
     }
@@ -404,6 +477,14 @@
         </button>
       </div>
 
+      <div class="mt-4">
+        <WorkspaceMetaForm
+          name={profile.name}
+          path={profile.path}
+          onSave={saveWorkspaceName}
+        />
+      </div>
+
       <div class="mt-4 flex flex-wrap items-center gap-2">
         <button
           type="button"
@@ -435,24 +516,23 @@
             title="MCP"
             subtitle="Streamable HTTP · 工具运行时"
             status={mcpStatus}
+            statusMessage={mcpStatusMessage}
             port={profile.runtime.local_port}
             portEditable={true}
             busy={mcpBusy}
+            tunnelType={profile.tunnel.type}
             localEndpoint={mcpLocal || mcpLocalEndpoint(profile.runtime.local_port)}
             publicEndpoint={mcpPublic}
             publicLabel="公网 MCP"
             onToggle={toggleMcp}
             onPortChange={saveMcpPort}
           />
-          <TunnelStrip
+          <GptQuickCopy
             workspaceId={workspaceId!}
             service="mcp"
-            tunnelType={profile.tunnel.type}
-            publicUrl={profile.tunnel.public_url}
-            onPublicUrlChange={(url) => {
-              profile = { ...profile!, tunnel: { ...profile!.tunnel, public_url: url } };
-              mcpPublic = url ? `${url.replace(/\/$/, "")}/mcp` : "";
-            }}
+            {profile}
+            publicMcpEndpoint={mcpPublic}
+            {frpProfiles}
           />
         </div>
 
@@ -509,25 +589,22 @@
             title="Actions"
             subtitle="OpenAPI 网关 · ChatGPT Actions"
             status={actionsStatus}
+            statusMessage={actionsStatusMessage}
             port={actions.local_port}
             portEditable={true}
             busy={actionsBusy}
+            tunnelType={actions.tunnel_type}
             localEndpoint={actionsLocal || actionsLocalEndpoint(actions.local_port)}
             publicEndpoint={actionsPublic || actionsOpenApiUrl(profile, frpProfiles)}
             publicLabel="OpenAPI"
             onToggle={toggleActions}
             onPortChange={saveActionsPort}
           />
-          <TunnelStrip
+          <GptQuickCopy
             workspaceId={workspaceId!}
             service="actions"
-            tunnelType={actions.tunnel_type}
-            publicUrl={actions.public_url}
-            onPublicUrlChange={(url) => {
-              const next = actionsConfig({ ...profile!, actions: { ...actions, public_url: url } });
-              profile = { ...profile!, actions: next };
-              actionsPublic = url ? `${url.replace(/\/$/, "")}/openapi.json` : "";
-            }}
+            {profile}
+            {frpProfiles}
           />
         </div>
 

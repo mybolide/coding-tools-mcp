@@ -29,7 +29,7 @@ pub fn uninstall_software(kind: String) -> AppResult<SoftwareStatus> {
 /// Read the download config (mirror + proxy).
 #[tauri::command]
 pub fn get_download_config(state: State<'_, AppState>) -> AppResult<DownloadConfig> {
-    state.with_settings(|store| Ok(store.get().download.clone()))
+    state.with_settings(|store| Ok(store.settings().download.clone()))
 }
 
 /// Persist the download config (mirror + proxy).
@@ -39,8 +39,8 @@ pub fn set_download_config(
     config: DownloadConfig,
 ) -> AppResult<()> {
     state.with_settings(|store| {
-        let mut settings = store.get().clone();
+        let mut settings = store.settings();
         settings.download = config;
-        store.update(settings)
+        store.update_settings(settings)
     })
 }

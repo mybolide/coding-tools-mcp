@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::store::AppSettingsStore;
+use crate::data::AppData;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FrpProfile {
@@ -79,6 +79,12 @@ pub struct AppSettings {
     /// Persisted alongside other app settings in app_settings.json.
     #[serde(default)]
     pub shared_secrets: HashMap<String, String>,
+    /// Per-workspace secrets: workspace_id -> secret_key -> value.
+    #[serde(default)]
+    pub workspace_secrets: HashMap<String, HashMap<String, String>>,
+    /// App-scoped secrets: scope -> item_id -> value (e.g. frp profile tokens).
+    #[serde(default)]
+    pub app_secrets: HashMap<String, HashMap<String, String>>,
 }
 
 fn default_frp_server_port() -> u16 {
@@ -94,15 +100,39 @@ fn default_proxy_mode() -> String {
 }
 
 impl AppSettings {
+    pub fn from_data(data: &AppData) -> Self {
+        Self {
+            frp_profiles: data.frp_profiles.clone(),
+            last_workspace_id: data.last_workspace_id.clone(),
+            download: data.download.clone(),
+            proxy: data.proxy.clone(),
+            shared_secrets: data.shared_secrets.clone(),
+            workspace_secrets: data.workspace_secrets.clone(),
+            app_secrets: data.app_secrets.clone(),
+        }
+    }
+
+    pub fn apply_to(&self, data: &mut AppData) {
+        data.frp_profiles = self.frp_profiles.clone();
+        data.last_workspace_id = self.last_workspace_id.clone();
+        data.download = self.download.clone();
+        data.proxy = self.proxy.clone();
+        data.shared_secrets = self.shared_secrets.clone();
+        data.workspace_secrets = self.workspace_secrets.clone();
+        data.app_secrets = self.app_secrets.clone();
+    }
+
     pub fn load_or_default() -> Self {
-        AppSettingsStore::load()
-            .map(|store| store.get().clone())
+        crate::data::DataStore::read_file(|data| Ok(Self::from_data(data)))
             .unwrap_or_default()
     }
 
-    /// Persist settings to disk. Shortcut that wraps AppSettingsStore.
+    /// Persist settings fields into the unified data file.
     pub fn save(&self) -> crate::error::AppResult<()> {
-        AppSettingsStore::load()?.update(self.clone())
+        crate::data::DataStore::update_file(|data| {
+            self.apply_to(data);
+            Ok(())
+        })
     }
 
     pub fn find_frp_profile(&self, id: &str) -> Option<&FrpProfile> {

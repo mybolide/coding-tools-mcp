@@ -1,5 +1,6 @@
 <script lang="ts">
   import CopyButton from "$lib/components/CopyButton.svelte";
+  import SecretInput from "$lib/components/SecretInput.svelte";
   import { getSecret, regenerateSecret, getSharedSecret, regenerateSharedSecret } from "$lib/api/secrets";
   import { restartActionsRuntime } from "$lib/api/workspaces";
   import type { ActionsAuthDraft } from "$lib/types";
@@ -59,6 +60,8 @@
   let regeneratingOAuthPassword = $state(false);
   let regeneratingOAuthTokenSecret = $state(false);
   let saving = $state(false);
+  let secretsLoadSeq = 0;
+  let suppressSecretsReload = $state(false);
 
   const secretsDirty = $derived(
     apiKey !== loadedApiKey ||
@@ -71,6 +74,7 @@
     draftAuthType !== authType ||
       draftOauthClientId !== oauthClientId ||
       draftOauthScopes !== oauthScopes ||
+      draftUseShared !== useSharedSecrets ||
       secretsDirty,
   );
   const showApiKey = $derived(draftAuthType === "api_key");
@@ -84,12 +88,14 @@
   });
 
   $effect(() => {
+    if (suppressSecretsReload) return;
     workspaceId;
     draftUseShared;
     void loadSecrets();
   });
 
   async function loadSecrets() {
+    const seq = ++secretsLoadSeq;
     loadingKey = true;
     loadingOAuthSecret = true;
     loadingOAuthPassword = true;
@@ -109,6 +115,7 @@
           ? getSharedSecret("actions_oauth_token_secret")
           : getSecret(workspaceId, "actions_oauth_token_secret"),
       ]);
+      if (seq !== secretsLoadSeq) return;
       apiKey = key ?? "";
       loadedApiKey = key ?? "";
       oauthClientSecret = secret ?? "";
@@ -118,6 +125,7 @@
       oauthTokenSecret = tokenSecret ?? "";
       loadedOauthTokenSecret = tokenSecret ?? "";
     } finally {
+      if (seq !== secretsLoadSeq) return;
       loadingKey = false;
       loadingOAuthSecret = false;
       loadingOAuthPassword = false;
@@ -128,6 +136,7 @@
   async function save() {
     if (saving || !dirty) return;
     saving = true;
+    suppressSecretsReload = true;
     try {
       await onSave({
         authType: draftAuthType,
@@ -140,6 +149,7 @@
       loadedOauthPassword = oauthPassword;
       loadedOauthTokenSecret = oauthTokenSecret;
     } finally {
+      suppressSecretsReload = false;
       saving = false;
     }
   }
@@ -204,41 +214,9 @@
     void save();
   }}
 >
-  <div class="grid gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-3">
-    <p class="text-xs font-medium text-[var(--color-text-secondary)]">GPT Actions 接入</p>
-    <label class="grid gap-1">
-      <span class="text-xs text-[var(--color-text-muted)]">OpenAPI Schema URL</span>
-      <div class="flex gap-2">
-        <input
-          type="text"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-xs"
-          value={openapiUrl || "配置隧道后显示公网地址，否则用本地地址"}
-        />
-        {#if openapiUrl}
-          <CopyButton value={openapiUrl} label="复制" />
-        {/if}
-      </div>
-    </label>
-    <label class="grid gap-1">
-      <span class="text-xs text-[var(--color-text-muted)]">隐私政策 URL</span>
-      <div class="flex gap-2">
-        <input
-          type="text"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-xs"
-          value={privacyUrl || "同上"}
-        />
-        {#if privacyUrl}
-          <CopyButton value={privacyUrl} label="复制" />
-        {/if}
-      </div>
-    </label>
-    <p class="text-xs text-[var(--color-text-muted)]">
-      在 GPT 编辑器 → Actions → Import from URL，粘贴 OpenAPI 地址；隐私政策填上方 URL。GPT 与 Apps
-      不能同时使用，请选 Actions。
-    </p>
-  </div>
+  <p class="text-xs text-[var(--color-text-muted)]">
+    复制 OpenAPI、密钥等请用上方「GPT 配置」卡片；此处仅修改认证方式与密钥。
+  </p>
 
   <label class="grid gap-1">
     <span class="text-xs text-[var(--color-text-muted)]">认证方式</span>
@@ -264,25 +242,14 @@
   {#if showApiKey}
     <label class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">API Key（Bearer）</span>
-      <div class="flex gap-2">
-        <input
-          type="text"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={loadingKey ? "加载中…" : apiKey}
-        />
-        {#if apiKey}
-          <CopyButton value={apiKey} label="复制" />
-        {/if}
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          disabled={regenerating || loadingKey}
-          onclick={() => void regenerate()}
-        >
-          {regenerating ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={loadingKey ? "加载中…" : apiKey}
+        readonly
+        disabled={loadingKey}
+        showCopy={!!apiKey}
+        onRegenerate={() => void regenerate()}
+        regenerating={regenerating}
+      />
     </label>
     <p class="text-xs text-[var(--color-text-muted)]">
       在 GPT Actions 认证里选 API Key → Bearer，Key 填这里的值。
@@ -303,69 +270,36 @@
     </label>
     <label class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">OAuth Client Secret（填到 GPT）</span>
-      <div class="flex gap-2">
-        <input
-          type="text"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={loadingOAuthSecret ? "加载中…" : oauthClientSecret}
-        />
-        {#if oauthClientSecret}
-          <CopyButton value={oauthClientSecret} label="复制" />
-        {/if}
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-hover)] disabled:opacity-50"
-          disabled={regeneratingOAuthSecret || loadingOAuthSecret}
-          onclick={() => void regenerateOAuthSecret()}
-        >
-          {regeneratingOAuthSecret ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={loadingOAuthSecret ? "加载中…" : oauthClientSecret}
+        readonly
+        disabled={loadingOAuthSecret}
+        showCopy={!!oauthClientSecret}
+        onRegenerate={() => void regenerateOAuthSecret()}
+        regenerating={regeneratingOAuthSecret}
+      />
     </label>
     <label class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">OAuth Password（服务端校验）</span>
-      <div class="flex gap-2">
-        <input
-          type="text"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={loadingOAuthPassword ? "加载中…" : oauthPassword}
-        />
-        {#if oauthPassword}
-          <CopyButton value={oauthPassword} label="复制" />
-        {/if}
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs"
-          disabled={regeneratingOAuthPassword || loadingOAuthPassword}
-          onclick={() => void regenerateOAuthPassword()}
-        >
-          {regeneratingOAuthPassword ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={loadingOAuthPassword ? "加载中…" : oauthPassword}
+        readonly
+        disabled={loadingOAuthPassword}
+        showCopy={!!oauthPassword}
+        onRegenerate={() => void regenerateOAuthPassword()}
+        regenerating={regeneratingOAuthPassword}
+      />
     </label>
     <label class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">OAuth Token Secret（JWT 签名）</span>
-      <div class="flex gap-2">
-        <input
-          type="text"
-          readonly
-          class="min-w-0 flex-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
-          value={loadingOAuthTokenSecret ? "加载中…" : oauthTokenSecret}
-        />
-        {#if oauthTokenSecret}
-          <CopyButton value={oauthTokenSecret} label="复制" />
-        {/if}
-        <button
-          type="button"
-          class="shrink-0 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs"
-          disabled={regeneratingOAuthTokenSecret || loadingOAuthTokenSecret}
-          onclick={() => void regenerateOAuthTokenSecret()}
-        >
-          {regeneratingOAuthTokenSecret ? "生成中…" : "重新生成"}
-        </button>
-      </div>
+      <SecretInput
+        value={loadingOAuthTokenSecret ? "加载中…" : oauthTokenSecret}
+        readonly
+        disabled={loadingOAuthTokenSecret}
+        showCopy={!!oauthTokenSecret}
+        onRegenerate={() => void regenerateOAuthTokenSecret()}
+        regenerating={regeneratingOAuthTokenSecret}
+      />
     </label>
     <label class="grid gap-1">
       <span class="text-xs text-[var(--color-text-muted)]">Authorization URL（填到 GPT）</span>

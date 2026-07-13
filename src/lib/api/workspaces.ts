@@ -16,6 +16,10 @@ export async function updateWorkspace(profile: WorkspaceProfile): Promise<void> 
   return invoke("update_workspace", { profile });
 }
 
+export async function openWorkspaceDirectory(path: string): Promise<void> {
+  return invoke("open_workspace_directory", { path });
+}
+
 export async function deleteWorkspace(id: string): Promise<void> {
   return invoke("delete_workspace", { id });
 }

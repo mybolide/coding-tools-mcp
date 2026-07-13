@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use tower_http::cors::CorsLayer;
 
 use crate::auth::{
-    authorization_server_metadata, authorize_get, authorize_post, oauth_base_url,
+    authorization_server_metadata, authorize_get, authorize_post, external_base_url,
     protected_resource_metadata, token_exchange, verify_bearer_header, verify_oauth_bearer_header,
     AuthorizeForm, AuthorizeParams, OAuthRuntime, TokenForm,
 };
@@ -29,9 +29,11 @@ struct ListenerState {
     mcp: SharedState,
     auth: AuthConfig,
     workspace_id: String,
+    workspace_path: String,
+    bind_port: u16,
+    configured_public_url: String,
     bearer_token: Option<String>,
     oauth: Option<Arc<OAuthRuntime>>,
-    oauth_base_url: String,
     oauth_client_secret: Option<String>,
 }
 
@@ -46,6 +48,7 @@ pub fn spawn_listener(
     oauth_token_secret: Option<String>,
     runtime: RuntimeConfig,
 ) -> Result<(ShutdownSender, tauri::async_runtime::JoinHandle<()>), String> {
+    let workspace_display = workspace_path.display().to_string();
     let workspace = Workspace::new(workspace_path).map_err(|e| e.message())?;
     let policy = PolicySettings::from_runtime(&runtime);
     let mcp = new_state(
@@ -65,14 +68,17 @@ pub fn spawn_listener(
     } else {
         None
     };
-    let oauth_base = oauth_base_url(&public_base_url, port);
+    let configured_public_url = public_base_url.trim().to_string();
     let oauth = if auth.oauth_enabled() {
-        let password = oauth_password
-            .unwrap_or_default();
-        let token_secret = oauth_token_secret
-            .unwrap_or_default();
+        let password = oauth_password.unwrap_or_default();
+        let token_secret = oauth_token_secret.unwrap_or_default();
+        let oauth_base = external_base_url(
+            &HeaderMap::new(),
+            port,
+            &configured_public_url,
+        );
         Some(Arc::new(OAuthRuntime::new(
-            oauth_base.clone(),
+            oauth_base,
             auth.oauth_client_id.clone(),
             oauth_client_secret.clone(),
             password,
@@ -85,9 +91,11 @@ pub fn spawn_listener(
         mcp,
         auth,
         workspace_id,
+        workspace_path: workspace_display,
+        bind_port: port,
+        configured_public_url,
         bearer_token,
         oauth,
-        oauth_base_url: oauth_base,
         oauth_client_secret,
     };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -152,6 +160,10 @@ async fn mcp_discovery() -> Json<Value> {
     }))
 }
 
+fn resolve_oauth_base(state: &ListenerState, headers: &HeaderMap) -> String {
+    external_base_url(headers, state.bind_port, &state.configured_public_url)
+}
+
 async fn mcp_post(
     State(state): State<ListenerState>,
     headers: HeaderMap,
@@ -170,7 +182,8 @@ fn require_mcp_auth(state: &ListenerState, headers: &HeaderMap) -> Option<Respon
     }
     if state.auth.oauth_enabled() {
         if let Some(oauth) = state.oauth.as_ref() {
-            return verify_oauth_bearer_header(headers, oauth);
+            let server_url = resolve_oauth_base(state, headers);
+            return verify_oauth_bearer_header(headers, oauth, &server_url);
         }
     }
     None
@@ -178,22 +191,27 @@ fn require_mcp_auth(state: &ListenerState, headers: &HeaderMap) -> Option<Respon
 
 async fn oauth_authorization_server_metadata(
     State(state): State<ListenerState>,
+    headers: HeaderMap,
 ) -> Response {
     if !state.auth.oauth_enabled() {
         return oauth_not_configured();
     }
+    let base = resolve_oauth_base(&state, &headers);
     Json(authorization_server_metadata(
-        &state.oauth_base_url,
+        &base,
         state.oauth_client_secret.as_deref(),
     ))
     .into_response()
 }
 
-async fn oauth_protected_resource_metadata(State(state): State<ListenerState>) -> Response {
+async fn oauth_protected_resource_metadata(
+    State(state): State<ListenerState>,
+    headers: HeaderMap,
+) -> Response {
     if !state.auth.oauth_enabled() {
         return oauth_not_configured();
     }
-    Json(protected_resource_metadata(&state.oauth_base_url)).into_response()
+    Json(protected_resource_metadata(&resolve_oauth_base(&state, &headers))).into_response()
 }
 
 async fn oauth_authorize_get(
@@ -203,17 +221,22 @@ async fn oauth_authorize_get(
     let Some(oauth) = state.oauth.as_ref() else {
         return oauth_not_configured();
     };
-    authorize_get(oauth, params)
+    authorize_get(
+        oauth,
+        params,
+        Some(state.workspace_path.as_str()),
+    )
 }
 
 async fn oauth_authorize_post(
     State(state): State<ListenerState>,
+    headers: HeaderMap,
     Form(form): Form<AuthorizeForm>,
 ) -> Response {
     let Some(oauth) = state.oauth.as_ref() else {
         return oauth_not_configured();
     };
-    authorize_post(oauth, form)
+    authorize_post(oauth, form, &resolve_oauth_base(&state, &headers))
 }
 
 async fn oauth_token_post(
@@ -228,7 +251,12 @@ async fn oauth_token_post(
         )
             .into_response();
     };
-    token_exchange(oauth, &headers, form)
+    token_exchange(
+        oauth,
+        &headers,
+        form,
+        &resolve_oauth_base(&state, &headers),
+    )
 }
 
 fn oauth_not_configured() -> Response {

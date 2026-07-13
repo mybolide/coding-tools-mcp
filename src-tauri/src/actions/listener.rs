@@ -15,7 +15,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use tower_http::cors::CorsLayer;
 
 use crate::auth::{
-    authorization_server_metadata, authorize_get, authorize_post, oauth_base_url,
+    authorization_server_metadata, authorize_get, authorize_post, external_base_url,
     token_exchange, AuthorizeForm, AuthorizeParams, OAuthRuntime, TokenForm,
 };
 use crate::tools::{self, is_allowed_tool, policy::PolicySettings, wrap_tool_result, ToolContext};
@@ -32,8 +32,9 @@ struct AppState {
     openapi: Arc<RwLock<Value>>,
     auth: Arc<AuthConfig>,
     workspace_path: String,
+    bind_port: u16,
+    configured_public_url: String,
     oauth: Option<Arc<OAuthRuntime>>,
-    oauth_base_url: String,
     oauth_client_secret: Option<String>,
     write_lock: Arc<Mutex<()>>,
 }
@@ -63,10 +64,15 @@ pub fn spawn_listener(
         }
     }
 
-    let oauth_base = oauth_base_url(&public_base_url, actions_port);
+    let configured_public_url = public_base_url.trim().to_string();
     let oauth = if auth_type == "oauth" {
+        let oauth_base = external_base_url(
+            &HeaderMap::new(),
+            actions_port,
+            &configured_public_url,
+        );
         Some(Arc::new(OAuthRuntime::new(
-            oauth_base.clone(),
+            oauth_base,
             oauth_client_id,
             oauth_client_secret.clone(),
             oauth_password.unwrap_or_default(),
@@ -83,11 +89,10 @@ pub fn spawn_listener(
             actions_port,
             &profile_id,
             workspace_path,
-            public_base_url,
+            configured_public_url,
             auth_type,
             api_key,
             oauth,
-            oauth_base,
             oauth_client_secret,
             policy,
             shutdown_rx,
@@ -115,11 +120,10 @@ async fn serve(
     actions_port: u16,
     profile_id: &str,
     workspace_path: PathBuf,
-    public_base_url: String,
+    configured_public_url: String,
     auth_type: String,
     api_key: Option<String>,
     oauth: Option<Arc<OAuthRuntime>>,
-    oauth_base_url: String,
     oauth_client_secret: Option<String>,
     policy: PolicySettings,
     shutdown: oneshot::Receiver<()>,
@@ -144,17 +148,29 @@ async fn serve(
                 .unwrap_or(false)
         })
         .collect();
+    let public_base_url = if configured_public_url.is_empty() {
+        format!("http://127.0.0.1:{actions_port}")
+    } else {
+        configured_public_url.clone()
+    };
     let openapi_doc = openapi::build_openapi(&tools, &public_base_url, &auth_type);
 
-    let auth = Arc::new(AuthConfig::new(auth_type, api_key, oauth.clone()));
+    let auth = Arc::new(AuthConfig::new(
+        auth_type,
+        api_key,
+        oauth.clone(),
+        actions_port,
+        configured_public_url.clone(),
+    ));
 
     let state = AppState {
         workspace_path: ctx.workspace_path(),
         ctx,
         openapi: Arc::new(RwLock::new(openapi_doc)),
         auth: auth.clone(),
+        bind_port: actions_port,
+        configured_public_url,
         oauth,
-        oauth_base_url,
         oauth_client_secret,
         write_lock: Arc::new(Mutex::new(())),
     };
@@ -237,12 +253,19 @@ async fn privacy() -> Html<&'static str> {
     )
 }
 
-async fn oauth_authorization_server_metadata(State(state): State<AppState>) -> Response {
+fn resolve_oauth_base(state: &AppState, headers: &HeaderMap) -> String {
+    external_base_url(headers, state.bind_port, &state.configured_public_url)
+}
+
+async fn oauth_authorization_server_metadata(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     if !state.auth.oauth_enabled() {
         return oauth_not_configured();
     }
     Json(authorization_server_metadata(
-        &state.oauth_base_url,
+        &resolve_oauth_base(&state, &headers),
         state.oauth_client_secret.as_deref(),
     ))
     .into_response()
@@ -255,17 +278,18 @@ async fn oauth_authorize_get(
     let Some(oauth) = state.oauth.as_ref() else {
         return oauth_not_configured();
     };
-    authorize_get(oauth, params)
+    authorize_get(oauth, params, Some(state.workspace_path.as_str()))
 }
 
 async fn oauth_authorize_post(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Form(form): Form<AuthorizeForm>,
 ) -> Response {
     let Some(oauth) = state.oauth.as_ref() else {
         return oauth_not_configured();
     };
-    authorize_post(oauth, form)
+    authorize_post(oauth, form, &resolve_oauth_base(&state, &headers))
 }
 
 async fn oauth_token_post(
@@ -280,7 +304,12 @@ async fn oauth_token_post(
         )
             .into_response();
     };
-    token_exchange(oauth, &headers, form)
+    token_exchange(
+        oauth,
+        &headers,
+        form,
+        &resolve_oauth_base(&state, &headers),
+    )
 }
 
 fn oauth_not_configured() -> Response {

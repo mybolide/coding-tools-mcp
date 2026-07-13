@@ -11,6 +11,7 @@ export interface TunnelConfig {
   frp_profile_id?: string;
   frp_server_port?: number;
   cloudflare_mode: string;
+  use_proxy?: boolean;
 }
 
 export interface AuthConfig {
@@ -35,6 +36,7 @@ export interface ActionsConfig {
   frp_server_port?: number;
   cloudflare_mode: string;
   cloudflare_token?: string;
+  use_proxy?: boolean;
   local_port: number;
   permission_mode: string;
   runtime_command?: string;

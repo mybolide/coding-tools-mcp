@@ -1,3 +1,4 @@
+mod data;
 mod settings;
 mod actions;
 mod auth;
@@ -16,14 +17,15 @@ mod workspace;
 use app_state::AppState;
 use commands::{
     create_workspace, delete_frp_profile, delete_workspace, get_actions_runtime_status,
+    open_workspace_directory,
     get_app_settings, get_download_config, get_frp_snippet, get_last_workspace_id, get_proxy,
     get_runtime_status,
     get_shared_secret, get_workspace_secret, install_software, list_frp_profiles, list_software,
     list_workspaces, read_workspace_logs, regenerate_shared_secret, regenerate_workspace_secret,
     restart_actions_runtime, restart_runtime, restart_tunnel, run_health_checks, save_frp_profile,
-    set_download_config, set_last_workspace, set_shared_secret, set_workspace_secret,
+    set_download_config, set_last_workspace, set_proxy, set_shared_secret, set_workspace_secret,
     start_actions_runtime, start_runtime, start_tunnel, stop_actions_runtime, stop_runtime,
-    stop_tunnel, uninstall_software, update_workspace,
+    stop_tunnel, test_tunnel, uninstall_software, update_workspace,
 };
 use tauri::Manager;
 
@@ -39,6 +41,7 @@ pub fn run() {
             list_workspaces,
             create_workspace,
             update_workspace,
+            open_workspace_directory,
             delete_workspace,
             start_runtime,
             stop_runtime,
@@ -64,6 +67,7 @@ pub fn run() {
             delete_frp_profile,
             get_app_settings,
             restart_tunnel,
+            test_tunnel,
             set_last_workspace,
             get_last_workspace_id,
             list_software,

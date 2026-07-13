@@ -7,6 +7,7 @@
     saveFrpProfile,
     type FrpProfileDto,
   } from "$lib/api/settings";
+  import SecretInput from "$lib/components/SecretInput.svelte";
 
   let profiles = $state<FrpProfileDto[]>([]);
   let loading = $state(true);
@@ -134,11 +135,10 @@
           <span class="text-xs text-[var(--color-text-muted)]">
             Token {editingId ? "（留空则保持不变）" : ""}
           </span>
-          <input
-            type="password"
-            class="tx-input tx-mono"
-            placeholder="frp auth token"
+          <SecretInput
             bind:value={token}
+            placeholder="frp auth token"
+            showCopy={false}
           />
         </label>
         <div class="flex gap-2 pt-1">

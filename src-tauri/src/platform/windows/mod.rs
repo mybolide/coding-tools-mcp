@@ -23,6 +23,10 @@ impl Platform for WindowsPlatform {
         net::find_pid_listening_on_port(port)
     }
 
+    fn reclaim_listening_port(&self, port: u16) -> AppResult<bool> {
+        net::reclaim_listening_port(port)
+    }
+
     fn process_image_path(&self, pid: u32) -> AppResult<Option<String>> {
         process::process_image_path(pid)
     }
