@@ -443,6 +443,16 @@
     );
   }
 
+  async function saveWorkspacePath(path: string) {
+    if (!profile || profile.path === path) return;
+    const next: WorkspaceProfile = { ...profile, path };
+    await updateWorkspace(next);
+    profile = next;
+    showToast("工作区目录已更新", { kind: "success" });
+    await promptServiceRestart(mcpStatus === "running", "MCP 服务");
+    await promptServiceRestart(actionsStatus === "running", "Actions 服务");
+  }
+
   async function removeWorkspace() {
     if (!profile || !workspaceId) return;
     const confirmed = await confirm(`确定删除工作区「${profile.name}」？此操作不可撤销。`, {
@@ -482,6 +492,7 @@
           name={profile.name}
           path={profile.path}
           onSave={saveWorkspaceName}
+          onUpdatePath={saveWorkspacePath}
         />
       </div>
 

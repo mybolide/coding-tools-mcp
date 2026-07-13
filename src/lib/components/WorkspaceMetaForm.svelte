@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { FolderOpen } from "@lucide/svelte";
+  import { FolderInput, FolderOpen } from "@lucide/svelte";
+  import { open } from "@tauri-apps/plugin-dialog";
   import { openWorkspaceDirectory } from "$lib/api/workspaces";
   import { showToast } from "$lib/stores/toast";
 
@@ -7,13 +8,15 @@
     name: string;
     path: string;
     onSave: (name: string) => void | Promise<void>;
+    onUpdatePath: (path: string) => void | Promise<void>;
   }
 
-  let { name, path, onSave }: Props = $props();
+  let { name, path, onSave, onUpdatePath }: Props = $props();
 
   let draftName = $state("");
   let saving = $state(false);
   let opening = $state(false);
+  let updatingPath = $state(false);
 
   const dirty = $derived(draftName.trim() !== name && draftName.trim().length > 0);
 
@@ -43,6 +46,33 @@
       });
     } finally {
       opening = false;
+    }
+  }
+
+  function normalizePath(value: string): string {
+    return value.trim().replace(/[\\/]+$/, "");
+  }
+
+  async function updateDirectory() {
+    if (updatingPath) return;
+    updatingPath = true;
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: path.trim() || undefined,
+      });
+      if (!selected || Array.isArray(selected)) return;
+      const nextPath = normalizePath(selected);
+      if (!nextPath || nextPath === normalizePath(path)) return;
+      await onUpdatePath(nextPath);
+    } catch (error) {
+      showToast(String(error), {
+        kind: "error",
+        title: "无法更新目录",
+      });
+    } finally {
+      updatingPath = false;
     }
   }
 </script>
@@ -75,6 +105,15 @@
       >
         <FolderOpen size={14} class="inline-block" />
         <span class="ml-1">{opening ? "打开中…" : "打开目录"}</span>
+      </button>
+      <button
+        type="button"
+        class="tx-btn-ghost shrink-0 px-2.5 py-1.5 text-xs"
+        disabled={updatingPath}
+        onclick={() => void updateDirectory()}
+      >
+        <FolderInput size={14} class="inline-block" />
+        <span class="ml-1">{updatingPath ? "选择中…" : "更新目录"}</span>
       </button>
     </div>
   </div>
