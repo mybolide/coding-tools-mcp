@@ -1,26 +1,238 @@
 use serde_json::{json, Value};
 
 pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
-    ("server_info", "Server info", "Return server, workspace, auth, profile, and exposed-tool metadata.", true, false, false),
-    ("check_exec_environment", "Check exec environment", "Return lightweight exec_command sandbox and environment status known to the server.", true, false, false),
-    ("get_default_cwd", "Get default cwd", "Return the current default cwd inside the workspace.", true, false, false),
-    ("set_default_cwd", "Set default cwd", "Set the default cwd for relative tool paths inside the workspace.", true, false, false),
-    ("read_file", "Read file", "Read a UTF-8 text file slice inside the configured workspace.", true, false, false),
-    ("list_dir", "List directory", "List directory entries inside the configured workspace.", true, false, false),
-    ("list_files", "List files", "List workspace files using glob filters.", true, false, false),
-    ("search_text", "Search text", "Search UTF-8 workspace files for text or regex matches.", true, false, false),
-    ("apply_patch", "Apply patch", "Apply a patch envelope transactionally inside the workspace.", false, true, false),
-    ("exec_command", "Execute command", "Run a bounded command in the workspace under runtime policy.", false, true, true),
-    ("write_stdin", "Write stdin", "Write characters to a server-managed running command session.", false, false, false),
-    ("kill_session", "Kill session", "Terminate a server-managed running command session.", false, true, false),
-    ("read_output", "Read output", "Read retained stdout or stderr by output_ref with per-stream byte offset pagination.", true, false, false),
-    ("git_status", "Git status", "Return git working tree status for the workspace.", true, false, false),
-    ("git_diff", "Git diff", "Return unified git diff for workspace changes.", true, false, false),
-    ("git_log", "Git log", "Return recent git commits with bounded structured metadata.", true, false, false),
-    ("git_show", "Git show", "Return bounded git show output for a revision.", true, false, false),
-    ("git_blame", "Git blame", "Return bounded git blame metadata for a workspace file.", true, false, false),
-    ("request_permissions", "Request permissions", "Request a scoped permission grant for dangerous runtime operations.", true, false, false),
-    ("view_image", "View image", "Return a workspace image as MCP image content.", true, false, false),
+    (
+        "server_info",
+        "Server info",
+        "Return server, workspace, auth, profile, and exposed-tool metadata.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "project_state",
+        "Project state",
+        "Return the current project, task, change, and verification state.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "start_task",
+        "Start task",
+        "Start a durable coding task and capture the workspace baseline.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "update_task",
+        "Update task",
+        "Update task steps and durable progress.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "pause_task",
+        "Pause task",
+        "Pause the active coding task.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "resume_task",
+        "Resume task",
+        "Resume a paused or failed coding task.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "finish_task",
+        "Finish task",
+        "Finish a task with verification status and change summary.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "task_context",
+        "Task context",
+        "Return a bounded durable task context for a new conversation.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "list_task_events",
+        "List task events",
+        "Read task event history with pagination.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "change_summary",
+        "Change summary",
+        "Explain what changed, why, and what evidence exists.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "check_exec_environment",
+        "Check exec environment",
+        "Return lightweight exec_command sandbox and environment status known to the server.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "get_default_cwd",
+        "Get default cwd",
+        "Return the current default cwd inside the workspace.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "set_default_cwd",
+        "Set default cwd",
+        "Set the default cwd for relative tool paths inside the workspace.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "read_file",
+        "Read file",
+        "Read a UTF-8 text file slice inside the configured workspace.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "list_dir",
+        "List directory",
+        "List directory entries inside the configured workspace.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "list_files",
+        "List files",
+        "List workspace files using glob filters.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "search_text",
+        "Search text",
+        "Search UTF-8 workspace files for text or regex matches.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "apply_patch",
+        "Apply patch",
+        "Apply a patch envelope transactionally inside the workspace.",
+        false,
+        true,
+        false,
+    ),
+    (
+        "exec_command",
+        "Execute command",
+        "Run a bounded command in the workspace under runtime policy.",
+        false,
+        true,
+        true,
+    ),
+    (
+        "write_stdin",
+        "Write stdin",
+        "Write characters to a server-managed running command session.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "kill_session",
+        "Kill session",
+        "Terminate a server-managed running command session.",
+        false,
+        true,
+        false,
+    ),
+    (
+        "read_output",
+        "Read output",
+        "Read retained stdout or stderr by output_ref with per-stream byte offset pagination.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "git_status",
+        "Git status",
+        "Return git working tree status for the workspace.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "git_diff",
+        "Git diff",
+        "Return unified git diff for workspace changes.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "git_log",
+        "Git log",
+        "Return recent git commits with bounded structured metadata.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "git_show",
+        "Git show",
+        "Return bounded git show output for a revision.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "git_blame",
+        "Git blame",
+        "Return bounded git blame metadata for a workspace file.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "request_permissions",
+        "Request permissions",
+        "Request a scoped permission grant for dangerous runtime operations.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "view_image",
+        "View image",
+        "Return a workspace image as MCP image content.",
+        true,
+        false,
+        false,
+    ),
 ];
 
 pub const ALLOWED_TOOLS: &[&str] = &[
@@ -38,9 +250,26 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "git_log",
     "git_show",
     "git_blame",
+    "project_state",
+    "start_task",
+    "update_task",
+    "pause_task",
+    "resume_task",
+    "finish_task",
+    "task_context",
+    "list_task_events",
+    "change_summary",
 ];
 
-pub const MUTATING_TOOLS: &[&str] = &["apply_patch", "exec_command"];
+pub const MUTATING_TOOLS: &[&str] = &[
+    "apply_patch",
+    "exec_command",
+    "start_task",
+    "update_task",
+    "pause_task",
+    "resume_task",
+    "finish_task",
+];
 
 pub const READ_ONLY_TOOLS: &[&str] = &[
     "server_info",
@@ -59,6 +288,10 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "git_blame",
     "request_permissions",
     "view_image",
+    "project_state",
+    "task_context",
+    "list_task_events",
+    "change_summary",
 ];
 
 pub fn is_allowed_tool(name: &str) -> bool {
@@ -109,6 +342,70 @@ pub fn list_tools_for_profile(tool_profile: &str) -> Vec<Value> {
 
 pub fn input_schema(name: &str) -> Value {
     match name {
+        "project_state" => json!({
+            "type": "object",
+            "properties": {
+                "max_files": { "type": "integer", "minimum": 1, "maximum": 10000, "default": 200 }
+            },
+            "additionalProperties": false
+        }),
+        "start_task" => json!({
+            "type": "object",
+            "properties": {
+                "objective": { "type": "string", "minLength": 1 }
+            },
+            "required": ["objective"],
+            "additionalProperties": false
+        }),
+        "update_task" => json!({
+            "type": "object",
+            "properties": {
+                "task_id": { "type": "string", "minLength": 1 },
+                "completed_steps": { "type": "array", "items": { "type": "string" } },
+                "pending_steps": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["task_id"],
+            "additionalProperties": false
+        }),
+        "pause_task" | "resume_task" => json!({
+            "type": "object",
+            "properties": { "task_id": { "type": "string", "minLength": 1 } },
+            "required": ["task_id"],
+            "additionalProperties": false
+        }),
+        "finish_task" => json!({
+            "type": "object",
+            "properties": {
+                "task_id": { "type": "string", "minLength": 1 },
+                "summary": { "type": "string" },
+                "allow_unverified": { "type": "boolean", "default": false }
+            },
+            "required": ["task_id"],
+            "additionalProperties": false
+        }),
+        "task_context" => json!({
+            "type": "object",
+            "properties": {
+                "task_id": { "type": "string" },
+                "max_bytes": { "type": "integer", "minimum": 8192, "maximum": 131072, "default": 32768 }
+            },
+            "additionalProperties": false
+        }),
+        "list_task_events" => json!({
+            "type": "object",
+            "properties": {
+                "task_id": { "type": "string", "minLength": 1 },
+                "cursor": { "type": "integer", "minimum": 0, "default": 0 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+            },
+            "required": ["task_id"],
+            "additionalProperties": false
+        }),
+        "change_summary" => json!({
+            "type": "object",
+            "properties": { "task_id": { "type": "string" }, "change_id": { "type": "string" } },
+            "additionalProperties": false
+        }),
         "read_file" => json!({
             "type": "object",
             "properties": {

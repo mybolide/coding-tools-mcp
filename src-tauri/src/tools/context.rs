@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::harness::Harness;
+use crate::tools::policy::PolicySettings;
 use crate::tools::session::SessionStore;
 use crate::tools::workspace::{relative_display, Workspace};
-use crate::tools::policy::PolicySettings;
 use crate::workspace::AuthConfig;
 
 pub struct ToolContext {
@@ -12,6 +13,7 @@ pub struct ToolContext {
     pub policy: PolicySettings,
     pub tool_profile: String,
     pub permission_mode: String,
+    pub harness: Harness,
     default_cwd: Mutex<PathBuf>,
     pub sessions: SessionStore,
 }
@@ -41,6 +43,25 @@ impl ToolContext {
         tool_profile: String,
         permission_mode: String,
     ) -> Self {
+        let harness_root = Harness::default_root().expect("无法初始化 Harness 数据目录");
+        Self::from_workspace_with_harness_root(
+            workspace,
+            auth,
+            policy,
+            tool_profile,
+            permission_mode,
+            harness_root,
+        )
+    }
+
+    pub fn from_workspace_with_harness_root(
+        workspace: Workspace,
+        auth: AuthConfig,
+        policy: PolicySettings,
+        tool_profile: String,
+        permission_mode: String,
+        harness_root: PathBuf,
+    ) -> Self {
         let root = workspace.root().to_path_buf();
         Self {
             workspace,
@@ -48,9 +69,25 @@ impl ToolContext {
             policy,
             tool_profile,
             permission_mode,
+            harness: Harness::new(root.clone(), harness_root).expect("无法初始化 Harness"),
             default_cwd: Mutex::new(root),
             sessions: SessionStore::new(),
         }
+    }
+
+    pub fn for_test(workspace_path: PathBuf, harness_root: PathBuf) -> Result<Self, String> {
+        let workspace = Workspace::new(workspace_path).map_err(|e| e.message())?;
+        Ok(Self::from_workspace_with_harness_root(
+            workspace,
+            AuthConfig {
+                auth_type: "noauth".into(),
+                ..AuthConfig::default()
+            },
+            PolicySettings::default(),
+            "full".into(),
+            "trusted".into(),
+            harness_root,
+        ))
     }
 
     pub fn workspace_path(&self) -> String {

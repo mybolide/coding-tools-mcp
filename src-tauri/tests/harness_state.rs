@@ -17,15 +17,31 @@ fn 任务创建会捕获基线并在重启后恢复() {
     let (_temp, workspace, harness_root) = fixture();
     let harness = Harness::new(workspace.clone(), harness_root.clone()).expect("创建 Harness");
 
-    let task = harness.start_task("实现 Harness 基础能力").expect("启动任务");
+    let task = harness
+        .start_task("实现 Harness 基础能力")
+        .expect("启动任务");
 
     assert_eq!(task.status, TaskStatus::Active);
     assert_eq!(task.objective, "实现 Harness 基础能力");
     assert!(!task.baseline.worktree_fingerprint.is_empty());
-    assert_eq!(harness.current_task().expect("读取任务").id, task.id);
+    assert_eq!(
+        harness
+            .current_task()
+            .expect("读取任务")
+            .expect("活动任务")
+            .id,
+        task.id
+    );
 
     let restarted = Harness::new(workspace, harness_root).expect("重启 Harness");
-    assert_eq!(restarted.current_task().expect("恢复任务").id, task.id);
+    assert_eq!(
+        restarted
+            .current_task()
+            .expect("恢复任务")
+            .expect("活动任务")
+            .id,
+        task.id
+    );
 }
 
 #[test]
@@ -34,7 +50,9 @@ fn 同一工作区只允许一个可写任务且拒绝非法迁移() {
     let harness = Harness::new(workspace, harness_root).expect("创建 Harness");
     let task = harness.start_task("第一个任务").expect("启动任务");
 
-    let duplicate = harness.start_task("第二个任务").expect_err("应拒绝第二个任务");
+    let duplicate = harness
+        .start_task("第二个任务")
+        .expect_err("应拒绝第二个任务");
     assert_eq!(duplicate.code(), "TASK_ALREADY_ACTIVE");
 
     let invalid = harness
@@ -59,7 +77,9 @@ fn 外部文件变化会被识别且操作会留下事件() {
     let task = harness.start_task("验证外部变更").expect("启动任务");
 
     fs::write(workspace.join("README.md"), "外部修改\n").expect("模拟外部修改");
-    let stale = harness.check_baseline(&task.id).expect_err("应识别外部修改");
+    let stale = harness
+        .check_baseline(&task.id)
+        .expect_err("应识别外部修改");
     assert_eq!(stale.code(), "FILE_CHANGED_EXTERNALLY");
 
     harness
@@ -72,8 +92,8 @@ fn 外部文件变化会被识别且操作会留下事件() {
         )
         .expect("记录事件");
     let events = harness.list_events(&task.id, 0, 10).expect("读取事件");
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].tool_name.as_deref(), Some("read_file"));
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].tool_name.as_deref(), Some("read_file"));
 }
 
 #[test]

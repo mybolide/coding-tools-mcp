@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 
 use crate::tools::context::ToolContext;
 use crate::tools::policy::{validate_tool_arguments, PolicyError};
-use crate::tools::{exec, file, git, image_tool, patch, session};
 use crate::tools::workspace::{tool_err, tool_err_code, tool_ok, WorkspaceError};
+use crate::tools::{exec, file, git, image_tool, patch, session};
 
 fn policy_tool_err(err: PolicyError) -> Value {
     tool_err(WorkspaceError::Tool {
@@ -20,6 +20,36 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
     if let Err(e) = validate_tool_arguments(name, args, &ctx.policy) {
         return policy_tool_err(e);
     }
+
+    if crate::harness::tools::TOOL_NAMES.contains(&name) {
+        return match crate::harness::tools::call(ctx, name, args) {
+            Ok(value) => value,
+            Err(error) => tool_err(error),
+        };
+    }
+
+    let task_id = if matches!(name, "apply_patch" | "exec_command") {
+        let Some(task) = ctx.harness.current_task().ok().flatten() else {
+            return tool_err_code(
+                "TASK_STATE_REQUIRED",
+                "写操作必须先启动一个 Harness 任务",
+                "permission",
+            );
+        };
+        if let Err(error) = ctx.harness.check_baseline(&task.id) {
+            return tool_err_code(error.code(), error.to_string(), "permission");
+        }
+        let _ = ctx.harness.record_event(
+            &task.id,
+            "operation_started",
+            Some(name),
+            json!({"arguments_present": !args.is_null()}),
+            json!({"ok": true}),
+        );
+        Some(task.id)
+    } else {
+        None
+    };
 
     let ws = &ctx.workspace;
     let result = match name {
@@ -61,10 +91,24 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
             )
         }
     };
-    match result {
+    let output = match result {
         Ok(v) => v,
         Err(e) => tool_err(e),
+    };
+    if let Some(task_id) = task_id {
+        let succeeded = output.get("ok").and_then(Value::as_bool) == Some(true);
+        let _ = ctx.harness.record_event(
+            &task_id,
+            "operation_finished",
+            Some(name),
+            json!({"arguments_present": !args.is_null()}),
+            json!({"ok": succeeded, "tool": name}),
+        );
+        if succeeded {
+            let _ = ctx.harness.refresh_expected_state(&task_id);
+        }
     }
+    output
 }
 
 pub fn server_info(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
