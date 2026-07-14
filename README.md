@@ -1,5 +1,7 @@
 # Coding Tools MCP Desktop
 
+[中文](README.md) | [English](README.en.md)
+
 Coding Tools MCP Desktop 是一个基于 Rust + Tauri 2 的本地 AI Coding
 Workspace。它把项目目录、文件读写、命令执行和 Git 能力通过 MCP 暴露给
 ChatGPT、Codex 以及其他 MCP 客户端。
