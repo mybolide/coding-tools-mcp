@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::{Component, Path};
 
 use serde_json::Value;
 
@@ -6,8 +7,13 @@ use crate::workspace::ActionsConfig;
 
 use super::registry::is_allowed_tool;
 
-static FORBIDDEN_SHELL_PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
 static NETWORK_COMMAND_PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+static DANGEROUS_COMMAND_PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+static INTERPRETER_MUTATION_PATTERN: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+
+const BASIC_READ_ONLY_COMMANDS: &[&str] = &[
+    "pwd", "ls", "dir", "cat", "head", "tail", "grep", "find", "which", "echo",
+];
 
 const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
     "pytest", "python", "python3", "npm", "npx", "node", "pnpm", "yarn", "make", "mvn", "mvnw",
@@ -67,18 +73,22 @@ pub fn parse_allowed_commands(configured: &str) -> HashSet<String> {
     if trimmed.is_empty() {
         return default_allowed_command_set();
     }
-    trimmed
+    let mut commands: HashSet<String> = trimmed
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect();
+    // 基础诊断命令是工作区可用性的最低保障，不应因 Actions 配置遗漏而失效。
+    commands.extend(BASIC_READ_ONLY_COMMANDS.iter().map(|s| s.to_string()));
+    commands
 }
 
 fn default_allowed_command_set() -> HashSet<String> {
     DEFAULT_ALLOWED_COMMANDS
         .iter()
         .map(|s| s.to_string())
+        .chain(BASIC_READ_ONLY_COMMANDS.iter().map(|s| s.to_string()))
         .collect()
 }
 
@@ -89,7 +99,7 @@ pub fn validate_tool_arguments(
 ) -> Result<(), PolicyError> {
     match tool_name {
         "exec_command" => validate_command(arguments, policy),
-        "apply_patch" => validate_patch(arguments, policy),
+        "apply_patch" | "patch_check" => validate_patch(arguments, policy),
         _ => Ok(()),
     }
 }
@@ -114,9 +124,54 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
     if command.len() > 4_000 {
         return Err(PolicyError("Command is too long".into()));
     }
-    if forbidden_shell_pattern().is_match(command) {
+    let filesystem_scope = arguments
+        .get("filesystem_scope")
+        .and_then(Value::as_str)
+        .unwrap_or("workspace");
+    if filesystem_scope != "workspace" {
+        return Err(PolicyError(
+            "EXTERNAL_EXECUTION_NOT_ALLOWED: exec_command 只允许在 Workspace 内执行".into(),
+        ));
+    }
+    for key in ["workdir", "cwd"] {
+        if let Some(workdir) = arguments.get(key).and_then(Value::as_str) {
+            let path = Path::new(workdir);
+            if path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
+                return Err(PolicyError(
+                    "workdir must stay inside the configured workspace".into(),
+                ));
+            }
+        }
+    }
+    if has_forbidden_shell_syntax(command) {
         return Err(PolicyError(
             "Shell chaining, redirection and expansion are not allowed".into(),
+        ));
+    }
+    if (dangerous_command_pattern().is_match(command)
+        || interpreter_mutation_pattern().is_match(command))
+        && command_targets_protected_repository_asset(command)
+    {
+        return Err(PolicyError(
+            "PROTECTED_REPOSITORY_ASSET: 禁止删除或递归清空 .git/.github".into(),
+        ));
+    }
+    if interpreter_mutation_pattern().is_match(command)
+        && command_contains_external_path(command)
+    {
+        return Err(PolicyError(
+            "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程写入 Workspace 外部路径".into(),
+        ));
+    }
+    if dangerous_command_pattern().is_match(command)
+        && !arguments
+            .get("confirm")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Err(PolicyError(
+            "DANGEROUS_OPERATION_REQUIRES_CONFIRMATION: dangerous command requires confirm=true"
+                .into(),
         ));
     }
     if !policy.skip_permission_gates()
@@ -128,17 +183,14 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
         ));
     }
 
-    let parts = shell_words::split(command)
-        .map_err(|_| PolicyError("Invalid command syntax".into()))?;
+    let parts =
+        shell_words::split(command).map_err(|_| PolicyError("Invalid command syntax".into()))?;
     if parts.is_empty() {
         return Err(PolicyError("Empty command".into()));
     }
 
     let executable = parts[0].trim_start_matches("./");
-    let base_name = executable
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(executable);
+    let base_name = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
     let stem = base_name
         .strip_suffix(".exe")
         .or_else(|| base_name.strip_suffix(".cmd"))
@@ -149,12 +201,6 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
         return Err(PolicyError(format!("Command is not allowlisted: {stem}")));
     }
 
-    if matches!(stem, "python" | "python3") && parts.iter().any(|p| p == "-c") {
-        return Err(PolicyError("python -c is not allowed".into()));
-    }
-    if stem == "node" && parts.iter().any(|p| p == "-e") {
-        return Err(PolicyError("node -e is not allowed".into()));
-    }
     if arguments.get("env").is_some() {
         return Err(PolicyError(
             "Environment variables cannot be supplied by GPT".into(),
@@ -186,10 +232,55 @@ pub fn validate_patch(arguments: &Value, policy: &PolicySettings) -> Result<(), 
     Ok(())
 }
 
-fn forbidden_shell_pattern() -> &'static regex::Regex {
-    FORBIDDEN_SHELL_PATTERN.get_or_init(|| {
-        regex::Regex::new(r#"[;&|><`]|$\(|\$\{|[\r\n]"#).expect("valid regex")
-    })
+fn has_forbidden_shell_syntax(command: &str) -> bool {
+    if command.contains(['\r', '\n']) {
+        return true;
+    }
+
+    let chars: Vec<char> = command.chars().collect();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+
+        match quote {
+            Some('\'') => {
+                if ch == '\'' {
+                    quote = None;
+                }
+            }
+            Some('"') => {
+                if ch == '\\' {
+                    escaped = true;
+                } else if ch == '"' {
+                    quote = None;
+                }
+            }
+            Some(_) => {}
+            None => {
+                if ch == '\\' {
+                    escaped = true;
+                } else if ch == '\'' || ch == '"' {
+                    quote = Some(ch);
+                } else if matches!(ch, ';' | '&' | '|' | '>' | '<' | '`')
+                    || (ch == '$'
+                        && chars
+                            .get(index + 1)
+                            .is_some_and(|next| *next == '(' || *next == '{'))
+                {
+                    return true;
+                }
+            }
+        }
+        index += 1;
+    }
+    false
 }
 
 fn network_command_pattern() -> &'static regex::Regex {
@@ -198,6 +289,76 @@ fn network_command_pattern() -> &'static regex::Regex {
             r"(?i)(https?://|urllib\.request|requests\.|http\.client|\bcurl\b|\bwget\b|\bssh\b|\bscp\b|\bftp\b)",
         )
         .expect("valid regex")
+    })
+}
+
+fn dangerous_command_pattern() -> &'static regex::Regex {
+    DANGEROUS_COMMAND_PATTERN.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)(git\s+reset\s+--hard|git\s+clean\s+-[^\r\n]*f|git\s+checkout\s+--\s+\.|(^|\s)rm\s+(-[^\r\n]*r[^\r\n]*f|--recursive)|remove-item\s+[^\r\n]*-recurse|(^|\s)(rmdir|del)\s+/s\b)",
+        )
+        .expect("valid regex")
+    })
+}
+
+fn interpreter_mutation_pattern() -> &'static regex::Regex {
+    INTERPRETER_MUTATION_PATTERN.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?i)(shutil\.(rmtree|move)|os\.(remove|unlink|rmdir)|pathlib\.[^\s;]+\.(unlink|rename)|write_text|write_bytes|fs\.(writefile|writefilesync|unlink|rm)|set-content|out-file|new-item|files?\.(write|delete)|open\([^)]*['\"]w)"#,
+        )
+        .expect("valid regex")
+    })
+}
+
+fn command_contains_external_path(command: &str) -> bool {
+    let normalized = command.replace('\\', "/");
+    normalized.contains("../")
+        || normalized.contains("..\\")
+        || regex::Regex::new(r#"(?i)(^|["'\s])/[^"]"#)
+            .expect("valid regex")
+            .is_match(&normalized)
+        || regex::Regex::new(r"(?i)\b[A-Z]:/")
+            .expect("valid regex")
+            .is_match(&normalized)
+}
+
+fn command_targets_protected_repository_asset(command: &str) -> bool {
+    let normalized_command = command.to_ascii_lowercase().replace('\\', "/");
+    let references_protected_asset = normalized_command.contains(".git")
+        || normalized_command.contains(".github");
+    if !references_protected_asset {
+        return false;
+    }
+
+    let mutating_operation = [
+        "rm ",
+        "remove-item",
+        "rmdir",
+        "del ",
+        "unlink",
+        "rmtree",
+        "write_text",
+        "writefile",
+        "rename",
+        "move",
+        "checkout",
+        "clean ",
+    ]
+    .iter()
+    .any(|needle| normalized_command.contains(needle));
+    if mutating_operation {
+        return true;
+    }
+
+    command.split_whitespace().any(|part| {
+        let token = part
+            .trim_matches(|ch: char| matches!(ch, '\'' | '"' | '`' | ',' | ';'))
+            .replace('\\', "/");
+        let token = token.strip_prefix("./").unwrap_or(&token);
+        token == ".git"
+            || token.starts_with(".git/")
+            || token == ".github"
+            || token.starts_with(".github/")
     })
 }
 
@@ -226,5 +387,45 @@ mod tests {
         let policy = PolicySettings::from_actions_config(&actions);
         let err = validate_patch(&json!({ "patch": "01234567890" }), &policy).unwrap_err();
         assert!(err.0.contains("too large"));
+    }
+
+    #[test]
+    fn basic_diagnostic_commands_are_allowed() {
+        let policy = PolicySettings::default();
+        for command in BASIC_READ_ONLY_COMMANDS {
+            validate_command(&json!({"cmd": command}), &policy)
+                .unwrap_or_else(|err| panic!("{command} should be allowed: {err}"));
+        }
+    }
+
+    #[test]
+    fn configured_commands_keep_basic_diagnostics() {
+        let actions = ActionsConfig {
+            allowed_commands: "cargo,go".into(),
+            ..ActionsConfig::default()
+        };
+        let policy = PolicySettings::from_actions_config(&actions);
+        assert!(validate_command(&json!({"cmd": "pwd"}), &policy).is_ok());
+        assert!(validate_command(&json!({"cmd": "pytest"}), &policy).is_err());
+    }
+
+    #[test]
+    fn quoted_python_code_is_not_treated_as_shell_chaining() {
+        let policy = PolicySettings::default();
+        assert!(validate_command(
+            &json!({"cmd": "python -c \"import os; print(os.getcwd())\""}),
+            &policy
+        )
+        .is_ok());
+        assert!(validate_command(
+            &json!({"cmd": "python -c \"print(1)\" && echo nope"}),
+            &policy
+        )
+        .is_err());
+        assert!(validate_command(
+            &json!({"cmd": "echo hello > output.txt"}),
+            &policy
+        )
+        .is_err());
     }
 }

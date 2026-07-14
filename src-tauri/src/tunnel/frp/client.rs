@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::io::{Read, Seek, SeekFrom};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -58,6 +59,7 @@ pub async fn spawn_frpc(
     let config_path = log_dir.join(frpc_config_name(kind));
     let log_path = log_dir.join(frpc_log_name(kind));
     std::fs::write(&config_path, build_frpc_toml(&config))?;
+    let log_offset = log_file_len(&log_path);
 
     let mut cmd = Command::new(&frpc);
     cmd.args(["-c", config_path.to_string_lossy().as_ref()]);
@@ -105,7 +107,7 @@ pub async fn spawn_frpc(
         });
     }
 
-    if !wait_for_frpc_ready(&mut child, &log_path).await? {
+    if !wait_for_frpc_ready(&mut child, &log_path, log_offset).await? {
         let _ = stop_child(child, pid).await;
         return Err(AppError::Message(
             "frpc 已启动但很快退出。请检查 FRP 服务器地址、端口、Token 与子域名配置。".into(),
@@ -193,30 +195,42 @@ fn frpc_log_name(kind: TunnelServiceKind) -> &'static str {
     }
 }
 
-async fn wait_for_frpc_ready(child: &mut Child, log_path: &Path) -> AppResult<bool> {
+async fn wait_for_frpc_ready(
+    child: &mut Child,
+    log_path: &Path,
+    log_offset: u64,
+) -> AppResult<bool> {
     let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
         if let Some(status) = child.try_wait().map_err(|err| AppError::Message(err.to_string()))? {
             sleep(Duration::from_millis(300)).await;
             return Err(frpc_exit_error(status, log_path));
         }
-        if let Some(error) = detect_frpc_log_error(log_path) {
+        if let Some(error) = detect_frpc_log_error(log_path, log_offset) {
             return Err(error);
         }
-        if log_path.is_file() {
-            if let Ok(content) = std::fs::read_to_string(log_path) {
-                let lowered = strip_ansi(&content).to_ascii_lowercase();
-                if lowered.contains("login to server success")
-                    || lowered.contains("start proxy success")
-                    || lowered.contains("proxy start success")
-                {
-                    return Ok(true);
-                }
-            }
+        let content = read_log_since(log_path, log_offset);
+        let lowered = strip_ansi(&content).to_ascii_lowercase();
+        if lowered.contains("login to server success")
+            || lowered.contains("start proxy success")
+            || lowered.contains("proxy start success")
+        {
+            return Ok(true);
         }
         sleep(Duration::from_millis(200)).await;
     }
-    Ok(child.try_wait().ok().flatten().is_none())
+    if child.try_wait().ok().flatten().is_none() {
+        let detail = read_log_since(log_path, log_offset);
+        let detail = if detail.trim().is_empty() {
+            "尚未收到 frpc 登录或代理建立日志".to_string()
+        } else {
+            frpc_log_summary_from_text(&detail)
+        };
+        return Err(AppError::Message(format!(
+            "frpc 启动超时，隧道尚未就绪：{detail}"
+        )));
+    }
+    Ok(false)
 }
 
 fn frpc_exit_error(status: std::process::ExitStatus, log_path: &Path) -> AppError {
@@ -230,17 +244,19 @@ fn frpc_exit_error(status: std::process::ExitStatus, log_path: &Path) -> AppErro
     AppError::Message(format!("frpc 退出，状态码 {status}。{detail}"))
 }
 
-fn detect_frpc_log_error(log_path: &Path) -> Option<AppError> {
-    let content = std::fs::read_to_string(log_path).ok()?;
+fn detect_frpc_log_error(log_path: &Path, log_offset: u64) -> Option<AppError> {
+    let content = read_log_since(log_path, log_offset);
+    if content.is_empty() {
+        return None;
+    }
     let lowered = strip_ansi(&content).to_ascii_lowercase();
     if lowered.contains("authorization failed")
         || lowered.contains("token in login doesn't match")
-        || lowered.contains("connect to server error")
         || lowered.contains("login to the server failed")
     {
         return Some(AppError::Message(format!(
             "frpc 连接失败：{}",
-            frpc_log_summary(log_path)
+            frpc_log_summary_from_text(&content)
         )));
     }
     None
@@ -248,13 +264,37 @@ fn detect_frpc_log_error(log_path: &Path) -> Option<AppError> {
 
 fn frpc_log_summary(log_path: &Path) -> String {
     let content = std::fs::read_to_string(log_path).unwrap_or_default();
-    let cleaned = strip_ansi(&content);
+    frpc_log_summary_from_text(&content)
+}
+
+fn frpc_log_summary_from_text(content: &str) -> String {
+    let cleaned = strip_ansi(content);
     cleaned
         .lines()
         .map(str::trim)
         .rfind(|line| !line.is_empty())
         .unwrap_or("请检查 FRP 服务器、端口与 Token")
         .to_string()
+}
+
+fn log_file_len(path: &Path) -> u64 {
+    std::fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0)
+}
+
+fn read_log_since(path: &Path, offset: u64) -> String {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let current_len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let start = if current_len >= offset { offset } else { 0 };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn strip_ansi(text: &str) -> String {

@@ -149,7 +149,7 @@ fn default_actions_port() -> u16 {
 }
 
 fn default_tool_profile() -> String {
-    "full".to_string()
+    "core".to_string()
 }
 
 fn default_permission_mode() -> String {

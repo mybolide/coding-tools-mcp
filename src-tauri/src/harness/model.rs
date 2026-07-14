@@ -5,6 +5,30 @@ use serde_json::Value;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityStatus {
+    pub status: String,
+    pub reason: String,
+    pub recoverable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessStatus {
+    pub schema_version: u32,
+    pub workspace_id: String,
+    pub task_id: Option<String>,
+    pub task_state: Option<TaskStatus>,
+    pub task_updated_at: Option<String>,
+    pub writable: bool,
+    pub reason: String,
+    pub recoverable: bool,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub baseline_matches: Option<bool>,
+    pub capabilities: HashMap<String, CapabilityStatus>,
+    pub next_actions: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -72,8 +96,6 @@ pub struct TaskSession {
     pub pending_steps: Vec<String>,
     pub latest_change_id: Option<String>,
     pub latest_verification_id: Option<String>,
-    #[serde(default)]
-    pub checkpoint_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -102,6 +124,21 @@ pub struct HarnessEvent {
     pub input_summary: Value,
     pub result_summary: Value,
     pub reason: Option<ReasonRecord>,
+    #[serde(default)]
+    pub affected_files: Vec<FileChangeRecord>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub task_id: Option<String>,
+    pub tool: String,
+    pub kind: String,
+    pub input_summary: Value,
+    pub result_summary: Value,
+    pub reason: Option<String>,
     #[serde(default)]
     pub affected_files: Vec<FileChangeRecord>,
     pub created_at: String,

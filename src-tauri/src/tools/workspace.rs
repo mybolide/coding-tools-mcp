@@ -35,12 +35,20 @@ pub enum WorkspaceError {
         category: &'static str,
         retryable: bool,
     },
+    #[error("{message}")]
+    ToolDetails {
+        code: &'static str,
+        message: String,
+        category: &'static str,
+        retryable: bool,
+        details: Value,
+    },
 }
 
 impl WorkspaceError {
     pub fn message(&self) -> String {
         match self {
-            Self::Tool { message, .. } => message.clone(),
+            Self::Tool { message, .. } | Self::ToolDetails { message, .. } => message.clone(),
         }
     }
 
@@ -112,6 +120,19 @@ impl WorkspaceError {
                 "retryable": retryable,
                 "details": {}
             }),
+            Self::ToolDetails {
+                code,
+                message,
+                category,
+                retryable,
+                details,
+            } => json!({
+                "code": code,
+                "message": message,
+                "category": category,
+                "retryable": retryable,
+                "details": details
+            }),
         }
     }
 }
@@ -174,7 +195,40 @@ impl Workspace {
         self.resolve_existing_at(&self.root, raw_path)
     }
 
-    pub fn resolve_existing_at(&self, base: &Path, raw_path: &str) -> WorkspaceResult<ResolvedPath> {
+    /// 解析只读路径。显式的绝对路径和 `..` 路径允许指向 Workspace 外部，
+    /// 但不会被任何写入工具复用。
+    pub fn resolve_read_path(&self, raw_path: &str) -> WorkspaceResult<ResolvedPath> {
+        let raw = if raw_path.is_empty() { "." } else { raw_path };
+        self.validate_read_text(raw)?;
+        let input = Path::new(raw);
+        let candidate = if input.is_absolute() {
+            input.to_path_buf()
+        } else {
+            self.root
+                .join(raw.replace('/', std::path::MAIN_SEPARATOR_STR))
+        };
+        let resolved = candidate
+            .canonicalize()
+            .map_err(|_| WorkspaceError::not_found(format!("Path not found: {raw}")))?;
+        let explicit_external = input.is_absolute()
+            || input
+                .components()
+                .any(|part| matches!(part, Component::ParentDir));
+        if !explicit_external && candidate.starts_with(&self.root) {
+            self.ensure_inside_workspace(&candidate, &resolved)?;
+        }
+        Ok(ResolvedPath {
+            display: relative_display(&self.root, &resolved),
+            path: resolved,
+            existed: true,
+        })
+    }
+
+    pub fn resolve_existing_at(
+        &self,
+        base: &Path,
+        raw_path: &str,
+    ) -> WorkspaceResult<ResolvedPath> {
         let raw = if raw_path.is_empty() { "." } else { raw_path };
         self.reject_unsafe_text(raw)?;
         let base = self.validate_base(base)?;
@@ -192,6 +246,7 @@ impl Workspace {
 
     pub fn resolve_for_write(&self, raw_path: &str) -> WorkspaceResult<ResolvedPath> {
         self.reject_unsafe_text(raw_path)?;
+        self.reject_protected_write_path(raw_path)?;
         let pure = Path::new(raw_path);
         if pure.file_name().is_none() || raw_path == "." || raw_path == ".." {
             return Err(WorkspaceError::invalid_argument("Invalid write target"));
@@ -282,28 +337,56 @@ impl Workspace {
         Ok(())
     }
 
-    pub fn is_ignored_path(&self, path: &Path, include_hidden: bool, include_ignored: bool) -> bool {
-        let rel = match path.strip_prefix(&self.root) {
-            Ok(r) => r,
-            Err(_) => return true,
+    pub fn reject_protected_write_path(&self, raw_path: &str) -> WorkspaceResult<()> {
+        let normalized = raw_path.replace('\\', "/");
+        let first = normalized.split('/').next().unwrap_or("");
+        if matches!(first, ".git" | ".github") {
+            return Err(WorkspaceError::Tool {
+                code: "PROTECTED_PATH",
+                message: format!("禁止普通文件操作写入受保护目录: {raw_path}"),
+                category: "security",
+                retryable: false,
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_read_text(&self, raw_path: &str) -> WorkspaceResult<()> {
+        if raw_path.contains('\0') {
+            return Err(WorkspaceError::invalid_argument("Path contains a NUL byte"));
+        }
+        Ok(())
+    }
+
+    pub fn is_ignored_path(
+        &self,
+        path: &Path,
+        include_hidden: bool,
+        include_ignored: bool,
+    ) -> bool {
+        let Ok(scan_path) = path.strip_prefix(&self.root) else {
+            // Workspace 外的读取路径不套用 Workspace 内部的隐藏/构建目录过滤，
+            // 否则 Windows 临时目录等路径会被误判为隐藏目录而无法读取。
+            return false;
         };
-        let parts: Vec<_> = rel.components().collect();
+        let parts: Vec<String> = scan_path
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect();
         if !include_hidden {
             for part in &parts {
-                if let Component::Normal(name) = part {
-                    let s = name.to_string_lossy();
-                    if s.starts_with('.') && s != "." {
-                        return true;
-                    }
+                if part.starts_with('.') && part != "." {
+                    return true;
                 }
             }
         }
         if !include_ignored {
             for part in &parts {
-                if let Component::Normal(name) = part {
-                    if DEFAULT_EXCLUDED_NAMES.contains(&name.to_string_lossy().as_ref()) {
-                        return true;
-                    }
+                if DEFAULT_EXCLUDED_NAMES.contains(&part.as_str()) {
+                    return true;
                 }
             }
         }
@@ -315,12 +398,27 @@ impl Workspace {
             .map(|p| p.starts_with(&self.root))
             .unwrap_or(false)
     }
+
+    pub fn is_safe_read_path(&self, path: &Path) -> bool {
+        path.exists() || path.is_symlink()
+    }
 }
 
 pub fn relative_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
+    let display = path
+        .strip_prefix(root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
+    #[cfg(windows)]
+    {
+        if let Some(unc) = display.strip_prefix("//?/UNC/") {
+            return format!("//{unc}");
+        }
+        if let Some(normal) = display.strip_prefix("//?/") {
+            return normal.to_string();
+        }
+    }
+    display
 }
 
 pub fn tool_ok(mut value: Value) -> Value {
@@ -336,6 +434,8 @@ pub fn tool_ok(mut value: Value) -> Value {
 pub fn tool_err(error: WorkspaceError) -> Value {
     json!({
         "ok": false,
+        "status": "error",
+        "summary": error.message(),
         "error": error.to_error_value()
     })
 }
@@ -345,11 +445,14 @@ pub fn tool_err_code(
     message: impl Into<String>,
     category: &'static str,
 ) -> Value {
+    let message = message.into();
     json!({
         "ok": false,
+        "status": "error",
+        "summary": message.clone(),
         "error": {
             "code": code,
-            "message": message.into(),
+            "message": message,
             "category": category,
             "retryable": false,
             "details": {}

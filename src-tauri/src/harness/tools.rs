@@ -7,6 +7,8 @@ use super::model::TaskStatus;
 use super::store::HarnessError;
 
 pub const TOOL_NAMES: &[&str] = &[
+    "harness_status",
+    "operation_log",
     "project_state",
     "start_task",
     "update_task",
@@ -20,6 +22,8 @@ pub const TOOL_NAMES: &[&str] = &[
 
 pub fn call(ctx: &ToolContext, name: &str, args: &Value) -> Result<Value, WorkspaceError> {
     let value = match name {
+        "harness_status" => harness_status(ctx),
+        "operation_log" => operation_log(ctx, args),
         "project_state" => project_state(ctx, args),
         "start_task" => start_task(ctx, args),
         "update_task" => update_task(ctx, args),
@@ -32,6 +36,28 @@ pub fn call(ctx: &ToolContext, name: &str, args: &Value) -> Result<Value, Worksp
         _ => return Err(tool_error("INVALID_ARGUMENT", "未知 Harness 工具")),
     }?;
     Ok(tool_ok(value))
+}
+
+fn harness_status(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
+    serde_json::to_value(ctx.harness.status().map_err(map_error)?)
+        .map_err(|e| tool_error("SERIALIZE_FAILED", e.to_string()))
+}
+
+fn operation_log(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceError> {
+    let offset = args.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(50)
+        .clamp(1, 200) as usize;
+    let operations = ctx
+        .harness
+        .list_operations(offset, limit)
+        .map_err(map_error)?;
+    Ok(json!({
+        "operations": operations,
+        "next_cursor": offset + operations.len()
+    }))
 }
 
 fn project_state(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceError> {

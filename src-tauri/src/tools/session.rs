@@ -57,28 +57,41 @@ pub struct ExecSession {
     pub session_id: String,
     pub(crate) child: AsyncMutex<Child>,
     pub stdin: AsyncMutex<Option<ChildStdin>>,
+    stdin_open: Mutex<bool>,
+    interactive: bool,
     stdout: Mutex<Vec<u8>>,
     stderr: Mutex<Vec<u8>>,
     stdout_total: Mutex<usize>,
     stderr_total: Mutex<usize>,
     pub started_at: Instant,
     pub exit_code: Mutex<Option<i32>>,
+    termination_reason: Mutex<Option<String>>,
+    reader_tasks: AsyncMutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl ExecSession {
-    pub fn new(mut child: Child) -> Self {
+    pub fn new(child: Child) -> Self {
+        Self::new_with_mode(child, false)
+    }
+
+    pub fn new_with_mode(mut child: Child, interactive: bool) -> Self {
         let session_id = Uuid::new_v4().to_string();
         let stdin = child.stdin.take();
+        let stdin_open = stdin.is_some();
         Self {
             session_id,
             child: AsyncMutex::new(child),
             stdin: AsyncMutex::new(stdin),
+            stdin_open: Mutex::new(stdin_open),
+            interactive,
             stdout: Mutex::new(Vec::new()),
             stderr: Mutex::new(Vec::new()),
             stdout_total: Mutex::new(0),
             stderr_total: Mutex::new(0),
             started_at: Instant::now(),
             exit_code: Mutex::new(None),
+            termination_reason: Mutex::new(None),
+            reader_tasks: AsyncMutex::new(Vec::new()),
         }
     }
 
@@ -93,15 +106,24 @@ impl ExecSession {
         };
         if let Some(stream) = stdout {
             let session = Arc::clone(self);
-            tauri::async_runtime::spawn(async move {
+            let task = tauri::async_runtime::spawn(async move {
                 session.read_stream(stream, true).await;
             });
+            self.reader_tasks.lock().await.push(task);
         }
         if let Some(stream) = stderr {
             let session = Arc::clone(self);
-            tauri::async_runtime::spawn(async move {
+            let task = tauri::async_runtime::spawn(async move {
                 session.read_stream(stream, false).await;
             });
+            self.reader_tasks.lock().await.push(task);
+        }
+    }
+
+    pub async fn wait_for_readers(&self) {
+        let mut tasks = self.reader_tasks.lock().await;
+        while let Some(task) = tasks.pop() {
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), task).await;
         }
     }
 
@@ -142,7 +164,20 @@ impl ExecSession {
         let mut child = self.child.lock().await;
         if let Ok(Some(status)) = child.try_wait() {
             *self.exit_code.lock().expect("exit_code lock") = status.code();
+            *self.stdin_open.lock().expect("stdin_open lock") = false;
+            let mut reason = self.termination_reason.lock().expect("termination lock");
+            if reason.is_none() {
+                *reason = Some("exited".into());
+            }
         }
+    }
+
+    pub fn mark_termination_reason(&self, reason: &str) {
+        *self.termination_reason.lock().expect("termination lock") = Some(reason.to_string());
+    }
+
+    pub(crate) fn mark_stdin_closed(&self) {
+        *self.stdin_open.lock().expect("stdin_open lock") = false;
     }
 
     pub async fn is_running(&self) -> bool {
@@ -171,14 +206,31 @@ impl ExecSession {
         let stdout = truncate_tail(&stdout_bytes, max_output_bytes);
         let stderr = truncate_tail(&stderr_bytes, max_output_bytes);
         let exit_code = *self.exit_code.lock().expect("exit_code lock");
+        let termination_reason = self
+            .termination_reason
+            .lock()
+            .expect("termination lock")
+            .clone();
         let status = if exit_code.is_some() {
             "exited"
         } else {
             "running"
         };
+        let reason = termination_reason.as_deref().unwrap_or("running");
         json!({
             "session_id": self.session_id,
+            "interactive": self.interactive,
+            "stdin_open": *self.stdin_open.lock().expect("stdin_open lock"),
             "status": status,
+            "termination_reason": reason,
+            "recoverable": matches!(reason, "timeout" | "killed" | "spawn_failed" | "server_restart"),
+            "suggestion": match reason {
+                "timeout" => "读取保留输出，调整 timeout_ms 后重试",
+                "killed" => "确认终止原因后重新执行命令",
+                "exited" => "检查 exit_code 和 stderr",
+                "crashed" => "检查 stderr 后重试或恢复工作区",
+                _ => "继续读取 session 或等待进程结束",
+            },
             "exit_code": exit_code,
             "stdout": stdout.content,
             "stderr": stderr.content,
@@ -360,6 +412,7 @@ pub fn kill_session(store: &SessionStore, args: &Value) -> Result<Value, Workspa
     let mut evicted = true;
 
     if running {
+        session.mark_termination_reason("killed");
         tauri::async_runtime::block_on(async {
             let pid = {
                 let child = session.child.lock().await;
@@ -371,13 +424,10 @@ pub fn kill_session(store: &SessionStore, args: &Value) -> Result<Value, Workspa
                 let mut child = session.child.lock().await;
                 let _ = child.start_kill();
             }
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_millis(wait_ms),
-                async {
-                    let mut child = session.child.lock().await;
-                    let _ = child.wait().await;
-                },
-            )
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(wait_ms), async {
+                let mut child = session.child.lock().await;
+                let _ = child.wait().await;
+            })
             .await;
         });
         tauri::async_runtime::block_on(session.refresh_status());

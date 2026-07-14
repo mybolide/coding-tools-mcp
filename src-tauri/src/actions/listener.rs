@@ -83,10 +83,13 @@ pub fn spawn_listener(
         None
     };
 
+    // 在返回 Running 之前完成 bind，避免后台任务里的端口冲突被伪装成启动成功。
+    let listener = bind_listener(actions_port)?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let profile_id = workspace_id.to_string();
     let handle = tauri::async_runtime::spawn(async move {
         let result = serve(
+            listener,
             actions_port,
             &profile_id,
             workspace_path,
@@ -119,6 +122,7 @@ pub fn spawn_listener(
 
 #[allow(clippy::too_many_arguments)]
 async fn serve(
+    listener: tokio::net::TcpListener,
     actions_port: u16,
     profile_id: &str,
     workspace_path: PathBuf,
@@ -196,8 +200,6 @@ async fn serve(
         .with_state(state)
         .layer(CorsLayer::permissive());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], actions_port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     append_profile_log(
         profile_id,
         "actions-stdout.log",
@@ -211,6 +213,17 @@ async fn serve(
         })
         .await?;
     Ok(())
+}
+
+fn bind_listener(port: u16) -> Result<tokio::net::TcpListener, String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|err| format!("Actions 本地端口 {port} 绑定失败: {err}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|err| format!("Actions 本地端口 {port} 设置非阻塞失败: {err}"))?;
+    tokio::net::TcpListener::from_std(listener)
+        .map_err(|err| format!("Actions 本地监听器初始化失败: {err}"))
 }
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
@@ -380,4 +393,17 @@ async fn execute_action(
         })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_listener;
+
+    #[test]
+    fn bind_listener_reports_port_conflict_synchronously() {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("占用测试端口");
+        let port = occupied.local_addr().expect("读取测试端口").port();
+
+        assert!(bind_listener(port).is_err());
+    }
 }

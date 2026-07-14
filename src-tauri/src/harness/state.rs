@@ -10,8 +10,9 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use super::model::{
-    BaselineEntry, FileChangeRecord, HarnessEvent, ProjectBaseline, ProjectFileState, ProjectState,
-    TaskSession, TaskStatus, WorkspaceHarnessState, SCHEMA_VERSION,
+    BaselineEntry, CapabilityStatus, FileChangeRecord, HarnessEvent, HarnessStatus, OperationRecord,
+    ProjectBaseline, ProjectFileState, ProjectState, TaskSession,
+    TaskStatus, WorkspaceHarnessState, SCHEMA_VERSION,
 };
 use super::store::{HarnessError, HarnessResult, HarnessStore};
 
@@ -46,6 +47,10 @@ impl Harness {
         &self.workspace_id
     }
 
+    pub fn store_root(&self) -> &Path {
+        self.store.root()
+    }
+
     pub fn start_task(&self, objective: &str) -> HarnessResult<TaskSession> {
         if objective.trim().is_empty() {
             return Err(HarnessError::new("INVALID_ARGUMENT", "任务目标不能为空"));
@@ -69,7 +74,6 @@ impl Harness {
             pending_steps: Vec::new(),
             latest_change_id: None,
             latest_verification_id: None,
-            checkpoint_ids: Vec::new(),
             created_at: now.clone(),
             updated_at: now,
         };
@@ -210,6 +214,47 @@ impl Harness {
             .list_events(&self.workspace_id, task_id, offset, limit)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_operation(
+        &self,
+        operation_id: Option<&str>,
+        task_id: Option<&str>,
+        tool: &str,
+        kind: &str,
+        input_summary: serde_json::Value,
+        result_summary: serde_json::Value,
+    ) -> HarnessResult<OperationRecord> {
+        let reason = input_summary
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let operation = OperationRecord {
+            id: operation_id
+                .map(str::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().simple().to_string()),
+            workspace_id: self.workspace_id.clone(),
+            task_id: task_id.map(str::to_string),
+            tool: tool.to_string(),
+            kind: kind.to_string(),
+            input_summary,
+            result_summary,
+            reason,
+            affected_files: Vec::new(),
+            created_at: timestamp(),
+        };
+        self.store.append_operation(&self.workspace_id, &operation)?;
+        Ok(operation)
+    }
+
+    pub fn list_operations(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> HarnessResult<Vec<OperationRecord>> {
+        self.store
+            .list_operations(&self.workspace_id, offset, limit)
+    }
+
     pub fn project_state(&self, max_files: usize) -> HarnessResult<ProjectState> {
         let current = capture_baseline(&self.workspace_root);
         let task = self.current_task()?;
@@ -276,6 +321,139 @@ impl Harness {
             active_task_id,
             task,
             recent_events,
+        })
+    }
+
+    pub fn status(&self) -> HarnessResult<HarnessStatus> {
+        let current = capture_baseline(&self.workspace_root);
+        let task = self.current_task()?;
+        let (task_id, task_state, task_updated_at, writable, baseline_matches, reason) =
+            match task.as_ref() {
+                Some(task) => {
+                    let matches = task.baseline.branch == current.branch
+                        && task.baseline.head == current.head
+                        && task.expected_fingerprint == current.worktree_fingerprint;
+                    let reason = if matches {
+                        "任务可继续执行"
+                    } else {
+                        "工作区基线已变化，写入和执行已暂停"
+                    };
+                    (
+                        Some(task.id.clone()),
+                        Some(task.status),
+                        Some(task.updated_at.clone()),
+                        matches && task.status.is_writable(),
+                        Some(matches),
+                        reason.to_string(),
+                    )
+                }
+                None => (
+                    None,
+                    None,
+                    None,
+                    true,
+                    None,
+                    "当前没有活动任务，工作区采用无任务模式；修改不会进入任务事件流".to_string(),
+                ),
+            };
+
+        let mut capabilities = HashMap::new();
+        capabilities.insert(
+            "read".into(),
+            CapabilityStatus {
+                status: "available".into(),
+                reason: "工作区读取不依赖活动任务".into(),
+                recoverable: true,
+            },
+        );
+        capabilities.insert(
+            "write".into(),
+            CapabilityStatus {
+                status: if writable { "available" } else { "denied" }.into(),
+                reason: if writable {
+                    if task_id.is_some() {
+                        "活动任务和工作区基线有效"
+                    } else {
+                        "无任务模式允许直接修改，建议需要长期追踪时调用 start_task"
+                    }
+                } else {
+                    "需要活动任务且工作区基线必须匹配"
+                }
+                .into(),
+                recoverable: true,
+            },
+        );
+        capabilities.insert(
+            "exec".into(),
+            CapabilityStatus {
+                status: if writable { "available" } else { "denied" }.into(),
+                reason: if writable {
+                    if task_id.is_some() {
+                        "活动任务和工作区基线有效"
+                    } else {
+                        "无任务模式允许直接执行，建议需要长期追踪时调用 start_task"
+                    }
+                } else {
+                    "需要活动任务且工作区基线必须匹配"
+                }
+                .into(),
+                recoverable: true,
+            },
+        );
+        capabilities.insert(
+            "git".into(),
+            CapabilityStatus {
+                status: if current.branch.is_some() && current.head.is_some() {
+                    "available"
+                } else {
+                    "degraded"
+                }
+                .into(),
+                reason: if current.branch.is_some() && current.head.is_some() {
+                    "已读取当前分支和 HEAD"
+                } else {
+                    "当前工作区不是可读取 Git 状态的仓库"
+                }
+                .into(),
+                recoverable: true,
+            },
+        );
+        capabilities.insert(
+            "network".into(),
+            CapabilityStatus {
+                status: "managed_by_policy".into(),
+                reason: "网络权限由工具策略控制，不由 Harness 任务状态决定".into(),
+                recoverable: true,
+            },
+        );
+
+        let mut next_actions = Vec::new();
+        if task_id.is_none() {
+            next_actions.push("start_task".into());
+        } else if baseline_matches == Some(false) {
+            next_actions.push("project_state".into());
+            next_actions.push("git_diff".into());
+            next_actions.push("refresh_baseline".into());
+        } else if !writable {
+            next_actions.push("resume_task".into());
+        }
+        next_actions.push("read_file".into());
+        next_actions.push("git_status".into());
+
+        Ok(HarnessStatus {
+            schema_version: SCHEMA_VERSION,
+            workspace_id: self.workspace_id.clone(),
+            task_id,
+            task_state,
+            task_updated_at,
+            writable,
+            reason,
+            recoverable: true,
+            branch: current.branch,
+            head: current.head,
+            baseline_matches,
+            capabilities,
+            next_actions,
         })
     }
 
@@ -390,4 +568,48 @@ fn timestamp() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().to_string())
         .unwrap_or_else(|_| "0".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn status_keeps_read_available_without_task() {
+        let workspace = tempdir().expect("workspace");
+        let harness_root = tempdir().expect("harness");
+        fs::write(workspace.path().join("main.rs"), "fn main() {}\n").expect("file");
+        let harness = Harness::new(
+            workspace.path().to_path_buf(),
+            harness_root.path().to_path_buf(),
+        )
+        .expect("harness");
+
+        let status = harness.status().expect("status");
+        assert!(status.writable);
+        assert_eq!(status.capabilities["read"].status, "available");
+        assert_eq!(status.capabilities["write"].status, "available");
+        assert!(status.next_actions.contains(&"start_task".to_string()));
+    }
+
+    #[test]
+    fn starting_task_does_not_create_workspace_copies() {
+        let workspace = tempdir().expect("workspace");
+        let harness_root = tempdir().expect("harness");
+        fs::write(workspace.path().join("main.rs"), "fn main() {}\n").expect("file");
+        let harness = Harness::new(
+            workspace.path().to_path_buf(),
+            harness_root.path().to_path_buf(),
+        )
+        .expect("harness");
+
+        harness.start_task("测试任务").expect("start task");
+        assert!(!harness
+            .store_root()
+            .join("workspaces")
+            .join(harness.workspace_id())
+            .join("snapshots")
+            .exists());
+    }
 }

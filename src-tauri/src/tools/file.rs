@@ -13,7 +13,7 @@ pub fn read_file(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> 
         .get("path")
         .and_then(Value::as_str)
         .ok_or_else(|| WorkspaceError::invalid_argument("path is required"))?;
-    let resolved = ws.resolve_existing(path)?;
+    let resolved = ws.resolve_read_path(path)?;
     if resolved.path.is_dir() {
         return Err(WorkspaceError::Tool {
             code: "IS_DIRECTORY",
@@ -83,7 +83,7 @@ pub fn read_file(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> 
 
 pub fn list_dir(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let resolved = ws.resolve_existing(path)?;
+    let resolved = ws.resolve_read_path(path)?;
     if !resolved.path.is_dir() {
         return Err(WorkspaceError::not_a_directory("Path is not a directory"));
     }
@@ -132,7 +132,7 @@ pub fn list_dir(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
 
 pub fn list_files(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let resolved = ws.resolve_existing(path)?;
+    let resolved = ws.resolve_read_path(path)?;
     if !resolved.path.is_dir() {
         return Err(WorkspaceError::not_a_directory("Path is not a directory"));
     }
@@ -162,7 +162,7 @@ pub fn list_files(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError>
         if p == resolved.path {
             continue;
         }
-        if !ws.is_safe_existing_path(p) {
+        if !ws.is_safe_read_path(p) {
             continue;
         }
         if ws.is_ignored_path(p, include_hidden, include_ignored) {
@@ -208,7 +208,7 @@ pub fn search_text(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError
         .and_then(Value::as_str)
         .ok_or_else(|| WorkspaceError::invalid_argument("query is required"))?;
     let path = args.get("path").and_then(Value::as_str).unwrap_or(".");
-    let resolved = ws.resolve_existing(path)?;
+    let resolved = ws.resolve_read_path(path)?;
     let use_regex = args.get("regex").and_then(Value::as_bool).unwrap_or(false);
     let case_sensitive = args
         .get("case_sensitive")
@@ -245,7 +245,7 @@ pub fn search_text(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError
     let mut matches = Vec::new();
     let mut total = 0usize;
     for p in file_paths {
-        if !ws.is_safe_existing_path(&p) {
+        if !ws.is_safe_read_path(&p) {
             continue;
         }
         if ws.is_ignored_path(&p, false, false) {

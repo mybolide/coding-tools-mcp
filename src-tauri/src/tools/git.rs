@@ -185,7 +185,11 @@ pub fn git_log(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
     let max_count_arg = format!("--max-count={}", max_count + 1);
     let skip_arg = format!("--skip={skip}");
     let pretty = "--pretty=format:%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%s%x1e";
-    let path_filter = resolved.display.clone();
+    let path_filter = if resolved.display.is_empty() {
+        ".".to_string()
+    } else {
+        resolved.display.clone()
+    };
     let mut cmd_args = vec![
         "log",
         max_count_arg.as_str(),
@@ -206,7 +210,12 @@ pub fn git_log(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
 
     let mut commits = Vec::new();
     for record in completed.stdout.split('\u{1e}') {
-        let fields: Vec<&str> = record.trim_end_matches('\n').split('\u{1f}').collect();
+        let fields: Vec<String> = record
+            .trim()
+            .split('\u{1f}')
+            .map(str::trim)
+            .map(str::to_string)
+            .collect();
         if fields.len() < 6 || fields[0].is_empty() {
             continue;
         }

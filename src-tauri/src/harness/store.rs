@@ -2,7 +2,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use super::model::{HarnessEvent, TaskSession, WorkspaceHarnessState};
+use super::model::{HarnessEvent, OperationRecord, TaskSession, WorkspaceHarnessState};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
@@ -52,6 +52,10 @@ impl HarnessStore {
 
     fn events_dir(&self, workspace_id: &str) -> PathBuf {
         self.workspace_dir(workspace_id).join("events")
+    }
+
+    fn operations_path(&self, workspace_id: &str) -> PathBuf {
+        self.workspace_dir(workspace_id).join("operations.jsonl")
     }
 
     pub fn save_task(&self, task: &TaskSession) -> HarnessResult<()> {
@@ -109,6 +113,45 @@ impl HarnessStore {
         let line = serde_json::to_string(event)
             .map_err(|e| HarnessError::new("STORE_SERIALIZE_FAILED", e.to_string()))?;
         writeln!(file, "{line}").map_err(io_error)
+    }
+
+    pub fn append_operation(
+        &self,
+        workspace_id: &str,
+        operation: &OperationRecord,
+    ) -> HarnessResult<()> {
+        let dir = self.workspace_dir(workspace_id);
+        fs::create_dir_all(&dir).map_err(io_error)?;
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.operations_path(workspace_id))
+            .map_err(io_error)?;
+        let line = serde_json::to_string(operation)
+            .map_err(|e| HarnessError::new("STORE_SERIALIZE_FAILED", e.to_string()))?;
+        writeln!(file, "{line}").map_err(io_error)
+    }
+
+    pub fn list_operations(
+        &self,
+        workspace_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> HarnessResult<Vec<OperationRecord>> {
+        let path = self.operations_path(workspace_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = File::open(path).map_err(io_error)?;
+        let mut operations = Vec::new();
+        for line in BufReader::new(file).lines().skip(offset).take(limit.max(1)) {
+            let line = line.map_err(io_error)?;
+            match serde_json::from_str(&line) {
+                Ok(operation) => operations.push(operation),
+                Err(_) => break,
+            }
+        }
+        Ok(operations)
     }
 
     pub fn list_events(

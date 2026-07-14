@@ -2,6 +2,22 @@ use serde_json::{json, Value};
 
 pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
     (
+        "harness_status",
+        "Harness status",
+        "Return durable task, workspace, capability, and recovery status.",
+        true,
+        false,
+        false,
+    ),
+    (
+        "operation_log",
+        "Operation log",
+        "Return Workspace-level operation history independent of Task state.",
+        true,
+        false,
+        false,
+    ),
+    (
         "server_info",
         "Server info",
         "Return server, workspace, auth, profile, and exposed-tool metadata.",
@@ -90,6 +106,14 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
         false,
     ),
     (
+        "exec_health_check",
+        "Exec health check",
+        "Verify the exec worker, session creation, command execution, and stdout/stderr capture.",
+        true,
+        false,
+        false,
+    ),
+    (
         "get_default_cwd",
         "Get default cwd",
         "Return the current default cwd inside the workspace.",
@@ -143,6 +167,14 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
         "Apply a patch envelope transactionally inside the workspace.",
         false,
         true,
+        false,
+    ),
+    (
+        "patch_check",
+        "Check patch",
+        "Validate a patch without changing the workspace.",
+        true,
+        false,
         false,
     ),
     (
@@ -235,43 +267,31 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
     ),
 ];
 
-pub const ALLOWED_TOOLS: &[&str] = &[
+/// old Python 版本默认提供的核心工具集。默认 MCP 只暴露这一组，保持 Agent 的工具面稳定。
+pub const CORE_TOOLS: &[&str] = &[
     "server_info",
     "check_exec_environment",
+    "get_default_cwd",
+    "set_default_cwd",
     "read_file",
     "list_dir",
     "list_files",
     "search_text",
     "apply_patch",
     "exec_command",
+    "write_stdin",
+    "kill_session",
     "read_output",
     "git_status",
     "git_diff",
     "git_log",
     "git_show",
     "git_blame",
-    "project_state",
-    "start_task",
-    "update_task",
-    "pause_task",
-    "resume_task",
-    "finish_task",
-    "task_context",
-    "list_task_events",
-    "change_summary",
+    "request_permissions",
+    "view_image",
 ];
 
-pub const MUTATING_TOOLS: &[&str] = &[
-    "apply_patch",
-    "exec_command",
-    "start_task",
-    "update_task",
-    "pause_task",
-    "resume_task",
-    "finish_task",
-];
-
-pub const READ_ONLY_TOOLS: &[&str] = &[
+pub const CORE_READ_ONLY_TOOLS: &[&str] = &[
     "server_info",
     "check_exec_environment",
     "get_default_cwd",
@@ -288,6 +308,77 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "git_blame",
     "request_permissions",
     "view_image",
+];
+
+pub const ALLOWED_TOOLS: &[&str] = &[
+    "harness_status",
+    "operation_log",
+    "server_info",
+    "check_exec_environment",
+    "exec_health_check",
+    "get_default_cwd",
+    "set_default_cwd",
+    "read_file",
+    "list_dir",
+    "list_files",
+    "search_text",
+    "apply_patch",
+    "patch_check",
+    "exec_command",
+    "write_stdin",
+    "kill_session",
+    "read_output",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "git_blame",
+    "project_state",
+    "start_task",
+    "update_task",
+    "pause_task",
+    "resume_task",
+    "finish_task",
+    "task_context",
+    "list_task_events",
+    "change_summary",
+    "request_permissions",
+    "view_image",
+];
+
+pub const MUTATING_TOOLS: &[&str] = &[
+    "apply_patch",
+    "exec_command",
+    "write_stdin",
+    "kill_session",
+    "set_default_cwd",
+    "start_task",
+    "update_task",
+    "pause_task",
+    "resume_task",
+    "finish_task",
+];
+
+pub const READ_ONLY_TOOLS: &[&str] = &[
+    "harness_status",
+    "operation_log",
+    "server_info",
+    "check_exec_environment",
+    "exec_health_check",
+    "get_default_cwd",
+    "read_file",
+    "list_dir",
+    "list_files",
+    "search_text",
+    "read_output",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "git_show",
+    "git_blame",
+    "request_permissions",
+    "view_image",
+    "patch_check",
     "project_state",
     "task_context",
     "list_task_events",
@@ -298,11 +389,20 @@ pub fn is_allowed_tool(name: &str) -> bool {
     ALLOWED_TOOLS.contains(&name)
 }
 
+pub fn normalize_tool_profile(profile: &str) -> &'static str {
+    match profile {
+        "advanced" => "advanced",
+        "read-only" => "read-only",
+        "compat-readonly-all" => "compat-readonly-all",
+        _ => "core",
+    }
+}
+
 pub fn exposed_tool_names(tool_profile: &str) -> Vec<&'static str> {
-    if tool_profile == "read-only" {
-        READ_ONLY_TOOLS.to_vec()
-    } else {
-        P0_TOOLS.iter().map(|(name, ..)| *name).collect()
+    match normalize_tool_profile(tool_profile) {
+        "read-only" => CORE_READ_ONLY_TOOLS.to_vec(),
+        "advanced" | "compat-readonly-all" => P0_TOOLS.iter().map(|(name, ..)| *name).collect(),
+        _ => CORE_TOOLS.to_vec(),
     }
 }
 
@@ -342,6 +442,24 @@ pub fn list_tools_for_profile(tool_profile: &str) -> Vec<Value> {
 
 pub fn input_schema(name: &str) -> Value {
     match name {
+        "harness_status" => json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
+        "exec_health_check" => json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
+        "operation_log" => json!({
+            "type": "object",
+            "properties": {
+                "cursor": { "type": "integer", "minimum": 0, "default": 0 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 }
+            },
+            "additionalProperties": false
+        }),
         "project_state" => json!({
             "type": "object",
             "properties": {
@@ -463,7 +581,17 @@ pub fn input_schema(name: &str) -> Value {
             "type": "object",
             "properties": {
                 "patch": { "type": "string", "minLength": 1 },
-                "dry_run": { "type": "boolean", "default": false }
+                "dry_run": { "type": "boolean", "default": false },
+                "confirm": { "type": "boolean", "default": false },
+                "reason": { "type": "string", "default": "" }
+            },
+            "required": ["patch"],
+            "additionalProperties": false
+        }),
+        "patch_check" => json!({
+            "type": "object",
+            "properties": {
+                "patch": { "type": "string", "minLength": 1 }
             },
             "required": ["patch"],
             "additionalProperties": false
@@ -477,7 +605,10 @@ pub fn input_schema(name: &str) -> Value {
                 "max_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536 },
                 "yield_time_ms": { "type": "integer", "minimum": 0, "maximum": 30000, "default": 1000 },
                 "tty": { "type": "boolean", "default": false },
-                "stdin": { "type": "string", "default": "" }
+                "stdin": { "type": "string", "default": "" },
+                "confirm": { "type": "boolean", "default": false },
+                "filesystem_scope": { "type": "string", "enum": ["workspace"], "default": "workspace" },
+                "reason": { "type": "string", "default": "" }
             },
             "required": ["cmd"],
             "additionalProperties": false

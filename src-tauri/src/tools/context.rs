@@ -48,7 +48,7 @@ impl ToolContext {
             workspace,
             auth,
             policy,
-            tool_profile,
+            crate::tools::registry::normalize_tool_profile(&tool_profile).into(),
             permission_mode,
             harness_root,
         )
@@ -67,7 +67,7 @@ impl ToolContext {
             workspace,
             auth,
             policy,
-            tool_profile,
+            tool_profile: crate::tools::registry::normalize_tool_profile(&tool_profile).into(),
             permission_mode,
             harness: Harness::new(root.clone(), harness_root).expect("无法初始化 Harness"),
             default_cwd: Mutex::new(root),

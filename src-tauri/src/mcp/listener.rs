@@ -99,10 +99,12 @@ pub fn spawn_listener(
         oauth,
         oauth_client_secret,
     };
+    // 在返回 Running 之前完成 bind，避免后台任务里的端口冲突被伪装成启动成功。
+    let listener = bind_listener(port)?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let profile_id = state.workspace_id.clone();
     let handle = tauri::async_runtime::spawn(async move {
-        let result = serve(port, state, shutdown_rx).await;
+        let result = serve(listener, port, state, shutdown_rx).await;
         if let Err(err) = &result {
             append_profile_log(
                 &profile_id,
@@ -118,6 +120,7 @@ pub fn spawn_listener(
 }
 
 async fn serve(
+    listener: tokio::net::TcpListener,
     port: u16,
     state: ListenerState,
     shutdown: oneshot::Receiver<()>,
@@ -138,8 +141,6 @@ async fn serve(
         .with_state(state)
         .layer(CorsLayer::permissive());
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     append_profile_log(
         &profile_id,
         "stdout.log",
@@ -151,6 +152,17 @@ async fn serve(
         })
         .await?;
     Ok(())
+}
+
+fn bind_listener(port: u16) -> Result<tokio::net::TcpListener, String> {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = std::net::TcpListener::bind(addr)
+        .map_err(|err| format!("MCP 本地端口 {port} 绑定失败: {err}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|err| format!("MCP 本地端口 {port} 设置非阻塞失败: {err}"))?;
+    tokio::net::TcpListener::from_std(listener)
+        .map_err(|err| format!("MCP 本地监听器初始化失败: {err}"))
 }
 
 async fn mcp_discovery() -> Json<Value> {
@@ -173,7 +185,95 @@ async fn mcp_post(
     if let Some(response) = require_mcp_auth(&state, &headers) {
         return response;
     }
-    Json(handle_request(&state.mcp, &body)).into_response()
+    let method = body
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let request_id = body.get("id").cloned().unwrap_or(Value::Null);
+    let tool_name = body
+        .get("params")
+        .and_then(|params| params.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    append_profile_log(
+        &state.workspace_id,
+        "mcp-requests.log",
+        &format!(
+            "[rpc] request id={} method={} tool={}",
+            request_id, method, tool_name
+        ),
+    );
+
+    let mcp = state.mcp.clone();
+    let profile_id = state.workspace_id.clone();
+    let result = tokio::task::spawn_blocking(move || handle_request(&mcp, &body)).await;
+    match result {
+        Ok(response) => {
+            append_profile_log(
+                &profile_id,
+                "mcp-requests.log",
+                &format!("[rpc] completed id={} method={} tool={}", request_id, method, tool_name),
+            );
+            if tool_name == "exec_command" || tool_name == "exec_health_check" {
+                let structured = response
+                    .get("result")
+                    .and_then(|result| result.get("structuredContent"));
+                let status = structured
+                    .and_then(|value| value.get("status"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let termination_reason = structured
+                    .and_then(|value| value.get("termination_reason"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let exit_code = structured
+                    .and_then(|value| value.get("exit_code"))
+                    .map(Value::to_string)
+                    .unwrap_or_default();
+                let is_error = response
+                    .get("result")
+                    .and_then(|result| result.get("isError"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                append_profile_log(
+                    &profile_id,
+                    "mcp-requests.log",
+                    &format!(
+                        "[exec] id={} tool={} is_error={} status={} termination_reason={} exit_code={}",
+                        request_id, tool_name, is_error, status, termination_reason, exit_code
+                    ),
+                );
+            }
+            Json(response).into_response()
+        }
+        Err(error) => {
+            append_profile_log(
+                &profile_id,
+                "mcp-requests.log",
+                &format!(
+                    "[rpc] worker_failed id={} method={} tool={} error={error}",
+                    request_id, method, tool_name
+                ),
+            );
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32603,
+                    "message": "Exec RPC worker failed",
+                    "data": {
+                        "stage": "rpc_worker",
+                        "reason": "worker_failed",
+                        "retryable": true,
+                        "suggestion": "重试请求或重启 MCP 运行时"
+                    }
+                }
+            }))
+            .into_response()
+        }
+    }
 }
 
 fn require_mcp_auth(state: &ListenerState, headers: &HeaderMap) -> Option<Response> {
@@ -266,4 +366,17 @@ fn oauth_not_configured() -> Response {
         Json(json!({ "error": "OAuth not configured" })),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_listener;
+
+    #[test]
+    fn bind_listener_reports_port_conflict_synchronously() {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("占用测试端口");
+        let port = occupied.local_addr().expect("读取测试端口").port();
+
+        assert!(bind_listener(port).is_err());
+    }
 }

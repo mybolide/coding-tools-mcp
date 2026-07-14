@@ -29,7 +29,7 @@ pub fn view_image(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError>
         .unwrap_or(DEFAULT_MAX_DIMENSION as u64) as u32;
     let auto_resize = args.get("auto_resize").and_then(Value::as_bool).unwrap_or(true);
 
-    let resolved = ws.resolve_existing(path)?;
+    let resolved = ws.resolve_read_path(path)?;
     let mut data = std::fs::read(&resolved.path).map_err(|e| WorkspaceError::Tool {
         code: "IO_ERROR",
         message: format!("Failed to read image: {e}"),
