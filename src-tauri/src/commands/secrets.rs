@@ -67,7 +67,16 @@ pub fn regenerate_workspace_secret(
 ) -> AppResult<String> {
     validate_key(&key)?;
     ensure_workspace_exists(&state, &id)?;
-    state.with_data(|store| store.regenerate_workspace_secret(&id, &key))
+    let value = state.with_data(|store| store.regenerate_workspace_secret(&id, &key))?;
+    let profile = state.with_workspaces(|store| {
+        store
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| AppError::Message(format!("workspace not found: {id}")))
+    })?;
+
+    restart_running_services(&state, &profile, &key, false);
+    Ok(value)
 }
 
 const SHARED_KEYS: &[&str] = &[
@@ -123,23 +132,54 @@ pub fn regenerate_shared_secret(state: State<'_, AppState>, key: String) -> AppR
 
     let workspaces = state.with_workspaces(|store| Ok(store.list().to_vec()))?;
     for ws in &workspaces {
-        if MCP_SHARED_KEYS.contains(&key.as_str()) && ws.auth.use_shared_secrets {
-            state.with_runtime(|rt| {
-                if rt.is_running(&ws.id, crate::runtime::ServiceKind::Mcp) {
-                    let _ = rt.restart_mcp(ws);
-                }
-                AppResult::Ok(())
-            })?;
-        }
-        if ACTIONS_SHARED_KEYS.contains(&key.as_str()) && ws.actions.use_shared_secrets {
-            state.with_runtime(|rt| {
-                if rt.is_running(&ws.id, crate::runtime::ServiceKind::Actions) {
-                    let _ = rt.restart_actions(ws);
-                }
-                AppResult::Ok(())
-            })?;
-        }
+        restart_running_services(&state, ws, &key, true);
     }
 
     Ok(value)
+}
+
+/// 仅重启当前确实在运行、且使用了这组密钥的服务。
+///
+/// 密钥命令是桌面端和设置页共用的入口，因此重启必须放在后端统一处理。
+/// 前端不再额外调用 restart_*，避免同一次密钥变更触发两次停止/启动竞态。
+fn restart_running_services(
+    state: &AppState,
+    profile: &crate::workspace::WorkspaceProfile,
+    key: &str,
+    shared: bool,
+) {
+    let result = state.with_runtime(|runtime| {
+        if MCP_SHARED_KEYS.contains(&key)
+            && profile.auth.use_shared_secrets == shared
+            && runtime.is_running(&profile.id, crate::runtime::ServiceKind::Mcp)
+        {
+            if let Err(error) = runtime.restart_mcp(profile) {
+                eprintln!(
+                    "MCP restart after secret regeneration failed for {}: {error}",
+                    profile.id
+                );
+            }
+        }
+
+        if ACTIONS_SHARED_KEYS.contains(&key)
+            && profile.actions.use_shared_secrets == shared
+            && runtime.is_running(&profile.id, crate::runtime::ServiceKind::Actions)
+        {
+            if let Err(error) = runtime.restart_actions(profile) {
+                eprintln!(
+                    "Actions restart after secret regeneration failed for {}: {error}",
+                    profile.id
+                );
+            }
+        }
+
+        AppResult::Ok(())
+    });
+
+    if let Err(error) = result {
+        eprintln!(
+            "runtime state unavailable after secret regeneration for {}: {error}",
+            profile.id
+        );
+    }
 }

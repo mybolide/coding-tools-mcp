@@ -1,8 +1,8 @@
 <script lang="ts">
+  import { message } from "@tauri-apps/plugin-dialog";
   import CopyButton from "$lib/components/CopyButton.svelte";
   import SecretInput from "$lib/components/SecretInput.svelte";
   import { getSecret, regenerateSecret, getSharedSecret, regenerateSharedSecret } from "$lib/api/secrets";
-  import { restartActionsRuntime } from "$lib/api/workspaces";
   import type { ActionsAuthDraft } from "$lib/types";
 
   export const ACTIONS_AUTH_OPTIONS = [
@@ -161,7 +161,8 @@
       apiKey = draftUseShared
         ? await regenerateSharedSecret("actions_api_key")
         : await regenerateSecret(workspaceId, "actions_api_key");
-      restartActionsRuntime(workspaceId).catch(() => {});
+    } catch (error) {
+      await message(String(error), { title: "重新生成失败", kind: "error" });
     } finally {
       regenerating = false;
     }
@@ -174,7 +175,8 @@
       oauthClientSecret = draftUseShared
         ? await regenerateSharedSecret("actions_oauth_client_secret")
         : await regenerateSecret(workspaceId, "actions_oauth_client_secret");
-      restartActionsRuntime(workspaceId).catch(() => {});
+    } catch (error) {
+      await message(String(error), { title: "重新生成失败", kind: "error" });
     } finally {
       regeneratingOAuthSecret = false;
     }
@@ -187,7 +189,8 @@
       oauthPassword = draftUseShared
         ? await regenerateSharedSecret("actions_oauth_password")
         : await regenerateSecret(workspaceId, "actions_oauth_password");
-      restartActionsRuntime(workspaceId).catch(() => {});
+    } catch (error) {
+      await message(String(error), { title: "重新生成失败", kind: "error" });
     } finally {
       regeneratingOAuthPassword = false;
     }
@@ -200,7 +203,8 @@
       oauthTokenSecret = draftUseShared
         ? await regenerateSharedSecret("actions_oauth_token_secret")
         : await regenerateSecret(workspaceId, "actions_oauth_token_secret");
-      restartActionsRuntime(workspaceId).catch(() => {});
+    } catch (error) {
+      await message(String(error), { title: "重新生成失败", kind: "error" });
     } finally {
       regeneratingOAuthTokenSecret = false;
     }

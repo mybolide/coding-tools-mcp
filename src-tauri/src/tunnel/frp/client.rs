@@ -70,8 +70,10 @@ pub async fn spawn_frpc(
     #[cfg(windows)]
     {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        // frpc 是控制台程序。CREATE_NO_WINDOW 在部分 Windows 启动链路中仍可能
+        // 短暂继承父控制台，使用 DETACHED_PROCESS 彻底脱离控制台窗口。
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
 
     #[cfg(unix)]

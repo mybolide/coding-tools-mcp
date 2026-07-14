@@ -1,6 +1,6 @@
 <script lang="ts">
+  import { message } from "@tauri-apps/plugin-dialog";
   import SecretInput from "$lib/components/SecretInput.svelte";
-  import { restartRuntime } from "$lib/api/workspaces";
   import {
     getWorkspaceSecret,
     regenerateWorkspaceSecret,
@@ -109,8 +109,9 @@
       const value = draft.use_shared_secrets
         ? await regenerateSharedSecret(key as SharedSecretKey)
         : await regenerateWorkspaceSecret(workspaceId, key);
-      restartRuntime(workspaceId).catch(() => {});
       secrets = { ...secrets, [key]: value };
+    } catch (error) {
+      await message(String(error), { title: "重新生成失败", kind: "error" });
     } finally {
       regenerating = null;
     }
