@@ -11,6 +11,7 @@ use super::model::AppData;
 static DATA_FILE_LOCK: Mutex<()> = Mutex::new(());
 
 const SHARED_KEYS: &[&str] = &[
+    "oauth_client_id",
     "bearer_token",
     "oauth_client_secret",
     "oauth_password",
@@ -136,7 +137,7 @@ impl DataStore {
             if !self.data.shared_secrets.contains_key(*key) {
                 self.data
                     .shared_secrets
-                    .insert(key.to_string(), random_secret());
+                    .insert(key.to_string(), shared_value_for_key(key));
                 changed = true;
             }
         }
@@ -171,7 +172,7 @@ impl DataStore {
     }
 
     pub fn regenerate_workspace_secret(&mut self, profile_id: &str, key: &str) -> AppResult<String> {
-        let value = random_secret();
+        let value = shared_value_for_key(key);
         self.set_workspace_secret(profile_id, key, &value)?;
         Ok(value)
     }
@@ -238,6 +239,14 @@ fn random_secret() -> String {
     format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4()).replace('-', "")
 }
 
+fn shared_value_for_key(key: &str) -> String {
+    if key == "oauth_client_id" {
+        format!("chatgpt-client-{}", &uuid::Uuid::new_v4().to_string()[..12])
+    } else {
+        random_secret()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +263,12 @@ mod tests {
             .expect("get");
         assert_eq!(loaded.as_deref(), Some("roundtrip-secret"));
         store.remove_workspace_secrets(&id).expect("remove");
+    }
+
+    #[test]
+    fn shared_oauth_client_id_uses_client_id_format() {
+        let value = shared_value_for_key("oauth_client_id");
+        assert!(value.starts_with("chatgpt-client-"));
+        assert_eq!(value.len(), "chatgpt-client-".len() + 12);
     }
 }

@@ -5,6 +5,7 @@
     getWorkspaceSecret,
     regenerateWorkspaceSecret,
     getSharedSecret,
+    setSharedSecret,
     regenerateSharedSecret,
     type WorkspaceSecretKey,
     type SharedSecretKey,
@@ -29,6 +30,7 @@
   let saving = $state(false);
   let secrets = $state<Partial<Record<WorkspaceSecretKey, string>>>({});
   let loadedSecrets = $state<Partial<Record<WorkspaceSecretKey, string>>>({});
+  let loadedSharedOauthClientId = $state("");
   let regenerating = $state<WorkspaceSecretKey | null>(null);
   let secretsLoadSeq = 0;
   let suppressSecretsReload = $state(false);
@@ -41,7 +43,9 @@
 
   const dirty = $derived(
     draft.type !== auth.type ||
-      draft.oauth_client_id !== auth.oauth_client_id ||
+      (draft.use_shared_secrets
+        ? draft.oauth_client_id !== loadedSharedOauthClientId
+        : draft.oauth_client_id !== auth.oauth_client_id) ||
       draft.use_shared_secrets !== !!auth.use_shared_secrets ||
       secretsDirty,
   );
@@ -63,6 +67,8 @@
 
   async function loadSecrets(id: string, authType: string, useShared: boolean) {
     const seq = ++secretsLoadSeq;
+    const sharedClientId =
+      authType === "oauth" && useShared ? await getSharedSecret("oauth_client_id") : null;
     const keys: WorkspaceSecretKey[] = [];
     if (authType === "oauth") {
       keys.push("oauth_client_secret", "oauth_password");
@@ -84,6 +90,12 @@
       }),
     );
     if (seq !== secretsLoadSeq) return;
+    if (authType === "oauth" && useShared) {
+      draft = { ...draft, oauth_client_id: sharedClientId ?? "" };
+      loadedSharedOauthClientId = sharedClientId ?? "";
+    } else {
+      loadedSharedOauthClientId = "";
+    }
     secrets = Object.fromEntries(loaded);
     loadedSecrets = Object.fromEntries(loaded);
   }
@@ -93,6 +105,12 @@
     saving = true;
     suppressSecretsReload = true;
     try {
+      if (draft.type === "oauth" && draft.use_shared_secrets) {
+        const clientId = draft.oauth_client_id.trim();
+        if (!clientId) throw new Error("OAuth Client ID 不能为空");
+        await setSharedSecret("oauth_client_id", clientId);
+        loadedSharedOauthClientId = clientId;
+      }
       await onSaveProfile({ ...draft });
       // Auth save only persists profile fields; secrets are already stored by regenerate.
       loadedSecrets = { ...secrets };
@@ -157,6 +175,7 @@
         type="text"
         class="rounded-md border border-[var(--color-border)] bg-[var(--color-bg)] px-2.5 py-1.5 font-mono text-sm"
         bind:value={draft.oauth_client_id}
+        readonly={draft.use_shared_secrets}
       />
     </label>
 

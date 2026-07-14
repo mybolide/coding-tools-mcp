@@ -1,4 +1,4 @@
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
@@ -61,6 +61,7 @@ pub fn set_workspace_secret(
 
 #[tauri::command]
 pub fn regenerate_workspace_secret(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     key: String,
@@ -75,11 +76,12 @@ pub fn regenerate_workspace_secret(
             .ok_or_else(|| AppError::Message(format!("workspace not found: {id}")))
     })?;
 
-    restart_running_services(&state, &profile, &key, false);
+    schedule_running_services_restart(app, vec![profile], key, false);
     Ok(value)
 }
 
 const SHARED_KEYS: &[&str] = &[
+    "oauth_client_id",
     "bearer_token",
     "oauth_client_secret",
     "oauth_password",
@@ -91,6 +93,7 @@ const SHARED_KEYS: &[&str] = &[
 ];
 
 const MCP_SHARED_KEYS: &[&str] = &[
+    "oauth_client_id",
     "bearer_token",
     "oauth_client_secret",
     "oauth_password",
@@ -113,29 +116,61 @@ pub fn get_shared_secret(state: State<'_, AppState>, key: String) -> AppResult<O
 }
 
 #[tauri::command]
-pub fn set_shared_secret(state: State<'_, AppState>, key: String, value: String) -> AppResult<()> {
+pub fn set_shared_secret(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> AppResult<()> {
     if !SHARED_KEYS.contains(&key.as_str()) {
         return Err(AppError::Message(format!("invalid shared key: {key}")));
     }
     if value.is_empty() {
         return Err(AppError::Message("密钥不能为空。".into()));
     }
-    state.with_data(|store| store.set_shared_secret(&key, &value))
+    let changed = state.with_data(|store| {
+        if store.get_shared_secret(&key).as_deref() == Some(value.as_str()) {
+            return Ok(false);
+        }
+        store.set_shared_secret(&key, &value)?;
+        Ok(true)
+    })?;
+    if changed {
+        let workspaces = state.with_workspaces(|store| Ok(store.list().to_vec()))?;
+        schedule_running_services_restart(app, workspaces, key, true);
+    }
+    Ok(())
 }
 
 #[tauri::command]
-pub fn regenerate_shared_secret(state: State<'_, AppState>, key: String) -> AppResult<String> {
+pub fn regenerate_shared_secret(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+) -> AppResult<String> {
     if !SHARED_KEYS.contains(&key.as_str()) {
         return Err(AppError::Message(format!("invalid shared key: {key}")));
     }
     let value = state.with_data(|store| store.regenerate_shared_secret(&key))?;
 
     let workspaces = state.with_workspaces(|store| Ok(store.list().to_vec()))?;
-    for ws in &workspaces {
-        restart_running_services(&state, ws, &key, true);
-    }
+    schedule_running_services_restart(app, workspaces, key, true);
 
     Ok(value)
+}
+
+fn schedule_running_services_restart(
+    app: tauri::AppHandle,
+    profiles: Vec<crate::workspace::WorkspaceProfile>,
+    key: String,
+    shared: bool,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        for profile in &profiles {
+            restart_running_services(state.inner(), profile, &key, shared);
+        }
+    });
 }
 
 /// 仅重启当前确实在运行、且使用了这组密钥的服务。

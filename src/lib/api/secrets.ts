@@ -51,6 +51,7 @@ export const regenerateSecret = regenerateWorkspaceSecret;
 // ── Shared secrets ───────────────────────────────────────────────────────
 
 export type SharedSecretKey =
+  | "oauth_client_id"
   | "bearer_token"
   | "oauth_client_secret"
   | "oauth_password"

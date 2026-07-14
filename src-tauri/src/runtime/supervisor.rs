@@ -215,6 +215,12 @@ impl RuntimeSupervisor {
         let spawn_result = match kind {
             ServiceKind::Mcp => {
                 let use_shared = profile.auth.use_shared_secrets;
+                let mut auth = profile.auth.clone();
+                if use_shared {
+                    if let Some(client_id) = SecretStore::get_shared("oauth_client_id")? {
+                        auth.oauth_client_id = client_id;
+                    }
+                }
                 // MCP OAuth matches legacy Python: client_secret is optional.
                 // ChatGPT connectors use PKCE only and do not send client_secret.
                 let oauth_client_secret = None;
@@ -232,7 +238,7 @@ impl RuntimeSupervisor {
                     port,
                     PathBuf::from(&profile.path),
                     profile.id.clone(),
-                    profile.auth.clone(),
+                    auth,
                     profile.effective_public_url(),
                     oauth_client_secret,
                     oauth_password,

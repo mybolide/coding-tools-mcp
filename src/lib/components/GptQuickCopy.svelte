@@ -38,7 +38,11 @@
           return value ?? "";
         };
         if (auth.type === "oauth") {
+          const clientId = useShared
+            ? ((await getSharedSecret("oauth_client_id")) ?? "")
+            : auth.oauth_client_id;
           secrets = {
+            oauth_client_id: clientId,
             oauth_client_secret: await fetchSecret("oauth_client_secret", "oauth_client_secret"),
             oauth_password: await fetchSecret("oauth_password", "oauth_password"),
           };
@@ -107,7 +111,7 @@
         hint="GPT 连接器里填这个 URL"
       />
       {#if auth.type === "oauth"}
-        <CopyFieldRow label="OAuth Client ID" value={auth.oauth_client_id} {loading} />
+        <CopyFieldRow label="OAuth Client ID" value={secrets.oauth_client_id ?? auth.oauth_client_id} {loading} />
         <CopyFieldRow
           label="OAuth Client Secret"
           value={secrets.oauth_client_secret ?? ""}

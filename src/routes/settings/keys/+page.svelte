@@ -10,6 +10,7 @@
   } from "$lib/api/secrets";
 
   const MCP_KEYS: { key: SharedSecretKey; label: string }[] = [
+    { key: "oauth_client_id", label: "MCP OAuth Client ID" },
     { key: "bearer_token", label: "MCP Bearer Token" },
     { key: "oauth_client_secret", label: "MCP OAuth 客户端密钥" },
     { key: "oauth_password", label: "MCP 授权口令" },
