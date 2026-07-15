@@ -13,6 +13,7 @@ fn server_info_returns_workspace_and_tools() {
     let out = invoke(&ctx, "server_info", json!({}));
     let payload = assert_ok(&out);
     assert_eq!(payload["server"], "coding-tools-mcp");
+    assert_eq!(payload["version"], env!("CARGO_PKG_VERSION"));
     assert!(payload["tools"].is_array());
     assert!(payload["tool_count"].as_u64().unwrap_or(0) > 0);
 }
@@ -158,7 +159,8 @@ fn core_profile_matches_the_old_default_toolset() {
         .copied()
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(names, expected);
-    assert_eq!(names.len(), 20);
+    assert_eq!(names.len(), 21);
+    assert!(names.contains("grep"));
     assert!(!names.contains("harness_status"));
     assert!(!names.contains("start_task"));
 }
@@ -354,4 +356,35 @@ fn search_text_filters_by_glob() {
     );
     let miss_payload = assert_ok(&miss);
     assert_eq!(miss_payload["total_matches"].as_u64().unwrap_or(1), 0);
+}
+
+#[test]
+fn grep_reuses_search_text_schema_and_behavior() {
+    let schema = coding_tools_mcp_desktop_lib::tools::registry::input_schema("grep");
+    assert_eq!(
+        schema,
+        coding_tools_mcp_desktop_lib::tools::registry::input_schema("search_text")
+    );
+
+    let fx = tiny_js_fixture();
+    let ctx = ctx_for(&fx.root);
+    assert_ok(&invoke(&ctx, "set_default_cwd", json!({"path": "src"})));
+    let output = invoke(
+        &ctx,
+        "grep",
+        json!({
+            "query": "function\\s+add",
+            "path": ".",
+            "glob": "**/*.js",
+            "regex": true,
+            "case_sensitive": true,
+            "max_results": 10
+        }),
+    );
+    let payload = assert_ok(&output);
+    let matches = payload["matches"].as_array().expect("matches array");
+    assert!(!matches.is_empty());
+    assert!(matches
+        .iter()
+        .all(|item| item["path"].as_str().unwrap_or("").starts_with("src/")));
 }

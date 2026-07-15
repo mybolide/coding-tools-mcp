@@ -75,7 +75,7 @@ pub fn build_openapi(tools: &[Value], public_base_url: &str, auth_type: &str) ->
         "openapi": "3.1.0",
         "info": {
             "title": "Coding Tools Actions",
-            "version": "0.1.0",
+            "version": env!("CARGO_PKG_VERSION"),
             "description": "Read, modify and test a workspace through coding-tools-mcp."
         },
         "servers": [{ "url": public_base_url.trim_end_matches('/') }],
@@ -215,6 +215,20 @@ mod tests {
         assert_eq!(
             schema["paths"]["/actions/read_file"]["post"]["security"],
             json!([{ "bearerAuth": [] }])
+        );
+    }
+
+    #[test]
+    fn core_openapi_exposes_grep_as_read_only() {
+        let tools = crate::tools::list_tools_for_profile("core");
+        let schema = build_openapi(&tools, "https://actions.example.com", "none");
+        let operation = &schema["paths"]["/actions/grep"]["post"];
+
+        assert_eq!(operation["operationId"], "coding_grep");
+        assert_eq!(operation["x-openai-isConsequential"], false);
+        assert_eq!(
+            operation["requestBody"]["content"]["application/json"]["schema"],
+            crate::tools::registry::input_schema("grep")
         );
     }
 }

@@ -29,11 +29,49 @@ use commands::{
 };
 use tauri::Manager;
 
+#[cfg(target_os = "windows")]
+fn acquire_single_instance() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    // 保持 mutex HANDLE 到进程退出，由 Windows 自动回收。第二个实例必须在
+    // cleanup_managed_frpc_instances 之前退出，否则会清理第一个实例的 frpc。
+    let Ok(handle) = (unsafe {
+        CreateMutexW(
+            None,
+            false,
+            w!("Local\\CodingToolsMcpDesktop-SingleInstance"),
+        )
+    }) else {
+        eprintln!("创建应用单实例锁失败，为避免误清理其他实例的 frpc，本次启动已取消");
+        return false;
+    };
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        let _ = unsafe { CloseHandle(handle) };
+        return false;
+    }
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn acquire_single_instance() -> bool {
+    true
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if !acquire_single_instance() {
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            if let Err(error) =
+                tauri::async_runtime::block_on(crate::tunnel::cleanup_managed_frpc_instances())
+            {
+                eprintln!("启动时清理旧 frpc 失败：{error}");
+            }
             app.manage(AppState::new().expect("failed to load app state"));
             Ok(())
         })

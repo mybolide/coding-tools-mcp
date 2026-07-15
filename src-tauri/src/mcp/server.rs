@@ -46,7 +46,7 @@ fn initialize_result() -> Value {
         "serverInfo": {
             "name": "coding-tools-mcp",
             "title": "Coding Tools MCP",
-            "version": "0.1.0"
+            "version": env!("CARGO_PKG_VERSION")
         },
         "instructions": "Use these tools only for local coding operations inside the configured workspace."
     })

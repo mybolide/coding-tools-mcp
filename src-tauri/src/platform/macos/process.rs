@@ -1,20 +1,21 @@
+use std::path::{Path, PathBuf};
+
 use crate::error::{AppError, AppResult};
 
+#[link(name = "proc")]
 extern "C" {
     fn proc_pidpath(pid: libc::c_int, buffer: *mut libc::c_void, buffer_size: u32) -> i32;
 }
 
 pub fn is_process_alive(pid: u32) -> bool {
     let mut buffer = [0u8; libc::PATH_MAX as usize];
-    let size =
-        unsafe { proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    let size = unsafe { proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
     size > 0
 }
 
 pub fn process_image_path(pid: u32) -> AppResult<Option<String>> {
     let mut buffer = [0u8; libc::PATH_MAX as usize];
-    let size =
-        unsafe { proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    let size = unsafe { proc_pidpath(pid as i32, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
     if size <= 0 {
         return Ok(None);
     }
@@ -39,6 +40,33 @@ pub fn terminate_process_tree(root_pid: u32) -> AppResult<()> {
         signal_pid(root_pid, libc::SIGKILL)?;
     }
     Ok(())
+}
+
+pub fn terminate_processes_by_image_path(image_path: &Path) -> AppResult<usize> {
+    let expected = normalized_image_path(image_path);
+    let current_pid = std::process::id();
+    let mut terminated = 0;
+
+    for pid in super::net::all_pids()? {
+        let pid = pid as u32;
+        if pid == current_pid {
+            continue;
+        }
+        let Some(actual) = process_image_path(pid)? else {
+            continue;
+        };
+        if normalized_image_path(Path::new(&actual)) != expected {
+            continue;
+        }
+        terminate_process_tree(pid)?;
+        terminated += 1;
+    }
+
+    Ok(terminated)
+}
+
+fn normalized_image_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn collect_child_pids(root_pid: u32) -> AppResult<Vec<u32>> {

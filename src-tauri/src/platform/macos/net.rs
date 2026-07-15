@@ -31,6 +31,7 @@ struct ProcBsdInfo {
 
 const PROC_PIDT_SHORTBSDINFO: i32 = 13;
 
+#[link(name = "proc")]
 extern "C" {
     fn proc_listallpids(buffer: *mut libc::c_void, buffersize: i32) -> i32;
     fn proc_pidinfo(
@@ -84,11 +85,8 @@ pub fn all_pids() -> AppResult<Vec<i32>> {
     if count <= 0 {
         return Err(AppError::Message("proc_listallpids failed".into()));
     }
-    let pids = unsafe {
-        std::slice::from_raw_parts(
-            buffer.as_ptr().cast::<i32>(),
-            count as usize / mem::size_of::<i32>(),
-        )
-    };
+    let capacity = buffer.len() / mem::size_of::<i32>();
+    let pid_count = (count as usize).min(capacity);
+    let pids = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<i32>(), pid_count) };
     Ok(pids.iter().copied().filter(|pid| *pid > 0).collect())
 }

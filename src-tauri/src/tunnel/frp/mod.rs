@@ -4,11 +4,13 @@ use crate::settings::AppSettings;
 #[allow(unused_imports)]
 use crate::settings::FrpProfile;
 use crate::workspace::WorkspaceProfile;
+use std::collections::HashSet;
 
 use super::TunnelServiceKind;
 
-pub use client::{resolve_frpc, spawn_frpc, FrpcHandle};
+pub(crate) use client::{acquire_frpc_operation_lock, stop_running_frpc_instances};
 pub(crate) use client::{cached_frpc_path, download_frpc_to_cache};
+pub use client::{resolve_frpc, spawn_frpc};
 
 const FRP_VERSION: &str = "0.61.2";
 pub(crate) const VERSION: &str = FRP_VERSION;
@@ -39,12 +41,14 @@ pub fn frp_snippet(
     build_proxy_snippet(&config.proxy)
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct FrpProxyConfig {
     pub proxy_name: String,
     pub local_port: u16,
     pub subdomain: String,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct FrpServerConfig {
     pub server_addr: String,
     pub server_port: u16,
@@ -89,11 +93,12 @@ pub fn frp_server_config(
         ),
     };
 
-    let (server_addr, server_port) = if let Some(frp_profile) = settings.find_frp_profile(profile_id) {
-        (frp_profile.server.clone(), frp_profile.server_port)
-    } else {
-        (server_addr, server_port)
-    };
+    let (server_addr, server_port) =
+        if let Some(frp_profile) = settings.find_frp_profile(profile_id) {
+            (frp_profile.server.clone(), frp_profile.server_port)
+        } else {
+            (server_addr, server_port)
+        };
 
     let token = token_override.or_else(|| resolve_frp_token(profile_id, profile, kind, settings));
 
@@ -112,7 +117,8 @@ fn resolve_frp_token(
     settings: &AppSettings,
 ) -> Option<String> {
     if !profile_id.trim().is_empty() {
-        if let Ok(Some(token)) = crate::secret::SecretStore::get_app("frp_profile_token", profile_id)
+        if let Ok(Some(token)) =
+            crate::secret::SecretStore::get_app("frp_profile_token", profile_id)
         {
             if !token.trim().is_empty() {
                 return Some(token);
@@ -153,6 +159,7 @@ fn resolve_frp_token(
     None
 }
 
+#[allow(dead_code)]
 pub fn build_frpc_toml(config: &FrpServerConfig) -> String {
     let mut lines = vec![
         format!("serverAddr = \"{}\"", config.server_addr.trim()),
@@ -165,6 +172,46 @@ pub fn build_frpc_toml(config: &FrpServerConfig) -> String {
         lines.push(String::new());
     }
     lines.push(build_proxy_snippet(&config.proxy));
+    lines.join("\n")
+}
+
+/// Build one frpc configuration containing all active proxies.
+///
+/// A single frpc process can serve multiple workspaces, but all proxies must
+/// share the same server connection. The supervisor validates that invariant
+/// before calling this function.
+pub(crate) fn build_frpc_toml_for_routes(configs: &[FrpServerConfig]) -> String {
+    let Some(first) = configs.first() else {
+        return String::new();
+    };
+
+    let mut lines = vec![
+        format!("serverAddr = \"{}\"", first.server_addr.trim()),
+        format!("serverPort = {}", first.server_port),
+        String::new(),
+    ];
+    if let Some(token) = first.token.as_ref().filter(|t| !t.trim().is_empty()) {
+        lines.push("auth.method = \"token\"".to_string());
+        lines.push(format!("auth.token = \"{}\"", token.trim()));
+        lines.push(String::new());
+    }
+
+    let mut used_names = HashSet::new();
+    for config in configs {
+        let mut proxy = config.proxy.clone();
+        let base_name = proxy.proxy_name.clone();
+        let mut name = base_name.clone();
+        let mut suffix = 2;
+        while !used_names.insert(name.clone()) {
+            name = format!("{base_name}-{suffix}");
+            suffix += 1;
+        }
+        proxy.proxy_name = name;
+        lines.push(build_proxy_snippet(&proxy));
+        lines.push(String::new());
+    }
+
+    lines.pop();
     lines.join("\n")
 }
 
@@ -260,6 +307,91 @@ mod tests {
         let toml = build_frpc_toml(&config);
         assert!(toml.contains("serverAddr = \"frp.example.com\""));
         assert!(toml.contains("auth.token = \"secret\""));
+    }
+
+    #[test]
+    fn build_frpc_toml_for_routes_contains_all_proxies() {
+        let mut first = WorkspaceProfile::new("/tmp/first".into(), Some("First".into()));
+        first.tunnel.frp_server = "frp.example.com".into();
+        first.tunnel.frp_server_port = 7000;
+        first.tunnel.frp_subdomain = "first".into();
+        first.runtime.local_port = 28766;
+
+        let mut second = WorkspaceProfile::new("/tmp/second".into(), Some("Second".into()));
+        second.tunnel.frp_server = "frp.example.com".into();
+        second.tunnel.frp_server_port = 7000;
+        second.tunnel.frp_subdomain = "second".into();
+        second.runtime.local_port = 28767;
+
+        let settings = AppSettings::default();
+        let configs = vec![
+            frp_server_config(&first, TunnelServiceKind::Mcp, &settings, None),
+            frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None),
+        ];
+        let toml = build_frpc_toml_for_routes(&configs);
+
+        assert_eq!(toml.matches("[[proxies]]").count(), 2);
+        assert!(toml.contains("serverAddr = \"frp.example.com\""));
+        assert!(toml.contains("name = \"first-mcp\""));
+        assert!(toml.contains("name = \"second-mcp\""));
+        assert!(toml.contains("localPort = 28766"));
+        assert!(toml.contains("localPort = 28767"));
+    }
+
+    #[test]
+    fn build_frpc_toml_for_routes_supports_mcp_and_actions_together() {
+        let mut mcp = WorkspaceProfile::new("/tmp/mcp".into(), Some("MCP".into()));
+        mcp.tunnel.frp_server = "frp.example.com".into();
+        mcp.tunnel.frp_server_port = 7000;
+        mcp.tunnel.frp_subdomain = "mcp".into();
+        mcp.runtime.local_port = 28766;
+
+        let mut actions = WorkspaceProfile::new("/tmp/actions".into(), Some("Actions".into()));
+        actions.actions.frp_server = "frp.example.com".into();
+        actions.actions.frp_server_port = 7000;
+        actions.actions.frp_subdomain = "actions".into();
+        actions.actions.local_port = 8787;
+
+        let settings = AppSettings::default();
+        let configs = vec![
+            frp_server_config(&mcp, TunnelServiceKind::Mcp, &settings, None),
+            frp_server_config(&actions, TunnelServiceKind::Actions, &settings, None),
+        ];
+        let toml = build_frpc_toml_for_routes(&configs);
+
+        assert_eq!(toml.matches("[[proxies]]").count(), 2);
+        assert!(toml.contains("name = \"mcp-mcp\""));
+        assert!(toml.contains("name = \"actions-actions\""));
+        assert!(toml.contains("localPort = 28766"));
+        assert!(toml.contains("localPort = 8787"));
+    }
+
+    #[test]
+    fn build_frpc_toml_for_routes_deduplicates_proxy_names() {
+        let mut first = WorkspaceProfile::new("/tmp/first".into(), Some("Same Name".into()));
+        first.tunnel.frp_server = "frp.example.com".into();
+        first.tunnel.frp_server_port = 7000;
+        first.tunnel.frp_subdomain = "first".into();
+
+        let mut second = WorkspaceProfile::new("/tmp/second".into(), Some("Same Name".into()));
+        second.tunnel.frp_server = "frp.example.com".into();
+        second.tunnel.frp_server_port = 7000;
+        second.tunnel.frp_subdomain = "second".into();
+
+        let settings = AppSettings::default();
+        let configs = vec![
+            frp_server_config(&first, TunnelServiceKind::Mcp, &settings, None),
+            frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None),
+        ];
+        let toml = build_frpc_toml_for_routes(&configs);
+
+        assert!(toml.contains("name = \"same-name-mcp\""));
+        assert!(toml.contains("name = \"same-name-mcp-2\""));
+    }
+
+    #[test]
+    fn build_frpc_toml_for_routes_returns_empty_for_no_routes() {
+        assert!(build_frpc_toml_for_routes(&[]).is_empty());
     }
 
     #[test]

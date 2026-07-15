@@ -133,7 +133,10 @@ fn default_actions_auth_type() -> String {
 }
 
 fn default_actions_oauth_client_id() -> String {
-    format!("chatgpt-actions-{}", &uuid::Uuid::new_v4().to_string()[..12])
+    format!(
+        "chatgpt-actions-{}",
+        &uuid::Uuid::new_v4().to_string()[..12]
+    )
 }
 
 fn default_oauth_client_id() -> String {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import ThemeToggle from "$lib/components/ThemeToggle.svelte";
+  import { APP_VERSION } from "$lib/app-version";
   import type { Snippet } from "svelte";
 
   interface Props {
@@ -40,6 +41,11 @@
       <div class="tx-sidebar-footer">
         <p class="tx-sidebar-section-label">设置</p>
         {@render settingsNav()}
+        <p class="tx-app-version">v{APP_VERSION}</p>
+      </div>
+    {:else}
+      <div class="tx-sidebar-footer">
+        <p class="tx-app-version">v{APP_VERSION}</p>
       </div>
     {/if}
   </aside>

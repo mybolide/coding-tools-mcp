@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
   import ActionsAuthForm from "$lib/components/ActionsAuthForm.svelte";
@@ -36,7 +35,7 @@
   } from "$lib/api/workspaces";
   import { listFrpProfiles, setLastWorkspace, type FrpProfileDto } from "$lib/api/settings";
   import { confirm } from "@tauri-apps/plugin-dialog";
-  import { restartTunnel } from "$lib/api/tunnel";
+  import { restartTunnel, stopTunnel } from "$lib/api/tunnel";
   import { runServiceToggle, notifyStartFailure } from "$lib/runtime/service";
   import { showToast } from "$lib/stores/toast";
   import { promptServiceRestart } from "$lib/runtime/restart-hint";
@@ -75,6 +74,7 @@
   let activeService = $state<ServiceTab>("mcp");
   let mcpSubTab = $state<SubTab>("config");
   let actionsSubTab = $state<SubTab>("config");
+  let loadGeneration = 0;
 
   const subTabs = [
     { value: "config", label: "配置" },
@@ -122,14 +122,16 @@
     }
   }
 
-  function applyMcpRuntime(runtime: { state: RuntimeState; localEndpoint: string; publicEndpoint: string; localMessage?: string }) {
+  function applyMcpRuntime(
+    runtime: { state: RuntimeState; localEndpoint: string; publicEndpoint: string; localMessage?: string },
+    id = workspaceId,
+  ) {
+    if (!id || id !== workspaceId) return;
     mcpStatus = runtime.state;
     mcpStatusMessage = runtime.localMessage ?? "";
     mcpLocal = runtime.localEndpoint;
     mcpPublic = runtime.publicEndpoint;
-    if (workspaceId) {
-      mcpRuntimeStates.update((current) => ({ ...current, [workspaceId]: runtime.state }));
-    }
+    mcpRuntimeStates.update((current) => ({ ...current, [id]: runtime.state }));
   }
 
   function applyActionsRuntime(runtime: {
@@ -137,43 +139,54 @@
     localEndpoint: string;
     publicEndpoint: string;
     localMessage?: string;
-  }) {
+  },
+    id = workspaceId,
+  ) {
+    if (!id || id !== workspaceId) return;
     actionsStatus = runtime.state;
     actionsStatusMessage = runtime.localMessage ?? "";
     actionsLocal = runtime.localEndpoint;
     actionsPublic = runtime.publicEndpoint;
-    if (workspaceId) {
-      actionsRuntimeStates.update((current) => ({ ...current, [workspaceId]: runtime.state }));
-    }
+    actionsRuntimeStates.update((current) => ({ ...current, [id]: runtime.state }));
   }
 
-  async function load() {
-    if (!workspaceId) return;
+  async function load(id = workspaceId) {
+    if (!id) return;
+    const generation = ++loadGeneration;
     const items = await listWorkspaces();
+    if (generation !== loadGeneration || id !== workspaceId) return;
     workspaces.set(items);
     frpProfiles = await listFrpProfiles();
-    profile = items.find((item) => item.id === workspaceId) ?? null;
-    if (profile) {
-      await setLastWorkspace(profile.id);
+    if (generation !== loadGeneration || id !== workspaceId) return;
+    const nextProfile = items.find((item) => item.id === id) ?? null;
+    if (generation !== loadGeneration || id !== workspaceId) return;
+    profile = nextProfile;
+    if (nextProfile) {
+      await setLastWorkspace(nextProfile.id);
     }
-    if (!profile) {
-      goto("/");
+    if (generation !== loadGeneration || id !== workspaceId) return;
+    if (!nextProfile) {
+      await goto("/");
       return;
     }
 
     const [mcpRuntime, actionsRuntime] = await Promise.all([
-      getRuntimeStatus(workspaceId),
-      getActionsRuntimeStatus(workspaceId),
+      getRuntimeStatus(id),
+      getActionsRuntimeStatus(id),
     ]);
-    applyMcpRuntime(mcpRuntime);
-    applyActionsRuntime(actionsRuntime);
+    if (generation !== loadGeneration || id !== workspaceId) return;
+    applyMcpRuntime(mcpRuntime, id);
+    applyActionsRuntime(actionsRuntime, id);
   }
 
-  async function refreshProfile() {
-    if (!workspaceId) return;
+  async function refreshProfile(id = workspaceId): Promise<WorkspaceProfile | null> {
+    if (!id) return null;
     const items = await listWorkspaces();
+    if (id !== workspaceId) return null;
     workspaces.set(items);
-    profile = items.find((item) => item.id === workspaceId) ?? profile;
+    const nextProfile = items.find((item) => item.id === id) ?? null;
+    profile = nextProfile;
+    return nextProfile;
   }
 
   function tunnelConfigured(type: string | undefined): boolean {
@@ -183,13 +196,15 @@
   async function afterServiceStart(
     service: "mcp" | "actions",
     runtime: { state: RuntimeState; publicEndpoint: string },
+    id: string,
   ) {
-    await refreshProfile();
+    const nextProfile = await refreshProfile(id);
+    if (id !== workspaceId) return;
     const tunnelType =
       service === "mcp"
-        ? profile?.tunnel.type
-        : profile
-          ? actionsConfig(profile).tunnel_type
+        ? nextProfile?.tunnel.type
+        : nextProfile
+          ? actionsConfig(nextProfile).tunnel_type
           : undefined;
     if (runtime.state === "running" && tunnelConfigured(tunnelType) && !runtime.publicEndpoint) {
       showToast(
@@ -200,21 +215,22 @@
   }
 
   async function toggleMcp() {
-    if (!workspaceId || mcpBusy) return;
+    const id = workspaceId;
+    if (!id || mcpBusy) return;
     const wasRunning = mcpStatus === "running";
     mcpBusy = true;
     try {
       const runtime = await runServiceToggle(
         wasRunning,
-        () => startRuntime(workspaceId),
-        () => stopRuntime(workspaceId),
+        () => startRuntime(id),
+        () => stopRuntime(id),
         "MCP",
       );
-      if (runtime) {
-        applyMcpRuntime(runtime);
+      if (runtime && id === workspaceId) {
+        applyMcpRuntime(runtime, id);
         if (!wasRunning) {
           if (runtime.state === "running") {
-            await afterServiceStart("mcp", runtime);
+            await afterServiceStart("mcp", runtime, id);
           } else {
             notifyStartFailure("MCP", runtime);
           }
@@ -226,21 +242,22 @@
   }
 
   async function toggleActions() {
-    if (!workspaceId || actionsBusy) return;
+    const id = workspaceId;
+    if (!id || actionsBusy) return;
     const wasRunning = actionsStatus === "running";
     actionsBusy = true;
     try {
       const runtime = await runServiceToggle(
         wasRunning,
-        () => startActionsRuntime(workspaceId),
-        () => stopActionsRuntime(workspaceId),
+        () => startActionsRuntime(id),
+        () => stopActionsRuntime(id),
         "Actions",
       );
-      if (runtime) {
-        applyActionsRuntime(runtime);
+      if (runtime && id === workspaceId) {
+        applyActionsRuntime(runtime, id);
         if (!wasRunning) {
           if (runtime.state === "running") {
-            await afterServiceStart("actions", runtime);
+            await afterServiceStart("actions", runtime, id);
           } else {
             notifyStartFailure("Actions", runtime);
           }
@@ -292,24 +309,30 @@
     return "";
   }
 
-  async function restartTunnelIfConfigured(config: TunnelFormConfig, service: "mcp" | "actions") {
-    if (!workspaceId || config.type === "none") return;
-    try {
-      const status = await restartTunnel(workspaceId, service);
-      if (status.publicUrl) {
-        if (service === "mcp") {
-          mcpPublic = `${status.publicUrl.replace(/\/$/, "")}/mcp`;
-        } else {
-          actionsPublic = `${status.publicUrl.replace(/\/$/, "")}/openapi.json`;
-        }
+  async function restartTunnelIfConfigured(
+    targetWorkspaceId: string,
+    config: TunnelFormConfig,
+    service: "mcp" | "actions",
+  ) {
+    if (config.type === "none") {
+      await stopTunnel(targetWorkspaceId, service);
+      return;
+    }
+    const status = await restartTunnel(targetWorkspaceId, service);
+    if (workspaceId !== targetWorkspaceId) return;
+    if (status.publicUrl) {
+      if (service === "mcp") {
+        mcpPublic = `${status.publicUrl.replace(/\/$/, "")}/mcp`;
+      } else {
+        actionsPublic = `${status.publicUrl.replace(/\/$/, "")}/openapi.json`;
       }
-    } catch {
-      // Tunnel may not be running; ignore restart errors.
     }
   }
 
   async function saveMcpTunnel(config: TunnelFormConfig, options?: SaveTunnelOptions) {
     if (!profile) return;
+    const targetWorkspaceId = workspaceId;
+    if (!targetWorkspaceId) return;
     const next: WorkspaceProfile = {
       ...profile,
       tunnel: {
@@ -325,13 +348,15 @@
       },
     };
     await updateWorkspace(next);
+    if (!options?.skipTunnelRestart) {
+      await restartTunnelIfConfigured(targetWorkspaceId, config, "mcp");
+    }
+    if (workspaceId !== targetWorkspaceId) return;
     profile = next;
     mcpPublic = publicEndpointFromTunnel(config, "/mcp");
     if (!options?.skipTunnelRestart && !options?.skipServicePrompt) {
       await load();
-    }
-    if (!options?.skipTunnelRestart) {
-      await restartTunnelIfConfigured(config, "mcp");
+      if (workspaceId !== targetWorkspaceId) return;
     }
     if (!options?.skipServicePrompt) {
       await promptServiceRestart(mcpStatus === "running", "MCP 服务");
@@ -340,6 +365,8 @@
 
   async function saveActionsTunnel(config: TunnelFormConfig, options?: SaveTunnelOptions) {
     if (!profile) return;
+    const targetWorkspaceId = workspaceId;
+    if (!targetWorkspaceId) return;
     const current = actionsConfig(profile);
     const next: WorkspaceProfile = {
       ...profile,
@@ -356,13 +383,15 @@
       },
     };
     await updateWorkspace(next);
+    if (!options?.skipTunnelRestart) {
+      await restartTunnelIfConfigured(targetWorkspaceId, config, "actions");
+    }
+    if (workspaceId !== targetWorkspaceId) return;
     profile = next;
     actionsPublic = publicEndpointFromTunnel(config, "/openapi.json");
     if (!options?.skipTunnelRestart && !options?.skipServicePrompt) {
       await load();
-    }
-    if (!options?.skipTunnelRestart) {
-      await restartTunnelIfConfigured(config, "actions");
+      if (workspaceId !== targetWorkspaceId) return;
     }
     if (!options?.skipServicePrompt) {
       await promptServiceRestart(actionsStatus === "running", "Actions 服务");
@@ -467,7 +496,16 @@
     goto("/");
   }
 
-  onMount(load);
+  $effect(() => {
+    const id = workspaceId;
+    if (!id) return;
+    profile = null;
+    void load(id);
+
+    return () => {
+      loadGeneration += 1;
+    };
+  });
 </script>
 
 {#if profile && actions}

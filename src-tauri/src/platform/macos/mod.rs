@@ -2,7 +2,7 @@ mod net;
 mod paths;
 mod process;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::AppResult;
 use crate::platform::paths as shared_paths;
@@ -38,6 +38,10 @@ impl Platform for MacPlatform {
 
     fn terminate_process_tree(&self, pid: u32) -> AppResult<()> {
         process::terminate_process_tree(pid)
+    }
+
+    fn terminate_processes_by_image_path(&self, image_path: &Path) -> AppResult<usize> {
+        process::terminate_processes_by_image_path(image_path)
     }
 
     fn resolve_executable(&self, name: &str) -> Option<PathBuf> {

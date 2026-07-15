@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::AppResult;
 
@@ -26,6 +26,11 @@ pub trait Platform: Send + Sync {
 
     fn terminate_process_tree(&self, pid: u32) -> AppResult<()>;
 
+    /// 清理由应用管理的同一路径进程；默认平台不做处理。
+    fn terminate_processes_by_image_path(&self, _image_path: &Path) -> AppResult<usize> {
+        Ok(0)
+    }
+
     fn resolve_executable(&self, name: &str) -> Option<PathBuf>;
 
     fn cloudflared_candidates(&self) -> Vec<PathBuf>;
@@ -33,24 +38,24 @@ pub trait Platform: Send + Sync {
     fn frpc_candidates(&self) -> Vec<PathBuf>;
 }
 
-#[cfg(target_os = "windows")]
-mod windows;
-#[cfg(target_os = "macos")]
-mod macos;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "windows")]
+mod windows;
 
 mod open;
 mod paths;
 
 pub use open::open_path_in_file_manager;
 
-#[cfg(target_os = "windows")]
-pub use windows::WindowsPlatform;
-#[cfg(target_os = "macos")]
-pub use macos::MacPlatform;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxPlatform;
+#[cfg(target_os = "macos")]
+pub use macos::MacPlatform;
+#[cfg(target_os = "windows")]
+pub use windows::WindowsPlatform;
 
 static PLATFORM: std::sync::OnceLock<Box<dyn Platform>> = std::sync::OnceLock::new();
 
@@ -99,7 +104,9 @@ fn create_platform() -> Box<dyn Platform> {
                 paths::resolve_from_path(name)
             }
             fn cloudflared_candidates(&self) -> Vec<PathBuf> {
-                paths::resolve_from_path("cloudflared").into_iter().collect()
+                paths::resolve_from_path("cloudflared")
+                    .into_iter()
+                    .collect()
             }
             fn frpc_candidates(&self) -> Vec<PathBuf> {
                 paths::resolve_from_path("frpc").into_iter().collect()

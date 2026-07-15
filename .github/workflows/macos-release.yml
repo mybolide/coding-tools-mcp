@@ -1,0 +1,72 @@
+name: macOS Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "可选：上传 DMG 到已存在的 Release，例如 v0.1.5"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-universal-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 检查前端
+        run: npm run check
+
+      - name: 运行 Rust 测试
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: 构建通用 macOS 应用与 DMG
+        run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg
+
+      - name: 上传 Actions 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+
+  upload-release:
+    if: ${{ inputs.release_tag != '' }}
+    needs: build-universal-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 下载 macOS 构建产物
+        uses: actions/download-artifact@v4
+        with:
+          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          path: dist/macos
+
+      - name: 上传 DMG 到指定 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" dist/macos/dmg/*.dmg --clobber

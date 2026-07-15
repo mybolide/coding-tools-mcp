@@ -36,8 +36,86 @@ fn persist_public_url(
     })
 }
 
+fn restore_tunnel_config(
+    state: &AppState,
+    id: &str,
+    kind: TunnelServiceKind,
+    failed: &crate::workspace::WorkspaceProfile,
+    restored: &crate::workspace::WorkspaceProfile,
+) -> AppResult<()> {
+    state.with_workspaces(|store| {
+        let Some(mut current) = store.get(id).cloned() else {
+            return Ok(());
+        };
+        let unchanged_since_failure = match kind {
+            TunnelServiceKind::Mcp => mcp_tunnel_matches(&current, failed),
+            TunnelServiceKind::Actions => actions_tunnel_matches(&current, failed),
+        };
+        if !unchanged_since_failure {
+            return Err(AppError::Message(
+                "检测到更新的隧道配置，已拒绝用旧请求覆盖。".into(),
+            ));
+        }
+        match kind {
+            TunnelServiceKind::Mcp => current.tunnel = restored.tunnel.clone(),
+            TunnelServiceKind::Actions => {
+                current.actions.public_url = restored.actions.public_url.clone();
+                current.actions.tunnel_type = restored.actions.tunnel_type.clone();
+                current.actions.frp_server = restored.actions.frp_server.clone();
+                current.actions.frp_subdomain = restored.actions.frp_subdomain.clone();
+                current.actions.frp_profile_id = restored.actions.frp_profile_id.clone();
+                current.actions.frp_server_port = restored.actions.frp_server_port;
+                current.actions.cloudflare_mode = restored.actions.cloudflare_mode.clone();
+                current.actions.cloudflare_token = restored.actions.cloudflare_token.clone();
+                current.actions.use_proxy = restored.actions.use_proxy;
+            }
+        }
+        store.update(current)
+    })
+}
+
+fn mcp_tunnel_matches(
+    left: &crate::workspace::WorkspaceProfile,
+    right: &crate::workspace::WorkspaceProfile,
+) -> bool {
+    left.tunnel.tunnel_type == right.tunnel.tunnel_type
+        && left.tunnel.public_url == right.tunnel.public_url
+        && left.tunnel.frp_server == right.tunnel.frp_server
+        && left.tunnel.frp_subdomain == right.tunnel.frp_subdomain
+        && left.tunnel.frp_profile_id == right.tunnel.frp_profile_id
+        && left.tunnel.frp_server_port == right.tunnel.frp_server_port
+        && left.tunnel.cloudflare_mode == right.tunnel.cloudflare_mode
+        && left.tunnel.use_proxy == right.tunnel.use_proxy
+}
+
+fn actions_tunnel_matches(
+    left: &crate::workspace::WorkspaceProfile,
+    right: &crate::workspace::WorkspaceProfile,
+) -> bool {
+    left.actions.public_url == right.actions.public_url
+        && left.actions.tunnel_type == right.actions.tunnel_type
+        && left.actions.frp_server == right.actions.frp_server
+        && left.actions.frp_subdomain == right.actions.frp_subdomain
+        && left.actions.frp_profile_id == right.actions.frp_profile_id
+        && left.actions.frp_server_port == right.actions.frp_server_port
+        && left.actions.cloudflare_mode == right.actions.cloudflare_mode
+        && left.actions.cloudflare_token == right.actions.cloudflare_token
+        && left.actions.use_proxy == right.actions.use_proxy
+}
+
+fn tunnel_type_for(profile: &crate::workspace::WorkspaceProfile, kind: TunnelServiceKind) -> &str {
+    match kind {
+        TunnelServiceKind::Mcp => profile.tunnel.tunnel_type.as_str(),
+        TunnelServiceKind::Actions => profile.actions.tunnel_type.as_str(),
+    }
+}
+
 #[tauri::command]
-pub fn get_frp_snippet(state: State<'_, AppState>, id: String, service: String) -> AppResult<String> {
+pub fn get_frp_snippet(
+    state: State<'_, AppState>,
+    id: String,
+    service: String,
+) -> AppResult<String> {
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
     Ok(frp_snippet(&profile, kind))
@@ -53,14 +131,43 @@ pub async fn restart_tunnel(
     let kind = TunnelServiceKind::parse(&service)?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
 
-    let status = {
+    let result = {
         let mut guard = supervisor().lock().await;
         let was_running = guard.status(&profile, kind, &settings).state == "running";
-        if was_running {
-            guard.stop(&profile, kind).await?;
-            guard.start(&profile, kind, &settings).await?
+        let tunnel_type = tunnel_type_for(&profile, kind);
+        if was_running && tunnel_type == "frp" {
+            // FRP 必须走 supervisor 的原子替换流程。它会暂存当前工作区旧 route，
+            // 新 subdomain 启动成功后才释放旧线路；失败时恢复旧 route。
+            guard
+                .start(&profile, kind, &settings)
+                .await
+                .map_err(|error| (error, guard.route_profile(&id, kind)))
+        } else if was_running {
+            match guard.stop(&profile, kind, &settings).await {
+                Ok(()) => guard
+                    .start(&profile, kind, &settings)
+                    .await
+                    .map_err(|error| (error, None)),
+                Err(error) => Err((error, None)),
+            }
         } else {
-            guard.status(&profile, kind, &settings)
+            Ok(guard.status(&profile, kind, &settings))
+        }
+    };
+
+    let status = match result {
+        Ok(status) => status,
+        Err((error, restored)) => {
+            if let Some(restored) = restored {
+                if let Err(rollback_error) =
+                    restore_tunnel_config(&state, &id, kind, &profile, &restored)
+                {
+                    return Err(AppError::Message(format!(
+                        "FRP 线路已恢复，但配置回滚失败：{error}; rollback: {rollback_error}"
+                    )));
+                }
+            }
+            return Err(error);
         }
     };
 
@@ -97,7 +204,7 @@ pub async fn stop_tunnel(
     let kind = TunnelServiceKind::parse(&service)?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
     let mut guard = supervisor().lock().await;
-    guard.stop(&profile, kind).await?;
+    guard.stop(&profile, kind, &settings).await?;
     Ok(guard.status(&profile, kind, &settings))
 }
 
@@ -110,14 +217,15 @@ pub struct TunnelTestResult {
     pub message: String,
 }
 
-fn local_service_listening(profile: &crate::workspace::WorkspaceProfile, kind: TunnelServiceKind) -> AppResult<bool> {
+fn local_service_listening(
+    profile: &crate::workspace::WorkspaceProfile,
+    kind: TunnelServiceKind,
+) -> AppResult<bool> {
     let port = match kind {
         TunnelServiceKind::Mcp => profile.runtime.local_port,
         TunnelServiceKind::Actions => profile.actions.local_port,
     };
-    Ok(platform()
-        .find_pid_listening_on_port(port)?
-        .is_some())
+    Ok(platform().find_pid_listening_on_port(port)?.is_some())
 }
 
 /// Probe tunnel connectivity without leaving it running unless the local service is already up.
@@ -137,12 +245,43 @@ pub async fn test_tunnel(
         guard.status(&profile, kind, &settings).state == "running"
     };
 
-    let status = {
+    let result = {
         let mut guard = supervisor().lock().await;
-        if was_tunnel_running {
-            guard.stop(&profile, kind).await?;
+        if was_tunnel_running && tunnel_type_for(&profile, kind) == "frp" {
+            guard
+                .start(&profile, kind, &settings)
+                .await
+                .map_err(|error| (error, guard.route_profile(&id, kind)))
+        } else {
+            let stop_result = if was_tunnel_running {
+                guard.stop(&profile, kind, &settings).await
+            } else {
+                Ok(())
+            };
+            match stop_result {
+                Ok(()) => guard
+                    .start(&profile, kind, &settings)
+                    .await
+                    .map_err(|error| (error, None)),
+                Err(error) => Err((error, None)),
+            }
         }
-        guard.start(&profile, kind, &settings).await?
+    };
+
+    let status = match result {
+        Ok(status) => status,
+        Err((error, restored)) => {
+            if let Some(restored) = restored {
+                if let Err(rollback_error) =
+                    restore_tunnel_config(&state, &id, kind, &profile, &restored)
+                {
+                    return Err(AppError::Message(format!(
+                        "FRP 测试失败且配置回滚失败：{error}; rollback: {rollback_error}"
+                    )));
+                }
+            }
+            return Err(error);
+        }
     };
 
     let public_url = status.public_url.clone();
@@ -164,7 +303,7 @@ pub async fn test_tunnel(
 
     {
         let mut guard = supervisor().lock().await;
-        guard.stop(&profile, kind).await?;
+        guard.stop(&profile, kind, &settings).await?;
     }
 
     let success = !public_url.is_empty();

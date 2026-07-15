@@ -162,6 +162,14 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
         false,
     ),
     (
+        "grep",
+        "Grep",
+        "Grep-compatible alias for search_text with regex, glob, context, and bounded results.",
+        true,
+        false,
+        false,
+    ),
+    (
         "apply_patch",
         "Apply patch",
         "Apply a patch envelope transactionally inside the workspace.",
@@ -277,6 +285,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep",
     "apply_patch",
     "exec_command",
     "write_stdin",
@@ -300,6 +309,7 @@ pub const CORE_READ_ONLY_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep",
     "read_output",
     "git_status",
     "git_diff",
@@ -322,6 +332,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep",
     "apply_patch",
     "patch_check",
     "exec_command",
@@ -370,6 +381,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep",
     "read_output",
     "git_status",
     "git_diff",
@@ -560,7 +572,7 @@ pub fn input_schema(name: &str) -> Value {
             },
             "additionalProperties": false
         }),
-        "search_text" => json!({
+        "search_text" | "grep" => json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string", "minLength": 1 },

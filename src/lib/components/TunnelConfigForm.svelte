@@ -105,6 +105,9 @@
     saving = true;
     try {
       await saveDraft();
+      showToast("隧道配置已保存。", { title: "保存成功", kind: "success" });
+    } catch (error) {
+      showToast(String(error), { title: "保存失败", kind: "error", duration: 8000 });
     } finally {
       saving = false;
     }
