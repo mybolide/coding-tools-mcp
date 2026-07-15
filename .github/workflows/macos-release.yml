@@ -69,4 +69,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: gh release upload "$RELEASE_TAG" dist/macos/dmg/*.dmg --clobber
+        run: >-
+          gh release upload "$RELEASE_TAG" dist/macos/dmg/*.dmg
+          --repo "$GITHUB_REPOSITORY"
+          --clobber
