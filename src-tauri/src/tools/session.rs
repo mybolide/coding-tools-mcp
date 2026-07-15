@@ -217,6 +217,11 @@ impl ExecSession {
             "running"
         };
         let reason = termination_reason.as_deref().unwrap_or("running");
+        let command_ok = match reason {
+            "exited" => exit_code.map(|code| code == 0),
+            "running" => None,
+            _ => Some(false),
+        };
         json!({
             "session_id": self.session_id,
             "interactive": self.interactive,
@@ -232,6 +237,8 @@ impl ExecSession {
                 _ => "继续读取 session 或等待进程结束",
             },
             "exit_code": exit_code,
+            "transport_ok": true,
+            "command_ok": command_ok,
             "stdout": stdout.content,
             "stderr": stderr.content,
             "stdout_truncated": stdout.truncated,

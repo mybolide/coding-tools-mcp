@@ -114,11 +114,8 @@ fn 无任务时_exec_command不返回任务门禁错误() {
     assert!(result["exit_code"].is_i64() || result["exit_code"].is_u64());
     assert!(result["duration_ms"].is_u64());
     assert_eq!(result["duration_ms"], result["elapsed_ms"]);
-    assert!(!result["next_actions"]
-        .as_array()
-        .expect("next_actions")
-        .iter()
-        .any(|action| action == "start_task"));
+    assert_eq!(result["next_actions"], json!([]));
+    assert!(result["recovery_hint"].is_string());
     assert!(!result.as_object().unwrap().contains_key("pre_change_snapshot_id"));
 }
 
@@ -137,6 +134,8 @@ fn 无任务时_exec错误不应建议启动任务() {
 
     assert_eq!(result["harness_mode"], "standalone");
     assert_eq!(result["task_required"], false);
+    assert_eq!(result["next_actions"], json!([]));
+    assert!(result["recovery_hint"].is_string());
     if let Some(actions) = result["harness"]["next_actions"].as_array() {
         assert!(!actions.iter().any(|action| action == "start_task"));
     }

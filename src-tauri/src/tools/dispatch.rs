@@ -149,14 +149,10 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
         Err(e) => tool_err(e),
     };
     if task_id.is_none() && standalone_operation(name) && output.get("ok") == Some(&Value::Bool(true)) {
-        if let Some(object) = output.as_object_mut() {
-            object.insert("harness_mode".into(), Value::String("standalone".into()));
-            object.insert("task_required".into(), Value::Bool(false));
-            object.insert(
-                "next_actions".into(),
-                json!(["harness_status", "operation_log"]),
-            );
-        }
+        attach_standalone_metadata(
+            &mut output,
+            "当前操作已在 standalone 模式完成；如需继续，直接调用下一个开发工具。",
+        );
     }
     if let Some(operation) = operation.as_ref() {
         if let Some(object) = output.as_object_mut() {
@@ -308,8 +304,9 @@ fn operation_input(args: &Value) -> Value {
 fn attach_harness_status(ctx: &ToolContext, mut output: Value, standalone: bool) -> Value {
     if let Ok(mut status) = ctx.harness.status() {
         if standalone && status.task_id.is_none() {
-            status.next_actions = vec!["retry".into(), "inspect_error".into()];
+            status.next_actions.clear();
         }
+        status.next_actions = filter_exposed_actions(ctx, status.next_actions);
         if let Some(object) = output.as_object_mut() {
             object.insert(
                 "harness".into(),
@@ -321,13 +318,34 @@ fn attach_harness_status(ctx: &ToolContext, mut output: Value, standalone: bool)
                 }),
             );
             if standalone {
-                object.insert("harness_mode".into(), Value::String("standalone".into()));
-                object.insert("task_required".into(), Value::Bool(false));
-                object.insert("next_actions".into(), json!(["retry", "inspect_error"]));
+                attach_standalone_metadata(
+                    &mut output,
+                    "命令未成功；请检查 stderr、exit_code 或调整参数后重试。",
+                );
             }
         }
     }
     output
+}
+
+fn attach_standalone_metadata(output: &mut Value, recovery_hint: &str) {
+    if let Some(object) = output.as_object_mut() {
+        object.insert("harness_mode".into(), Value::String("standalone".into()));
+        object.insert("task_required".into(), Value::Bool(false));
+        object.insert("next_actions".into(), json!([]));
+        object.insert(
+            "recovery_hint".into(),
+            Value::String(recovery_hint.to_string()),
+        );
+    }
+}
+
+fn filter_exposed_actions(ctx: &ToolContext, actions: Vec<String>) -> Vec<String> {
+    let exposed = crate::tools::registry::exposed_tool_names(&ctx.tool_profile);
+    actions
+        .into_iter()
+        .filter(|action| exposed.contains(&action.as_str()))
+        .collect()
 }
 
 pub fn server_info(ctx: &ToolContext) -> Result<Value, WorkspaceError> {

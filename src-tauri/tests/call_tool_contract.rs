@@ -4,7 +4,7 @@ use std::fs;
 use std::process::Command;
 
 use common::*;
-use serde_json::json;
+use serde_json::{json, Value};
 
 #[test]
 fn server_info_returns_workspace_and_tools() {
@@ -194,6 +194,8 @@ fn native_diagnostics_support_pwd_and_ls_without_a_shell() {
     assert_eq!(pwd["command_runner"], "native_builtin");
     assert_eq!(pwd["status"], "exited");
     assert_eq!(pwd["exit_code"], 0);
+    assert_eq!(pwd["transport_ok"], true);
+    assert_eq!(pwd["command_ok"], true);
     assert_eq!(pwd["duration_ms"], 0);
     assert_eq!(pwd["elapsed_ms"], 0);
     assert!(pwd["stdout"].is_string());
@@ -226,6 +228,29 @@ fn direct_exec_uses_the_same_result_contract() {
     assert!(payload["stderr"].is_string());
     assert!(payload["duration_ms"].is_u64());
     assert_eq!(payload["duration_ms"], payload["elapsed_ms"]);
+    assert_eq!(payload["transport_ok"], true);
+    assert_eq!(payload["command_ok"], true);
+}
+
+#[test]
+fn nonzero_command_exit_keeps_transport_ok_but_sets_command_ok_false() {
+    let fx = tiny_js_fixture();
+    let ctx = ctx_for(&fx.root);
+    let result = invoke(
+        &ctx,
+        "exec_command",
+        json!({
+            "cmd": "python -c \"import sys; sys.exit(1)\"",
+            "filesystem_scope": "workspace"
+        }),
+    );
+    let payload = assert_ok(&result);
+
+    assert_eq!(payload["ok"], true);
+    assert_eq!(payload["transport_ok"], true);
+    assert_eq!(payload["command_ok"], false);
+    assert_eq!(payload["status"], "exited");
+    assert_eq!(payload["exit_code"], 1);
 }
 
 #[test]
@@ -244,6 +269,8 @@ fn retained_session_timeout_stops_the_process_after_deadline() {
     );
     let payload = assert_ok(&result);
     assert_eq!(payload["status"], "running");
+    assert_eq!(payload["transport_ok"], true);
+    assert_eq!(payload["command_ok"], Value::Null);
     assert_eq!(payload["stdin_open"], true);
     let session_id = payload["session_id"].as_str().expect("session id");
 
@@ -255,7 +282,38 @@ fn retained_session_timeout_stops_the_process_after_deadline() {
     );
     assert_eq!(after["termination_reason"], "timeout");
     assert_eq!(after["status"], "exited");
+    assert_eq!(after["transport_ok"], true);
+    assert_eq!(after["command_ok"], false);
     assert_eq!(after["stdin_open"], false);
+}
+
+#[test]
+fn killed_session_reports_command_failure_even_when_transport_succeeds() {
+    let fx = tiny_js_fixture();
+    let ctx = ctx_for(&fx.root);
+    let result = invoke(
+        &ctx,
+        "exec_command",
+        json!({
+            "cmd": "python -c \"import time; time.sleep(2)\"",
+            "filesystem_scope": "workspace",
+            "timeout_ms": 10_000,
+            "yield_time_ms": 0
+        }),
+    );
+    let payload = assert_ok(&result);
+    let session_id = payload["session_id"].as_str().expect("session id");
+
+    let killed = invoke(
+        &ctx,
+        "kill_session",
+        json!({"session_id": session_id, "wait_ms": 2_000}),
+    );
+    let killed = assert_ok(&killed);
+    assert_eq!(killed["status"], "killed");
+    assert_eq!(killed["killed"], true);
+    assert_eq!(killed["transport_ok"], true);
+    assert_eq!(killed["command_ok"], false);
 }
 
 #[test]

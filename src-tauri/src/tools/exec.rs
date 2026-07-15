@@ -43,6 +43,8 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
                 Value::String("policy_only".into()),
             );
             object.insert("child_process".into(), Value::Bool(false));
+            object.insert("transport_ok".into(), Value::Bool(true));
+            object.insert("command_ok".into(), Value::Bool(true));
         }
         return Ok(tool_ok(result));
     }
@@ -92,7 +94,10 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
             }
             Ok(tool_ok(out))
         }
-        Err(e) => Err(e),
+        Err(error) => match execution_failure_result(&error, cmd, &workdir.path) {
+            Some(result) => Ok(tool_ok(result)),
+            None => Err(error),
+        },
     }
 }
 
@@ -399,6 +404,49 @@ pub fn exec_health_check(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
     Ok(tool_ok(response))
 }
 
+fn execution_failure_result(error: &WorkspaceError, command: &str, cwd: &Path) -> Option<Value> {
+    let code = match &error {
+        WorkspaceError::Tool { code, .. } | WorkspaceError::ToolDetails { code, .. } => *code,
+    };
+    if !matches!(code, "COMMAND_REJECTED" | "COMMAND_SPAWN_FAILED" | "TIMEOUT") {
+        return None;
+    }
+
+    let error_value = error.to_error_value();
+    let details = error_value.get("details").cloned().unwrap_or_else(|| json!({}));
+    let mut result = details.get("session").cloned().unwrap_or_else(|| {
+        json!({
+            "status": "spawn_failed",
+            "termination_reason": "spawn_failed",
+            "recoverable": error_value["retryable"].as_bool().unwrap_or(false),
+            "exit_code": Value::Null,
+            "stdout": "",
+            "stderr": "",
+            "stdout_truncated": false,
+            "stderr_truncated": false
+        })
+    });
+    if let Some(object) = result.as_object_mut() {
+        object.insert("command".into(), json!(command));
+        object.insert("resolved_cwd".into(), json!(cwd.display().to_string()));
+        object.insert("execution_mode".into(), json!("direct"));
+        object.insert("filesystem_scope".into(), json!("workspace"));
+        object.insert("sandbox_enforced".into(), Value::Bool(false));
+        object.insert("execution_boundary".into(), json!("policy_only"));
+        object.insert("child_process".into(), Value::Bool(true));
+        object.insert("transport_ok".into(), Value::Bool(true));
+        object.insert("command_ok".into(), Value::Bool(false));
+        object.insert("error".into(), error_value);
+        if code == "TIMEOUT" {
+            object.insert("termination_reason".into(), json!("timeout"));
+        } else {
+            object.insert("status".into(), json!("spawn_failed"));
+            object.insert("termination_reason".into(), json!("spawn_failed"));
+        }
+    }
+    Some(result)
+}
+
 fn merge_exec_result(
     mut snapshot: Value,
     start: Instant,
@@ -415,6 +463,23 @@ fn merge_exec_result(
         );
         obj.insert("duration_ms".into(), json!(duration_ms));
         obj.insert("elapsed_ms".into(), json!(duration_ms));
+        obj.insert("transport_ok".into(), Value::Bool(true));
+        let command_ok = match obj
+            .get("termination_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("running")
+        {
+            "exited" => obj
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .map(|exit_code| exit_code == 0),
+            "running" => None,
+            _ => Some(false),
+        };
+        obj.insert(
+            "command_ok".into(),
+            command_ok.map(Value::Bool).unwrap_or(Value::Null),
+        );
         obj.insert("execution_mode".into(), json!("direct"));
         obj.insert(
             "warnings".into(),
@@ -466,4 +531,45 @@ fn resolve_program(raw: &str) -> Result<String, WorkspaceError> {
             category: "runtime",
             retryable: false,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_failure_result(error: WorkspaceError, expected_code: &str) {
+        let result = execution_failure_result(&error, "missing-command", Path::new("C:/workspace"))
+            .expect("应转换为统一执行结果");
+        assert_eq!(result["transport_ok"], true);
+        assert_eq!(result["command_ok"], false);
+        assert_eq!(result["status"], "spawn_failed");
+        assert_eq!(result["error"]["code"], expected_code);
+    }
+
+    #[test]
+    fn 程序不存在时返回统一执行结果() {
+        assert_failure_result(
+            WorkspaceError::Tool {
+                code: "COMMAND_REJECTED",
+                message: "Program not found on PATH: missing-command".into(),
+                category: "runtime",
+                retryable: false,
+            },
+            "COMMAND_REJECTED",
+        );
+    }
+
+    #[test]
+    fn 启动失败时返回统一执行结果() {
+        assert_failure_result(
+            WorkspaceError::ToolDetails {
+                code: "COMMAND_SPAWN_FAILED",
+                message: "Failed to start command".into(),
+                category: "runtime",
+                retryable: true,
+                details: json!({"recoverable": true}),
+            },
+            "COMMAND_SPAWN_FAILED",
+        );
+    }
 }
