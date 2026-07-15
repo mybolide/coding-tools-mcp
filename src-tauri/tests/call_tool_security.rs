@@ -114,9 +114,10 @@ fn view_image_allows_explicit_external_read_only_path() {
         json!({"path": image_path.to_string_lossy(), "output": "data_url"}),
     );
     let payload = assert_ok(&result);
+    let canonical_image_path = fs::canonicalize(&image_path).expect("规范化测试图片路径");
     assert_eq!(
         payload["path"],
-        image_path
+        canonical_image_path
             .to_string_lossy()
             .replace('\\', "/")
             .trim_start_matches("//?/")
