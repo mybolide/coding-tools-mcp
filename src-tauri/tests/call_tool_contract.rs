@@ -287,6 +287,8 @@ fn retained_session_timeout_stops_the_process_after_deadline() {
     assert_eq!(after["transport_ok"], true);
     assert_eq!(after["command_ok"], false);
     assert_eq!(after["stdin_open"], false);
+    #[cfg(unix)]
+    assert_eq!(after["exit_code"], Value::Null);
 }
 
 #[test]
@@ -316,6 +318,8 @@ fn killed_session_reports_command_failure_even_when_transport_succeeds() {
     assert_eq!(killed["killed"], true);
     assert_eq!(killed["transport_ok"], true);
     assert_eq!(killed["command_ok"], false);
+    #[cfg(unix)]
+    assert_eq!(killed["exit_code"], Value::Null);
 }
 
 #[test]

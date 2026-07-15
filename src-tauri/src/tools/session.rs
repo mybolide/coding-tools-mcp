@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -65,6 +66,7 @@ pub struct ExecSession {
     stderr_total: Mutex<usize>,
     pub started_at: Instant,
     pub exit_code: Mutex<Option<i32>>,
+    exited: AtomicBool,
     termination_reason: Mutex<Option<String>>,
     reader_tasks: AsyncMutex<Vec<tauri::async_runtime::JoinHandle<()>>>,
 }
@@ -90,6 +92,7 @@ impl ExecSession {
             stderr_total: Mutex::new(0),
             started_at: Instant::now(),
             exit_code: Mutex::new(None),
+            exited: AtomicBool::new(false),
             termination_reason: Mutex::new(None),
             reader_tasks: AsyncMutex::new(Vec::new()),
         }
@@ -155,21 +158,35 @@ impl ExecSession {
     }
 
     pub async fn kill_and_wait(&self) {
-        let mut child = self.child.lock().await;
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+        let status = {
+            let mut child = self.child.lock().await;
+            let _ = child.start_kill();
+            child.wait().await.ok()
+        };
+        if let Some(status) = status {
+            self.record_exit_status(status);
+        }
     }
 
     pub async fn refresh_status(&self) {
         let mut child = self.child.lock().await;
         if let Ok(Some(status)) = child.try_wait() {
-            *self.exit_code.lock().expect("exit_code lock") = status.code();
-            *self.stdin_open.lock().expect("stdin_open lock") = false;
-            let mut reason = self.termination_reason.lock().expect("termination lock");
-            if reason.is_none() {
-                *reason = Some("exited".into());
-            }
+            self.record_exit_status(status);
         }
+    }
+
+    fn record_exit_status(&self, status: std::process::ExitStatus) {
+        *self.exit_code.lock().expect("exit_code lock") = status.code();
+        self.exited.store(true, Ordering::Release);
+        *self.stdin_open.lock().expect("stdin_open lock") = false;
+        let mut reason = self.termination_reason.lock().expect("termination lock");
+        if reason.is_none() {
+            *reason = Some("exited".into());
+        }
+    }
+
+    pub(crate) fn has_exited(&self) -> bool {
+        self.exited.load(Ordering::Acquire)
     }
 
     pub fn mark_termination_reason(&self, reason: &str) {
@@ -182,7 +199,7 @@ impl ExecSession {
 
     pub async fn is_running(&self) -> bool {
         self.refresh_status().await;
-        self.exit_code.lock().expect("exit_code lock").is_none()
+        !self.has_exited()
     }
 
     pub fn retained_stream_bytes(&self, stream: &str) -> (Vec<u8>, usize) {
@@ -211,14 +228,14 @@ impl ExecSession {
             .lock()
             .expect("termination lock")
             .clone();
-        let status = if exit_code.is_some() {
+        let status = if self.has_exited() {
             "exited"
         } else {
             "running"
         };
         let reason = termination_reason.as_deref().unwrap_or("running");
         let command_ok = match reason {
-            "exited" => exit_code.map(|code| code == 0),
+            "exited" => Some(exit_code.is_some_and(|code| code == 0)),
             "running" => None,
             _ => Some(false),
         };

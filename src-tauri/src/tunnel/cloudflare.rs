@@ -263,7 +263,6 @@ pub async fn spawn_cloudflare_tunnel(
 
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 

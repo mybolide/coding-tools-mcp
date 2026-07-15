@@ -287,8 +287,7 @@ async fn run_command(
 
     loop {
         session.refresh_status().await;
-        let exit_code = *session.exit_code.lock().expect("exit_code lock");
-        if exit_code.is_some() {
+        if session.has_exited() {
             session.wait_for_readers().await;
             let snapshot = session.snapshot(max_output);
             ctx.sessions.remove(&session.session_id);
@@ -327,7 +326,7 @@ fn spawn_timeout_monitor(session: std::sync::Arc<ExecSession>, deadline: Instant
         let remaining = deadline.saturating_duration_since(Instant::now());
         tokio::time::sleep(remaining).await;
         session.refresh_status().await;
-        if session.exit_code.lock().expect("exit_code lock").is_none() {
+        if !session.has_exited() {
             session.mark_termination_reason("timeout");
             session.kill_and_wait().await;
             session.refresh_status().await;
@@ -472,7 +471,8 @@ fn merge_exec_result(
             "exited" => obj
                 .get("exit_code")
                 .and_then(Value::as_i64)
-                .map(|exit_code| exit_code == 0),
+                .map(|exit_code| exit_code == 0)
+                .or(Some(false)),
             "running" => None,
             _ => Some(false),
         };
