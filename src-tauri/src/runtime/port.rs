@@ -126,3 +126,42 @@ pub fn port_busy_message(port: u16, service_label: &str, pid: u32) -> String {
         format!("{service_label}端口 {port} 已被占用：{image}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn write_bundle(root: &std::path::Path, identifier: &str) -> std::path::PathBuf {
+        let bundle = root.join("Coding Tools MCP.app");
+        let contents = bundle.join("Contents");
+        let executable = contents.join("MacOS/coding-tools-mcp-desktop");
+        fs::create_dir_all(executable.parent().expect("MacOS dir")).expect("create bundle");
+        fs::write(
+            contents.join("Info.plist"),
+            format!(
+                "<?xml version=\"1.0\"?><plist><dict><key>CFBundleIdentifier</key><string>{identifier}</string></dict></plist>"
+            ),
+        )
+        .expect("write Info.plist");
+        fs::write(&executable, "test executable").expect("write executable");
+        executable
+    }
+
+    #[test]
+    fn recognizes_a_previous_coding_tools_macos_bundle() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executable = write_bundle(temp.path(), "com.codingtools.mcp.desktop");
+
+        assert!(is_managed_macos_desktop_executable(&executable));
+    }
+
+    #[test]
+    fn rejects_a_different_macos_bundle_identifier() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executable = write_bundle(temp.path(), "com.example.other-app");
+
+        assert!(!is_managed_macos_desktop_executable(&executable));
+    }
+}
