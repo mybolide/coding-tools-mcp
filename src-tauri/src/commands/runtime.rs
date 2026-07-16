@@ -13,7 +13,9 @@ use crate::runtime::{
 
 use crate::platform::platform;
 
-use crate::tunnel::{maybe_start_for_runtime, stop_for_runtime, TunnelServiceKind};
+use crate::tunnel::{
+    maybe_start_for_runtime, stop_for_runtime, sync_managed_runtime_routes, TunnelServiceKind,
+};
 
 use crate::workspace::RuntimeStatusDto;
 
@@ -53,6 +55,11 @@ fn persist_tunnel_url(
     })
 }
 
+async fn sync_tunnel_routes_from_runtime(state: &AppState) -> AppResult<()> {
+    let active_keys = state.with_runtime(|runtime| Ok(runtime.active_tunnel_service_keys()))?;
+    sync_managed_runtime_routes(active_keys).await
+}
+
 #[allow(clippy::collapsible_if)]
 async fn ensure_port_available(port: u16, service_label: &str) -> AppResult<()> {
     let Some(pid) = platform().find_pid_listening_on_port(port)? else {
@@ -88,6 +95,7 @@ pub async fn start_runtime(state: State<'_, AppState>, id: String) -> AppResult<
     ensure_port_available(profile.runtime.local_port, "本地 MCP").await?;
 
     state.with_runtime(|runtime| runtime.start_mcp(&profile))?;
+    sync_tunnel_routes_from_runtime(&state).await?;
 
     match maybe_start_for_runtime(&profile, TunnelServiceKind::Mcp).await {
         Ok(Some(url)) => {
@@ -129,7 +137,9 @@ pub async fn stop_runtime(state: State<'_, AppState>, id: String) -> AppResult<R
         runtime.finish_stop(&id, ServiceKind::Mcp);
 
         Ok(runtime.mcp_status(&profile))
-    })
+    })?;
+    sync_tunnel_routes_from_runtime(&state).await?;
+    state.with_runtime(|runtime| Ok(runtime.mcp_status(&profile)))
 }
 
 #[tauri::command]
@@ -156,6 +166,7 @@ pub async fn start_actions_runtime(
     ensure_port_available(profile.actions.local_port, "本地 Actions").await?;
 
     state.with_runtime(|runtime| runtime.start_actions(&profile))?;
+    sync_tunnel_routes_from_runtime(&state).await?;
 
     match maybe_start_for_runtime(&profile, TunnelServiceKind::Actions).await {
         Ok(Some(url)) => {
@@ -201,7 +212,9 @@ pub async fn stop_actions_runtime(
         runtime.finish_stop(&id, ServiceKind::Actions);
 
         Ok(runtime.actions_status(&profile))
-    })
+    })?;
+    sync_tunnel_routes_from_runtime(&state).await?;
+    state.with_runtime(|runtime| Ok(runtime.actions_status(&profile)))
 }
 
 #[tauri::command]

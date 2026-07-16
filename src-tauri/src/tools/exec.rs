@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde_json::{json, Value};
 use tokio::process::Command;
 
@@ -81,10 +84,7 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
     match result {
         Ok(mut out) => {
             if let Some(object) = out.as_object_mut() {
-                object.insert(
-                    "filesystem_scope".into(),
-                    Value::String(filesystem_scope),
-                );
+                object.insert("filesystem_scope".into(), Value::String(filesystem_scope));
                 object.insert("sandbox_enforced".into(), Value::Bool(false));
                 object.insert(
                     "execution_boundary".into(),
@@ -231,16 +231,21 @@ async fn run_command(
     tty: bool,
     stdin_text: &str,
 ) -> Result<Value, WorkspaceError> {
-    let (program, args) = parse_and_resolve(cmd)?;
+    let (program, args) = parse_and_resolve(cmd, cwd, ctx.workspace.root(), &ctx.policy)?;
     let start = Instant::now();
 
-    let mut command = Command::new(&program);
+    let mut command = command_for_program(&program, &args);
     command
-        .args(&args)
-        .current_dir(cwd)
+        .current_dir(platform_command_path(cwd))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    command
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONLEGACYWINDOWSSTDIO", "0");
 
     let child = command.spawn().map_err(|e| WorkspaceError::ToolDetails {
         code: "COMMAND_SPAWN_FAILED",
@@ -407,12 +412,18 @@ fn execution_failure_result(error: &WorkspaceError, command: &str, cwd: &Path) -
     let code = match &error {
         WorkspaceError::Tool { code, .. } | WorkspaceError::ToolDetails { code, .. } => *code,
     };
-    if !matches!(code, "COMMAND_REJECTED" | "COMMAND_SPAWN_FAILED" | "TIMEOUT") {
+    if !matches!(
+        code,
+        "COMMAND_REJECTED" | "COMMAND_SPAWN_FAILED" | "TIMEOUT"
+    ) {
         return None;
     }
 
     let error_value = error.to_error_value();
-    let details = error_value.get("details").cloned().unwrap_or_else(|| json!({}));
+    let details = error_value
+        .get("details")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let mut result = details.get("session").cloned().unwrap_or_else(|| {
         json!({
             "status": "spawn_failed",
@@ -456,10 +467,7 @@ fn merge_exec_result(
     if let Some(obj) = snapshot.as_object_mut() {
         let duration_ms = start.elapsed().as_millis();
         obj.insert("command".into(), json!(command));
-        obj.insert(
-            "resolved_cwd".into(),
-            json!(cwd.display().to_string()),
-        );
+        obj.insert("resolved_cwd".into(), json!(cwd.display().to_string()));
         obj.insert("duration_ms".into(), json!(duration_ms));
         obj.insert("elapsed_ms".into(), json!(duration_ms));
         obj.insert("transport_ok".into(), Value::Bool(true));
@@ -493,28 +501,82 @@ fn merge_exec_result(
     snapshot
 }
 
-fn parse_and_resolve(cmd: &str) -> Result<(String, Vec<String>), WorkspaceError> {
+fn parse_and_resolve(
+    cmd: &str,
+    cwd: &Path,
+    workspace_root: &Path,
+    policy: &crate::tools::policy::PolicySettings,
+) -> Result<(String, Vec<String>), WorkspaceError> {
     let parts = shell_words::split(cmd)
         .map_err(|_| WorkspaceError::invalid_argument("Invalid command syntax"))?;
     if parts.is_empty() {
         return Err(WorkspaceError::invalid_argument("Empty command"));
     }
 
-    let program = resolve_program(&parts[0])?;
+    let program = resolve_program(&parts[0], cwd, workspace_root, policy)?;
     Ok((program, parts[1..].to_vec()))
 }
 
-fn resolve_program(raw: &str) -> Result<String, WorkspaceError> {
+fn resolve_program(
+    raw: &str,
+    cwd: &Path,
+    workspace_root: &Path,
+    policy: &crate::tools::policy::PolicySettings,
+) -> Result<String, WorkspaceError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(WorkspaceError::invalid_argument("Empty program"));
     }
 
-    if trimmed.contains(['/', '\\']) {
-        let path = Path::new(trimmed);
-        if path.exists() {
-            return Ok(path.to_string_lossy().into_owned());
+    let explicit_path = trimmed.contains(['/', '\\']);
+    let candidate = if Path::new(trimmed).is_absolute() {
+        Path::new(trimmed).to_path_buf()
+    } else {
+        cwd.join(trimmed)
+    };
+    if candidate.is_file() {
+        let resolved = candidate.canonicalize().map_err(|_| WorkspaceError::Tool {
+            code: "COMMAND_REJECTED",
+            message: format!("Program not found: {trimmed}"),
+            category: "runtime",
+            retryable: false,
+        })?;
+        let canonical_workspace =
+            workspace_root
+                .canonicalize()
+                .map_err(|_| WorkspaceError::Tool {
+                    code: "COMMAND_REJECTED",
+                    message: "Workspace root is unavailable".into(),
+                    category: "runtime",
+                    retryable: true,
+                })?;
+        if !resolved.starts_with(&canonical_workspace) {
+            return Err(WorkspaceError::Tool {
+                code: "EXECUTABLE_OUTSIDE_WORKSPACE",
+                message: format!("Workspace 外可执行文件被拒绝: {trimmed}"),
+                category: "security",
+                retryable: false,
+            });
         }
+        let extension = resolved
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| format!(".{}", value.to_ascii_lowercase()))
+            .unwrap_or_default();
+        if policy.workspace_local_entries
+            && (extension.is_empty() || policy.workspace_script_extensions.contains(&extension))
+        {
+            return Ok(resolved.to_string_lossy().into_owned());
+        }
+        return Err(WorkspaceError::Tool {
+            code: "COMMAND_REJECTED",
+            message: format!("Workspace 本地入口未获允许: {trimmed}"),
+            category: "policy",
+            retryable: false,
+        });
+    }
+
+    if explicit_path {
         return Err(WorkspaceError::Tool {
             code: "COMMAND_REJECTED",
             message: format!("Program not found: {trimmed}"),
@@ -534,8 +596,13 @@ fn resolve_program(raw: &str) -> Result<String, WorkspaceError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use crate::tools::context::ToolContext;
+    use crate::tools::dispatch::call_tool;
+    use serde_json::json;
+    use tempfile::tempdir;
 
     fn assert_failure_result(error: WorkspaceError, expected_code: &str) {
         let result = execution_failure_result(&error, "missing-command", Path::new("C:/workspace"))
@@ -572,4 +639,245 @@ mod tests {
             "COMMAND_SPAWN_FAILED",
         );
     }
+
+    #[test]
+    fn resolves_an_arbitrarily_named_workspace_local_entry() {
+        let workspace = tempdir().expect("workspace");
+        let entry = workspace.path().join("scripts").join("anything.cmd");
+        std::fs::create_dir_all(entry.parent().expect("parent")).expect("scripts");
+        std::fs::write(&entry, "echo test").expect("entry");
+        let resolved = resolve_program(
+            "scripts/anything.cmd",
+            workspace.path(),
+            workspace.path(),
+            &crate::tools::policy::PolicySettings::default(),
+        )
+        .expect("workspace entry resolves");
+        assert_eq!(
+            std::path::Path::new(&resolved),
+            entry.canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_scripts_use_their_platform_runners() {
+        let batch = command_for_program("C:/workspace/run-anything.cmd", &[]);
+        assert_eq!(batch.as_std().get_program().to_string_lossy(), "cmd.exe");
+        assert!(batch.as_std().get_args().any(|arg| arg == "/c"));
+        assert_eq!(
+            windows_batch_command_line(
+                r"\\?\C:\workspace\Life Brain\run & tooling.cmd",
+                &["argument & value".to_string()]
+            ),
+            r#"call "C:\workspace\Life Brain\run & tooling.cmd" "argument & value""#
+        );
+
+        let script = command_for_program("C:/workspace/run-anything.ps1", &[]);
+        let runner = script
+            .as_std()
+            .get_program()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        assert!(runner.contains("powershell") || runner.contains("pwsh"));
+        assert!(script.as_std().get_args().any(|arg| arg == "-File"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_workspace_scripts_and_python_unicode_execute_successfully() {
+        let workspace = tempdir().expect("workspace");
+        let harness = tempdir().expect("harness");
+        std::fs::write(
+            workspace.path().join("any-name.cmd"),
+            "@echo tooling-cmd-ok\r\n",
+        )
+        .expect("cmd script");
+        std::fs::write(
+            workspace.path().join("any-name.ps1"),
+            "Write-Output 'tooling-powershell-ok'\r\n",
+        )
+        .expect("powershell script");
+        std::fs::write(
+            workspace.path().join("workflow_probe.py"),
+            "print('workflow-ok')\n",
+        )
+        .expect("python module");
+        let ctx =
+            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                .expect("context");
+
+        for command in [
+            "any-name.cmd",
+            "any-name.ps1",
+            "cmd /c echo tooling-cmd-ok",
+            "powershell -NoProfile -Command \"Write-Output tooling-powershell-ok\"",
+            "python -c \"print('中文输出正常 ✅')\"",
+        ] {
+            let output = call_tool(
+                &ctx,
+                "exec_command",
+                &json!({ "cmd": command, "timeout_ms": 10_000, "yield_time_ms": 10_000 }),
+            );
+            assert_eq!(output["ok"], true, "{command}: {output}");
+            assert_eq!(output["command_ok"], true, "{command}: {output}");
+        }
+
+        for _ in 0..10 {
+            let output = call_tool(
+                &ctx,
+                "exec_command",
+                &json!({ "cmd": "python -m workflow_probe", "timeout_ms": 10_000 }),
+            );
+            assert_eq!(output["command_ok"], true, "{output}");
+            assert!(output["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("workflow-ok"));
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_batch_scripts_preserve_space_paths_and_arguments() {
+        let parent = tempdir().expect("workspace parent");
+        let workspace = parent.path().join("Life Brain 中文");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let harness = tempdir().expect("harness");
+        let ctx = ToolContext::for_test(workspace.clone(), harness.path().to_path_buf())
+            .expect("context");
+
+        for extension in ["cmd", "bat"] {
+            let script_name = format!("run & tooling.{extension}");
+            std::fs::write(
+                workspace.join(&script_name),
+                "@echo off\r\nif not \"%~1\"==\"argument & value\" exit /b 7\r\necho tooling-space-path-ok\r\n",
+            )
+            .expect("batch script");
+
+            let command = format!(r#""{script_name}" "argument & value""#);
+            let output = call_tool(
+                &ctx,
+                "exec_command",
+                &json!({ "cmd": command, "timeout_ms": 10_000, "yield_time_ms": 10_000 }),
+            );
+            assert_eq!(output["command_ok"], true, "{script_name}: {output}");
+            let stdout = output["stdout"].as_str().unwrap_or_default();
+            assert!(
+                stdout.contains("tooling-space-path-ok"),
+                "{script_name}: {output}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_workspace_scripts_preserve_space_paths_and_arguments() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let parent = tempdir().expect("workspace parent");
+        let workspace = parent.path().join("Life Brain 中文");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+        let harness = tempdir().expect("harness");
+        let script_name = "run tooling";
+        let script_path = workspace.join(script_name);
+        std::fs::write(
+            &script_path,
+            "#!/bin/sh\nprintf 'tooling-space-path-ok\\n'\nprintf 'argument=[%s]\\n' \"$1\"\n",
+        )
+        .expect("shell script");
+        let mut permissions = std::fs::metadata(&script_path)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script_path, permissions).expect("script executable");
+
+        let ctx = ToolContext::for_test(workspace, harness.path().to_path_buf()).expect("context");
+        let command = format!(r#""{script_name}" "argument with spaces""#);
+        let output = call_tool(
+            &ctx,
+            "exec_command",
+            &json!({ "cmd": command, "timeout_ms": 10_000, "yield_time_ms": 10_000 }),
+        );
+        assert_eq!(output["command_ok"], true, "{output}");
+        let stdout = output["stdout"].as_str().unwrap_or_default();
+        assert!(stdout.contains("tooling-space-path-ok"), "{output}");
+        assert!(
+            stdout.contains("argument=[argument with spaces]"),
+            "{output}"
+        );
+    }
+}
+
+fn command_for_program(program: &str, args: &[String]) -> Command {
+    #[cfg(windows)]
+    {
+        let extension = Path::new(program)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase);
+        match extension.as_deref() {
+            Some("bat") | Some("cmd") => {
+                let mut command = Command::new("cmd.exe");
+                command.args(["/d", "/s", "/c"]);
+                command
+                    .as_std_mut()
+                    .raw_arg(windows_batch_command_line(program, args));
+                return command;
+            }
+            Some("ps1") => {
+                let shell = which::which("pwsh")
+                    .or_else(|_| which::which("powershell"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("powershell.exe"));
+                let mut command = Command::new(shell);
+                command
+                    .args([
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        windows_command_path(program).as_str(),
+                    ])
+                    .args(args);
+                return command;
+            }
+            _ => {}
+        }
+    }
+
+    let mut command = Command::new(program);
+    command.args(args);
+    command
+}
+
+#[cfg(windows)]
+fn windows_batch_command_line(program: &str, args: &[String]) -> String {
+    let mut command_line = String::from("call ");
+    command_line.push_str(&windows_batch_token(&windows_command_path(program)));
+    for arg in args {
+        command_line.push(' ');
+        command_line.push_str(&windows_batch_token(arg));
+    }
+    command_line
+}
+
+#[cfg(windows)]
+fn windows_batch_token(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn platform_command_path(path: &Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        std::path::PathBuf::from(windows_command_path(&path.to_string_lossy()))
+    }
+    #[cfg(not(windows))]
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+fn windows_command_path(path: &str) -> String {
+    path.strip_prefix("\\\\?\\").unwrap_or(path).to_string()
 }

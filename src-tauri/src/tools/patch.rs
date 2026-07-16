@@ -61,7 +61,11 @@ pub fn apply_patch(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceEr
         };
         ws.reject_write_symlink(&fp.path)?;
 
-        let original = if resolved.existed {
+        let original = if fp.is_new_file {
+            // An Add File envelope is replacement content even when an earlier
+            // Delete File for the same path exists in this transaction.
+            String::new()
+        } else if resolved.existed {
             fs::read_to_string(&resolved.path)
                 .map_err(|_| WorkspaceError::not_found(format!("File not found: {}", fp.path)))?
         } else if fp.is_new_file || fp.is_deleted {
@@ -78,11 +82,7 @@ pub fn apply_patch(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceEr
         }
 
         let updated = apply_hunks(&original, &fp.hunks)?;
-        let op = if fp.is_new_file || !resolved.existed {
-            "add"
-        } else {
-            "update"
-        };
+        let op = if resolved.existed { "update" } else { "add" };
         staged.insert(resolved.display.clone(), Some(updated));
         affected.push(json!({ "path": resolved.display, "operation": op }));
         summaries.push(format!(
@@ -182,7 +182,7 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, WorkspaceError> {
             current = Some(FilePatch {
                 path,
                 hunks: Vec::new(),
-                is_new_file: false,
+                is_new_file: line.contains("/dev/null"),
                 is_deleted: false,
             });
         } else if line.starts_with("+++ ") {
@@ -202,11 +202,6 @@ fn parse_unified_diff(patch: &str) -> Result<Vec<FilePatch>, WorkspaceError> {
                 }
             }
             current_hunk = Some(Hunk { lines: Vec::new() });
-            if let Some(ref mut f) = current {
-                if f.hunks.is_empty() && !f.is_deleted {
-                    f.is_new_file = true;
-                }
-            }
         } else if let Some(ref mut hunk) = current_hunk {
             if let Some(rest) = line.strip_prefix('+') {
                 hunk.lines.push(HunkLine::Add(rest.to_string()));
@@ -338,10 +333,19 @@ fn parse_diff_path(raw: &str) -> String {
 }
 
 fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, WorkspaceError> {
+    let line_ending = if original.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let had_trailing_newline = original.ends_with('\n');
     let mut lines: Vec<String> = if original.is_empty() {
         Vec::new()
     } else {
-        original.split_inclusive('\n').map(str::to_string).collect()
+        original
+            .split_terminator('\n')
+            .map(|line| line.trim_end_matches('\r').to_string())
+            .collect()
     };
     let mut offset: i64 = 0;
 
@@ -369,14 +373,7 @@ fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, WorkspaceError>
                     }
                 }
                 HunkLine::Add(s) => {
-                    let mut line = s.clone();
-                    if !line.ends_with('\n') && idx < lines.len() {
-                        // preserve newline style
-                    }
-                    if idx == lines.len() && !line.ends_with('\n') {
-                        line.push('\n');
-                    }
-                    lines.insert(idx, line);
+                    lines.insert(idx, s.clone());
                     idx += 1;
                 }
             }
@@ -384,18 +381,25 @@ fn apply_hunks(original: &str, hunks: &[Hunk]) -> Result<String, WorkspaceError>
         offset += 0; // reserved for future fuzzy offset
         let _ = offset;
     }
-    Ok(lines.concat())
+    let mut output = lines.join(line_ending);
+    if !output.is_empty() && (had_trailing_newline || original.is_empty()) {
+        output.push_str(line_ending);
+    }
+    Ok(output)
 }
 
 fn find_hunk_position(lines: &[String], pattern: &[String], start: usize) -> Option<usize> {
     if pattern.is_empty() {
         return Some(start);
     }
+    if start > lines.len() || pattern.len() > lines.len().saturating_sub(start) {
+        return None;
+    }
     for i in start..=lines.len().saturating_sub(pattern.len()) {
         if lines[i..i + pattern.len()]
             .iter()
             .zip(pattern.iter())
-            .all(|(a, b)| a.trim_end_matches('\n') == b.trim_end_matches('\n'))
+            .all(|(a, b)| a == b)
         {
             return Some(i);
         }
@@ -609,4 +613,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn preserves_crlf_when_inserting_multiple_lines() {
+        let input = "one\r\ntwo\r\n";
+        let hunk = Hunk {
+            lines: vec![
+                HunkLine::Context("one".into()),
+                HunkLine::Add("insert-a".into()),
+                HunkLine::Add("insert-b".into()),
+                HunkLine::Context("two".into()),
+            ],
+        };
+        assert_eq!(
+            apply_hunks(input, &[hunk]).expect("patch"),
+            "one\r\ninsert-a\r\ninsert-b\r\ntwo\r\n"
+        );
+    }
+
+    #[test]
+    fn delete_then_add_same_path_replaces_instead_of_concatenating_old_content() {
+        let (_workspace, _harness, context) = context_with_file();
+        let result = apply_patch(
+            &context,
+            &json!({
+                "patch": "*** Begin Patch\n*** Delete File: main.rs\n*** Add File: main.rs\n+fresh\n*** End Patch\n"
+            }),
+        )
+        .expect("replace file");
+        assert_eq!(result["files_modified"], json!(["main.rs"]));
+        assert_eq!(
+            std::fs::read_to_string(context.workspace.root().join("main.rs")).unwrap(),
+            "fresh\n"
+        );
+    }
+
+    #[test]
+    fn validation_failure_in_later_file_keeps_all_files_unchanged() {
+        let (_workspace, _harness, context) = context_with_file();
+        let error = apply_patch(
+            &context,
+            &json!({
+                "patch": "--- a/main.rs\n+++ b/main.rs\n@@\n-old\n+new\n--- a/missing.rs\n+++ b/missing.rs\n@@\n-old\n+new\n"
+            }),
+        )
+        .expect_err("later file fails preflight");
+        assert_eq!(error.to_error_value()["code"], "NOT_FOUND");
+        assert_eq!(
+            std::fs::read_to_string(context.workspace.root().join("main.rs")).unwrap(),
+            "old\n"
+        );
+    }
 }

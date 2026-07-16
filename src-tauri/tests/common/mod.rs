@@ -36,7 +36,8 @@ fn prepare_fixture(name: &str, symlink_escape: bool) -> FixtureWorkspace {
     fs::write(
         &outside_secret,
         fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../old/tests/compliance/outside-secret.txt"),
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../old/tests/compliance/outside-secret.txt"),
         )
         .expect("outside-secret.txt"),
     )
@@ -64,11 +65,20 @@ fn prepare_fixture(name: &str, symlink_escape: bool) -> FixtureWorkspace {
 fn materialize_runtime_files(root: &Path, outside_secret: &Path, name: &str) {
     let reference = root.join(".reference");
     let _ = fs::create_dir_all(&reference);
-    let _ = fs::write(reference.join("cache.txt"), "reference cache must be excluded\n");
+    let _ = fs::write(
+        reference.join("cache.txt"),
+        "reference cache must be excluded\n",
+    );
     let _ = fs::create_dir_all(root.join("node_modules/leftpad"));
-    let _ = fs::write(root.join("node_modules/leftpad/index.js"), "module.exports = 1;\n");
+    let _ = fs::write(
+        root.join("node_modules/leftpad/index.js"),
+        "module.exports = 1;\n",
+    );
     let _ = fs::create_dir_all(root.join("dist"));
-    let _ = fs::write(root.join("dist/bundle.js"), "bundle output must be excluded\n");
+    let _ = fs::write(
+        root.join("dist/bundle.js"),
+        "bundle output must be excluded\n",
+    );
     let _ = fs::write(root.join("ignored.log"), "ignored by fixture gitignore\n");
     if name == "tiny-js-project" {
         let _ = fs::create_dir_all(root.join("assets"));

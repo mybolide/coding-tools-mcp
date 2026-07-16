@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::tools::context::ToolContext;
-use crate::tools::policy::{validate_tool_arguments, PolicyError};
+use crate::tools::policy::{validate_tool_arguments_for_workspace, PolicyError};
 use crate::tools::workspace::{tool_err, tool_err_code, tool_ok, WorkspaceError};
 use crate::tools::{exec, file, git, image_tool, patch, session};
 
@@ -28,7 +28,10 @@ fn policy_tool_err(err: PolicyError) -> Value {
     } else if message.contains("allowlisted") {
         ("command_rejected", "改用允许的命令，或调整工作区命令白名单")
     } else if message.contains("Shell chaining") {
-        ("shell_syntax_rejected", "移除未加引号的 shell 操作符；引号内的程序参数可以保留")
+        (
+            "shell_syntax_rejected",
+            "移除未加引号的 shell 操作符；引号内的程序参数可以保留",
+        )
     } else {
         ("policy_rejected", "根据错误信息修正参数后重试")
     };
@@ -49,11 +52,15 @@ fn policy_tool_err(err: PolicyError) -> Value {
 /// **唯一工具执行入口**。MCP `tools/call` 与 Actions `POST /actions/{tool}` 必须且只能调用此函数。
 /// 策略校验、分发、错误格式在此统一，两路传输层不得另做执行前校验（Actions 仅允许额外的暴露层 `validate_actions_exposure`）。
 pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
-    if let Err(e) = validate_tool_arguments(name, args, &ctx.policy) {
+    let effective_args = apply_default_cwd(ctx, name, args);
+    if let Err(e) = validate_tool_arguments_for_workspace(
+        name,
+        &effective_args,
+        &ctx.policy,
+        Some(&ctx.workspace),
+    ) {
         return policy_tool_err(e);
     }
-
-    let effective_args = apply_default_cwd(ctx, name, args);
 
     if crate::harness::tools::TOOL_NAMES.contains(&name) {
         return match crate::harness::tools::call(ctx, name, args) {
@@ -128,6 +135,7 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
         "request_permissions" => Ok(tool_ok(json!({
             "ok": false,
             "status": "unsupported",
+            "next_actions": [],
             "error": {
                 "code": "ELICITATION_UNSUPPORTED",
                 "message": "Permission elicitation is not available for this client.",
@@ -148,7 +156,10 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
         Ok(v) => v,
         Err(e) => tool_err(e),
     };
-    if task_id.is_none() && standalone_operation(name) && output.get("ok") == Some(&Value::Bool(true)) {
+    if task_id.is_none()
+        && standalone_operation(name)
+        && output.get("ok") == Some(&Value::Bool(true))
+    {
         attach_standalone_metadata(
             &mut output,
             "当前操作已在 standalone 模式完成；如需继续，直接调用下一个开发工具。",
@@ -205,9 +216,7 @@ fn apply_default_cwd(ctx: &ToolContext, name: &str, args: &Value) -> Value {
 
     let mut effective = args.clone();
     match name {
-        "exec_command"
-            if effective.get("workdir").is_none() && effective.get("cwd").is_none() =>
-        {
+        "exec_command" if effective.get("workdir").is_none() && effective.get("cwd").is_none() => {
             effective["workdir"] = Value::String(base.clone());
         }
         "list_dir" | "list_files" | "git_status" | "git_log" => {
@@ -274,16 +283,16 @@ fn prefix_patch_paths(base: &str, patch: &str) -> String {
 fn requires_write_baseline(name: &str, args: &Value) -> bool {
     match name {
         "exec_command" => true,
-        "apply_patch" => !args.get("dry_run").and_then(Value::as_bool).unwrap_or(false),
+        "apply_patch" => !args
+            .get("dry_run")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         _ => false,
     }
 }
 
 fn standalone_operation(name: &str) -> bool {
-    matches!(
-        name,
-        "patch_check" | "apply_patch" | "exec_command"
-    )
+    matches!(name, "patch_check" | "apply_patch" | "exec_command")
 }
 
 fn should_log_operation(name: &str) -> bool {
@@ -384,6 +393,13 @@ pub fn check_exec_environment(ctx: &ToolContext) -> Result<Value, WorkspaceError
         "workspace_exec_available": true,
         "workspace_exec_sandbox_enforced": false,
         "workspace_exec_boundary": "policy_only",
+        "system_command_allowlist": ctx.policy.allowed_commands.iter().cloned().collect::<Vec<_>>(),
+        "workspace_local_entries": {
+            "enabled": ctx.policy.workspace_local_entries,
+            "script_extensions": ctx.policy.workspace_script_extensions.iter().cloned().collect::<Vec<_>>(),
+            "resolution": "workdir_first"
+        },
+        // Backward-compatible alias for older MCP clients.
         "allowed_commands": ctx.policy.allowed_commands.iter().cloned().collect::<Vec<_>>(),
         "warnings": ["Workspace 子进程当前允许执行，但尚未启用操作系统级文件系统沙箱"]
     })))

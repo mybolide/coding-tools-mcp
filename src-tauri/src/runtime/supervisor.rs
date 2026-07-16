@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -92,6 +92,22 @@ impl RuntimeSupervisor {
     pub fn drop_workspace(&mut self, profile: &WorkspaceProfile) {
         self.sync_stop_and_wait(profile, ServiceKind::Mcp);
         self.sync_stop_and_wait(profile, ServiceKind::Actions);
+    }
+
+    pub fn active_tunnel_service_keys(&self) -> HashSet<(String, TunnelServiceKind)> {
+        self.entries
+            .iter()
+            .filter_map(|((workspace_id, kind), entry)| match entry.phase {
+                RuntimePhase::Running | RuntimePhase::Starting => Some((
+                    workspace_id.clone(),
+                    match kind {
+                        ServiceKind::Mcp => TunnelServiceKind::Mcp,
+                        ServiceKind::Actions => TunnelServiceKind::Actions,
+                    },
+                )),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn begin_stop(&mut self, workspace_id: &str, kind: ServiceKind) -> Option<JoinHandle<()>> {

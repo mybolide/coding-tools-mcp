@@ -55,6 +55,13 @@ pub struct RuntimeConfig {
     pub permission_mode: String,
     #[serde(default)]
     pub runtime_command: String,
+    /// Workspace execution policy shared by MCP clients.
+    #[serde(default = "default_allowed_commands")]
+    pub allowed_commands: String,
+    #[serde(default = "default_workspace_local_entries")]
+    pub workspace_local_entries: bool,
+    #[serde(default = "default_workspace_script_extensions")]
+    pub workspace_script_extensions: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,7 +167,15 @@ fn default_permission_mode() -> String {
 }
 
 fn default_allowed_commands() -> String {
-    "pytest,python,python3,npm,npx,node,pnpm,yarn,make,mvn,mvnw,gradle,gradlew,cargo,go,ruff,mypy,eslint,tsc".to_string()
+    "pytest,python,python3,npm,npx,node,pnpm,yarn,make,mvn,mvnw,gradle,gradlew,cargo,go,ruff,mypy,eslint,tsc,git,cmd,powershell,pwsh".to_string()
+}
+
+fn default_workspace_local_entries() -> bool {
+    true
+}
+
+fn default_workspace_script_extensions() -> String {
+    ".exe,.bat,.cmd,.ps1".to_string()
 }
 
 fn default_max_patch_bytes() -> u32 {
@@ -199,6 +214,9 @@ impl Default for RuntimeConfig {
             tool_profile: default_tool_profile(),
             permission_mode: default_permission_mode(),
             runtime_command: String::new(),
+            allowed_commands: default_allowed_commands(),
+            workspace_local_entries: default_workspace_local_entries(),
+            workspace_script_extensions: default_workspace_script_extensions(),
         }
     }
 }

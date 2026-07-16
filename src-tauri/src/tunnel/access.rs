@@ -1,13 +1,15 @@
 use std::sync::LazyLock;
 
+use std::collections::HashSet;
+
 use tokio::sync::Mutex;
 
+use crate::data::DataStore;
 use crate::error::AppResult;
 use crate::platform::platform;
 use crate::settings::AppSettings;
 use crate::workspace::WorkspaceProfile;
 
-use super::frp;
 use super::{TunnelServiceKind, TunnelSupervisor};
 
 static TUNNEL_SUPERVISOR: LazyLock<Mutex<TunnelSupervisor>> =
@@ -15,12 +17,6 @@ static TUNNEL_SUPERVISOR: LazyLock<Mutex<TunnelSupervisor>> =
 
 pub fn supervisor() -> &'static Mutex<TunnelSupervisor> {
     &TUNNEL_SUPERVISOR
-}
-
-/// 应用启动时回收上次异常退出留下的、由本应用管理的 frpc。
-pub async fn cleanup_managed_frpc_instances() -> AppResult<usize> {
-    let _operation_lock = frp::acquire_frpc_operation_lock().await?;
-    frp::stop_running_frpc_instances().await
 }
 
 fn tunnel_type_for(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> &str {
@@ -56,6 +52,16 @@ pub async fn stop_for_runtime(
 pub async fn drop_workspace(workspace_id: &str) -> AppResult<()> {
     let mut guard = supervisor().lock().await;
     guard.drop_workspace(workspace_id).await
+}
+
+pub async fn sync_managed_runtime_routes(
+    active_runtime_keys: HashSet<(String, TunnelServiceKind)>,
+) -> AppResult<()> {
+    let settings = AppSettings::load_or_default();
+    let profiles = DataStore::read_file(|data| Ok(data.profiles.clone()))?;
+    let mut guard = supervisor().lock().await;
+    guard.restore_active_frp_routes(&profiles, &active_runtime_keys, &settings);
+    Ok(())
 }
 
 pub async fn cleanup_orphan_for_runtime(

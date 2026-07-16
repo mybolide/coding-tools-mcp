@@ -6,6 +6,11 @@ use std::process::Command;
 use common::*;
 use serde_json::{json, Value};
 
+#[cfg(windows)]
+const TEST_PYTHON: &str = "python";
+#[cfg(not(windows))]
+const TEST_PYTHON: &str = "python3";
+
 #[test]
 fn server_info_returns_workspace_and_tools() {
     let fx = tiny_js_fixture();
@@ -44,7 +49,10 @@ fn read_file_explicit_parent_path_is_read_only() {
     let ctx = ctx_for(&fx.root);
     let out = invoke(&ctx, "read_file", json!({"path": "../outside-secret.txt"}));
     let result = assert_ok(&out);
-    assert!(result["content"].as_str().unwrap_or("").contains("TOP_SECRET"));
+    assert!(result["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("TOP_SECRET"));
 }
 
 #[test]
@@ -114,17 +122,23 @@ fn git_log_root_does_not_pass_empty_pathspec() {
     }
 
     let ctx = ctx_for(&workspace);
-    let result = invoke(
-        &ctx,
-        "git_log",
-        json!({"path": ".", "max_count": 3}),
-    );
+    let result = invoke(&ctx, "git_log", json!({"path": ".", "max_count": 3}));
     let payload = assert_ok(&result);
     assert_eq!(payload["is_repo"], true);
     assert_eq!(payload["commits"].as_array().unwrap().len(), 1);
     for commit in payload["commits"].as_array().unwrap() {
-        for field in ["hash", "short_hash", "author_name", "author_email", "author_date", "subject"] {
-            assert_eq!(commit[field].as_str().unwrap(), commit[field].as_str().unwrap().trim());
+        for field in [
+            "hash",
+            "short_hash",
+            "author_name",
+            "author_email",
+            "author_date",
+            "subject",
+        ] {
+            assert_eq!(
+                commit[field].as_str().unwrap(),
+                commit[field].as_str().unwrap().trim()
+            );
         }
     }
 }
@@ -216,11 +230,11 @@ fn direct_exec_uses_the_same_result_contract() {
     let result = invoke(
         &ctx,
         "exec_command",
-        json!({"cmd": "python --version", "filesystem_scope": "workspace"}),
+        json!({"cmd": format!("{TEST_PYTHON} --version"), "filesystem_scope": "workspace"}),
     );
     let payload = assert_ok(&result);
 
-    assert_eq!(payload["command"], "python --version");
+    assert_eq!(payload["command"], format!("{TEST_PYTHON} --version"));
     assert_eq!(payload["execution_mode"], "direct");
     assert_eq!(payload["harness_mode"], "standalone");
     assert_eq!(payload["task_required"], false);
@@ -242,7 +256,7 @@ fn nonzero_command_exit_keeps_transport_ok_but_sets_command_ok_false() {
         &ctx,
         "exec_command",
         json!({
-            "cmd": "python -c \"import sys; sys.exit(1)\"",
+            "cmd": format!("{TEST_PYTHON} -c \"import sys; sys.exit(1)\""),
             "filesystem_scope": "workspace"
         }),
     );
@@ -263,7 +277,7 @@ fn retained_session_timeout_stops_the_process_after_deadline() {
         &ctx,
         "exec_command",
         json!({
-            "cmd": "python -c \"import time; time.sleep(2)\"",
+            "cmd": format!("{TEST_PYTHON} -c \"import time; time.sleep(2)\""),
             "filesystem_scope": "workspace",
             "timeout_ms": 100,
             "yield_time_ms": 0
@@ -299,7 +313,7 @@ fn killed_session_reports_command_failure_even_when_transport_succeeds() {
         &ctx,
         "exec_command",
         json!({
-            "cmd": "python -c \"import time; time.sleep(2)\"",
+            "cmd": format!("{TEST_PYTHON} -c \"import time; time.sleep(2)\""),
             "filesystem_scope": "workspace",
             "timeout_ms": 10_000,
             "yield_time_ms": 0
@@ -334,11 +348,9 @@ fn list_files_accepts_glob_alias() {
     let payload = assert_ok(&out);
     let files = payload["files"].as_array().expect("files array");
     assert!(!files.is_empty());
-    assert!(
-        files
-            .iter()
-            .all(|f| f["path"].as_str().unwrap_or("").ends_with(".js"))
-    );
+    assert!(files
+        .iter()
+        .all(|f| f["path"].as_str().unwrap_or("").ends_with(".js")));
 }
 
 #[test]

@@ -25,6 +25,9 @@ export interface RuntimeConfig {
   tool_profile: string;
   permission_mode: string;
   runtime_command?: string;
+  allowed_commands?: string;
+  workspace_local_entries?: boolean;
+  workspace_script_extensions?: string;
 }
 
 export interface ActionsConfig {

@@ -3,6 +3,7 @@ use std::path::{Component, Path};
 
 use serde_json::Value;
 
+use crate::tools::workspace::Workspace;
 use crate::workspace::ActionsConfig;
 
 use super::registry::is_allowed_tool;
@@ -16,14 +17,47 @@ const BASIC_READ_ONLY_COMMANDS: &[&str] = &[
 ];
 
 const DEFAULT_ALLOWED_COMMANDS: &[&str] = &[
-    "pytest", "python", "python3", "npm", "npx", "node", "pnpm", "yarn", "make", "mvn", "mvnw",
-    "gradle", "gradlew", "cargo", "go", "ruff", "mypy", "eslint", "tsc", "msbuild", "dotnet",
-    "deno", "bun", "ruby", "java", "javac", "cmake", "clang", "gcc", "g++", "git",
+    "pytest",
+    "python",
+    "python3",
+    "npm",
+    "npx",
+    "node",
+    "pnpm",
+    "yarn",
+    "make",
+    "mvn",
+    "mvnw",
+    "gradle",
+    "gradlew",
+    "cargo",
+    "go",
+    "ruff",
+    "mypy",
+    "eslint",
+    "tsc",
+    "msbuild",
+    "dotnet",
+    "deno",
+    "bun",
+    "ruby",
+    "java",
+    "javac",
+    "cmake",
+    "clang",
+    "gcc",
+    "g++",
+    "git",
+    "cmd",
+    "powershell",
+    "pwsh",
 ];
 
 #[derive(Debug, Clone)]
 pub struct PolicySettings {
     pub allowed_commands: HashSet<String>,
+    pub workspace_local_entries: bool,
+    pub workspace_script_extensions: HashSet<String>,
     pub max_patch_bytes: usize,
     pub permission_mode: String,
 }
@@ -32,6 +66,8 @@ impl Default for PolicySettings {
     fn default() -> Self {
         Self {
             allowed_commands: default_allowed_command_set(),
+            workspace_local_entries: true,
+            workspace_script_extensions: default_workspace_script_extension_set(),
             max_patch_bytes: 200_000,
             permission_mode: "trusted".into(),
         }
@@ -41,7 +77,11 @@ impl Default for PolicySettings {
 impl PolicySettings {
     pub fn from_runtime(runtime: &crate::workspace::RuntimeConfig) -> Self {
         Self {
-            allowed_commands: default_allowed_command_set(),
+            allowed_commands: merge_default_allowed_commands(&runtime.allowed_commands),
+            workspace_local_entries: runtime.workspace_local_entries,
+            workspace_script_extensions: parse_workspace_script_extensions(
+                &runtime.workspace_script_extensions,
+            ),
             max_patch_bytes: 200_000,
             permission_mode: runtime.permission_mode.clone(),
         }
@@ -49,7 +89,9 @@ impl PolicySettings {
 
     pub fn from_actions_config(actions: &ActionsConfig) -> Self {
         Self {
-            allowed_commands: parse_allowed_commands(&actions.allowed_commands),
+            allowed_commands: merge_default_allowed_commands(&actions.allowed_commands),
+            workspace_local_entries: true,
+            workspace_script_extensions: default_workspace_script_extension_set(),
             max_patch_bytes: actions.max_patch_bytes as usize,
             permission_mode: actions.permission_mode.clone(),
         }
@@ -84,6 +126,25 @@ pub fn parse_allowed_commands(configured: &str) -> HashSet<String> {
     commands
 }
 
+pub fn parse_workspace_script_extensions(configured: &str) -> HashSet<String> {
+    let mut extensions = configured
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.starts_with('.') {
+                value.to_ascii_lowercase()
+            } else {
+                format!(".{}", value.to_ascii_lowercase())
+            }
+        })
+        .collect::<HashSet<_>>();
+    if extensions.is_empty() {
+        extensions = default_workspace_script_extension_set();
+    }
+    extensions
+}
+
 fn default_allowed_command_set() -> HashSet<String> {
     DEFAULT_ALLOWED_COMMANDS
         .iter()
@@ -92,13 +153,35 @@ fn default_allowed_command_set() -> HashSet<String> {
         .collect()
 }
 
+fn merge_default_allowed_commands(configured: &str) -> HashSet<String> {
+    let mut commands = default_allowed_command_set();
+    commands.extend(parse_allowed_commands(configured));
+    commands
+}
+
+fn default_workspace_script_extension_set() -> HashSet<String> {
+    [".exe", ".bat", ".cmd", ".ps1"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn validate_tool_arguments(
     tool_name: &str,
     arguments: &Value,
     policy: &PolicySettings,
 ) -> Result<(), PolicyError> {
+    validate_tool_arguments_for_workspace(tool_name, arguments, policy, None)
+}
+
+pub fn validate_tool_arguments_for_workspace(
+    tool_name: &str,
+    arguments: &Value,
+    policy: &PolicySettings,
+    workspace: Option<&Workspace>,
+) -> Result<(), PolicyError> {
     match tool_name {
-        "exec_command" => validate_command(arguments, policy),
+        "exec_command" => validate_command_for_workspace(arguments, policy, workspace),
         "apply_patch" | "patch_check" => validate_patch(arguments, policy),
         _ => Ok(()),
     }
@@ -114,6 +197,14 @@ pub fn validate_actions_exposure(tool_name: &str) -> Result<(), PolicyError> {
 }
 
 pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<(), PolicyError> {
+    validate_command_for_workspace(arguments, policy, None)
+}
+
+pub fn validate_command_for_workspace(
+    arguments: &Value,
+    policy: &PolicySettings,
+    workspace: Option<&Workspace>,
+) -> Result<(), PolicyError> {
     let command = arguments
         .get("cmd")
         .and_then(Value::as_str)
@@ -156,11 +247,10 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
             "PROTECTED_REPOSITORY_ASSET: 禁止删除或递归清空 .git/.github".into(),
         ));
     }
-    if interpreter_mutation_pattern().is_match(command)
-        && command_contains_external_path(command)
-    {
+    if interpreter_mutation_pattern().is_match(command) && command_contains_external_path(command) {
         return Err(PolicyError(
-            "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程写入 Workspace 外部路径".into(),
+            "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程写入 Workspace 外部路径"
+                .into(),
         ));
     }
     if dangerous_command_pattern().is_match(command)
@@ -197,7 +287,15 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
         .or_else(|| base_name.strip_suffix(".bat"))
         .unwrap_or(base_name);
 
-    if !policy.allowed_commands.contains(stem) {
+    let workspace_entry_candidate = workspace_local_entry_exists(workspace, arguments, executable)
+        || executable.contains(['/', '\\'])
+        || policy
+            .workspace_script_extensions
+            .iter()
+            .any(|extension| base_name.to_ascii_lowercase().ends_with(extension));
+    if !(policy.allowed_commands.contains(stem)
+        || (policy.workspace_local_entries && workspace_entry_candidate))
+    {
         return Err(PolicyError(format!("Command is not allowlisted: {stem}")));
     }
 
@@ -214,6 +312,33 @@ pub fn validate_command(arguments: &Value, policy: &PolicySettings) -> Result<()
     }
 
     Ok(())
+}
+
+fn workspace_local_entry_exists(
+    workspace: Option<&Workspace>,
+    arguments: &Value,
+    executable: &str,
+) -> bool {
+    let Some(workspace) = workspace else {
+        return false;
+    };
+    let workdir = arguments
+        .get("workdir")
+        .or_else(|| arguments.get("cwd"))
+        .and_then(Value::as_str)
+        .unwrap_or(".");
+    let Ok(base) = workspace.resolve_existing(workdir) else {
+        return false;
+    };
+    let candidate = if Path::new(executable).is_absolute() {
+        Path::new(executable).to_path_buf()
+    } else {
+        base.path.join(executable)
+    };
+    candidate
+        .canonicalize()
+        .map(|path| path.is_file() && path.starts_with(workspace.root()))
+        .unwrap_or(false)
 }
 
 pub fn validate_patch(arguments: &Value, policy: &PolicySettings) -> Result<(), PolicyError> {
@@ -324,8 +449,8 @@ fn command_contains_external_path(command: &str) -> bool {
 
 fn command_targets_protected_repository_asset(command: &str) -> bool {
     let normalized_command = command.to_ascii_lowercase().replace('\\', "/");
-    let references_protected_asset = normalized_command.contains(".git")
-        || normalized_command.contains(".github");
+    let references_protected_asset =
+        normalized_command.contains(".git") || normalized_command.contains(".github");
     if !references_protected_asset {
         return false;
     }
@@ -375,7 +500,37 @@ mod tests {
         };
         let policy = PolicySettings::from_actions_config(&actions);
         assert!(policy.allowed_commands.contains("cargo"));
-        assert!(!policy.allowed_commands.contains("pytest"));
+        assert!(policy.allowed_commands.contains("pytest"));
+    }
+
+    #[test]
+    fn trusted_mode_accepts_any_configured_workspace_script_extension() {
+        let policy = PolicySettings {
+            workspace_local_entries: true,
+            workspace_script_extensions: parse_workspace_script_extensions(".cmd,.launcher"),
+            ..PolicySettings::default()
+        };
+        assert!(
+            validate_command(&serde_json::json!({ "cmd": "anything.launcher" }), &policy).is_ok()
+        );
+        assert!(validate_command(
+            &serde_json::json!({ "cmd": "scripts/another-name.cmd" }),
+            &policy
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn trusted_mode_accepts_an_extensionless_workspace_entry() {
+        let dir = tempfile::tempdir().expect("workspace");
+        std::fs::write(dir.path().join("project-entry"), "#!/bin/sh\necho ok\n").expect("entry");
+        let workspace = Workspace::new(dir.path().to_path_buf()).expect("workspace");
+        assert!(validate_command_for_workspace(
+            &serde_json::json!({ "cmd": "project-entry", "workdir": "." }),
+            &PolicySettings::default(),
+            Some(&workspace),
+        )
+        .is_ok());
     }
 
     #[test]
@@ -406,7 +561,7 @@ mod tests {
         };
         let policy = PolicySettings::from_actions_config(&actions);
         assert!(validate_command(&json!({"cmd": "pwd"}), &policy).is_ok());
-        assert!(validate_command(&json!({"cmd": "pytest"}), &policy).is_err());
+        assert!(validate_command(&json!({"cmd": "pytest"}), &policy).is_ok());
     }
 
     #[test]
@@ -422,10 +577,6 @@ mod tests {
             &policy
         )
         .is_err());
-        assert!(validate_command(
-            &json!({"cmd": "echo hello > output.txt"}),
-            &policy
-        )
-        .is_err());
+        assert!(validate_command(&json!({"cmd": "echo hello > output.txt"}), &policy).is_err());
     }
 }

@@ -3,7 +3,9 @@ use tauri::State;
 use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
 use crate::platform::platform;
-use crate::tunnel::{frp_snippet, supervisor, TunnelServiceKind, TunnelStatus};
+use crate::tunnel::{
+    frp_snippet, supervisor, sync_managed_runtime_routes, TunnelServiceKind, TunnelStatus,
+};
 
 fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::WorkspaceProfile> {
     state.with_workspaces(|store| {
@@ -34,6 +36,11 @@ fn persist_public_url(
         store.update(profile)?;
         Ok(())
     })
+}
+
+async fn sync_tunnel_routes_from_runtime(state: &AppState) -> AppResult<()> {
+    let active_keys = state.with_runtime(|runtime| Ok(runtime.active_tunnel_service_keys()))?;
+    sync_managed_runtime_routes(active_keys).await
 }
 
 fn restore_tunnel_config(
@@ -127,6 +134,7 @@ pub async fn restart_tunnel(
     id: String,
     service: String,
 ) -> AppResult<TunnelStatus> {
+    sync_tunnel_routes_from_runtime(&state).await?;
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
@@ -181,6 +189,7 @@ pub async fn start_tunnel(
     id: String,
     service: String,
 ) -> AppResult<TunnelStatus> {
+    sync_tunnel_routes_from_runtime(&state).await?;
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
@@ -235,6 +244,7 @@ pub async fn test_tunnel(
     id: String,
     service: String,
 ) -> AppResult<TunnelTestResult> {
+    sync_tunnel_routes_from_runtime(&state).await?;
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;

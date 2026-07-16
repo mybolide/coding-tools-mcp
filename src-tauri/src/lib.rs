@@ -67,11 +67,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            if let Err(error) =
-                tauri::async_runtime::block_on(crate::tunnel::cleanup_managed_frpc_instances())
-            {
-                eprintln!("启动时清理旧 frpc 失败：{error}");
-            }
             app.manage(AppState::new().expect("failed to load app state"));
             Ok(())
         })

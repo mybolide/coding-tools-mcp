@@ -28,6 +28,26 @@ pub struct FrpcHandle {
     pub pid: Option<u32>,
 }
 
+pub(crate) fn managed_frpc_config_path() -> AppResult<PathBuf> {
+    let dir = platform().app_config_dir()?.join("frpc");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("frpc-active.toml"))
+}
+
+pub(crate) fn managed_frpc_config_matches(expected: &str) -> AppResult<bool> {
+    let path = managed_frpc_config_path()?;
+    let actual = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(AppError::Message(format!(
+                "读取共享 frpc 配置失败：{error}"
+            )))
+        }
+    };
+    Ok(actual == expected)
+}
+
 /// 跨应用实例串行化 frpc 的停止与启动。
 ///
 /// 同一个进程内由 `TunnelSupervisor` 的 Tokio mutex 保证串行；但用户
@@ -139,9 +159,7 @@ pub async fn spawn_frpc(
         validate_frp_config(config)?;
     }
 
-    let log_dir = log_dir_for_profile(&first_profile.id);
-    std::fs::create_dir_all(&log_dir)?;
-    let config_path = log_dir.join("frpc.toml");
+    let config_path = managed_frpc_config_path()?;
     let log_paths: Vec<PathBuf> = routes
         .iter()
         .map(|(profile, kind)| -> AppResult<PathBuf> {
@@ -154,7 +172,8 @@ pub async fn spawn_frpc(
         .first()
         .cloned()
         .ok_or_else(|| AppError::Message("没有可写入的 frpc 日志路径。".into()))?;
-    std::fs::write(&config_path, build_frpc_toml_for_routes(&configs))?;
+    let config_text = build_frpc_toml_for_routes(&configs);
+    std::fs::write(&config_path, &config_text)?;
     let log_offset = log_file_len(&log_path);
 
     let mut cmd = Command::new(&frpc);

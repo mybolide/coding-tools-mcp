@@ -8,6 +8,7 @@ use std::collections::HashSet;
 
 use super::TunnelServiceKind;
 
+pub(crate) use client::managed_frpc_config_matches;
 pub(crate) use client::{acquire_frpc_operation_lock, stop_running_frpc_instances};
 pub(crate) use client::{cached_frpc_path, download_frpc_to_cache};
 pub use client::{resolve_frpc, spawn_frpc};
@@ -213,6 +214,17 @@ pub(crate) fn build_frpc_toml_for_routes(configs: &[FrpServerConfig]) -> String 
 
     lines.pop();
     lines.join("\n")
+}
+
+pub(crate) fn build_frpc_toml_for_route_refs(
+    routes: &[(&WorkspaceProfile, TunnelServiceKind)],
+    settings: &AppSettings,
+) -> String {
+    let configs: Vec<FrpServerConfig> = routes
+        .iter()
+        .map(|(profile, kind)| frp_server_config(profile, *kind, settings, None))
+        .collect();
+    build_frpc_toml_for_routes(&configs)
 }
 
 fn frp_proxy_config(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> FrpProxyConfig {
