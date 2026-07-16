@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "可选：上传 DMG 到已存在的 Release，例如 v0.1.7"
+        description: "可选：上传 DMG 到已存在的 Release，例如 v0.1.8"
         required: false
         type: string
 

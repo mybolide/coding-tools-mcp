@@ -6,7 +6,10 @@ use crate::app_state::AppState;
 
 use crate::error::{AppError, AppResult};
 
-use crate::runtime::{await_listener_shutdown, port_busy_message, wait_for_port_free, ServiceKind};
+use crate::runtime::{
+    await_listener_shutdown, port_busy_message, try_reclaim_previous_macos_app_port,
+    wait_for_port_free, ServiceKind,
+};
 
 use crate::platform::platform;
 
@@ -60,6 +63,10 @@ async fn ensure_port_available(port: u16, service_label: &str) -> AppResult<()> 
         if wait_for_port_free(port, Duration::from_secs(3)).await {
             return Ok(());
         }
+    }
+
+    if try_reclaim_previous_macos_app_port(port) {
+        return Ok(());
     }
 
     if let Some(pid) = platform().find_pid_listening_on_port(port)? {

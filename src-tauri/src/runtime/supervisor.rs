@@ -8,7 +8,10 @@ use crate::actions;
 use crate::error::AppResult;
 use crate::mcp;
 use crate::platform::platform;
-use crate::runtime::port::{is_own_process, port_busy_message, wait_for_port_free_blocking};
+use crate::runtime::port::{
+    is_own_process, port_busy_message, try_reclaim_previous_macos_app_port,
+    wait_for_port_free_blocking,
+};
 use crate::secret::SecretStore;
 use crate::tools::policy::PolicySettings;
 use crate::tunnel::{append_profile_log, cleanup_orphan_for_runtime, TunnelServiceKind};
@@ -209,6 +212,10 @@ impl RuntimeSupervisor {
         if let Some(pid) = platform().find_pid_listening_on_port(port)? {
             if is_own_process(pid) {
                 wait_for_port_free_blocking(port, Duration::from_secs(3));
+            }
+            if try_reclaim_previous_macos_app_port(port) {
+                // A previous source-built or installed instance of this macOS
+                // app released the port; continue with the current listener.
             }
             if let Some(pid) = platform().find_pid_listening_on_port(port)? {
                 self.entries.remove(&key);
