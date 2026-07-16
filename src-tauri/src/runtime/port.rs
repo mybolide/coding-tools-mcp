@@ -45,7 +45,7 @@ pub fn try_reclaim_previous_macos_app_port(port: u16) -> bool {
             return false;
         }
 
-        return wait_until_port_is_free_blocking(port, Duration::from_secs(3));
+        wait_until_port_is_free_blocking(port, Duration::from_secs(3))
     }
 
     #[cfg(not(target_os = "macos"))]
