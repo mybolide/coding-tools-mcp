@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/mybolide/coding-tools-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/mybolide/coding-tools-mcp?label=Release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows-x64-0078D4?logo=windows" alt="Windows x64">
-  <img src="https://img.shields.io/badge/macOS-Universal-000000?logo=apple" alt="macOS Universal">
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple" alt="macOS Apple Silicon">
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0"></a>
 </p>
 
@@ -40,7 +40,7 @@ Open [Releases](https://github.com/mybolide/coding-tools-mcp/releases/latest) an
 | Platform | Package |
 | --- | --- |
 | Windows 10/11 x64 | `Coding.Tools.MCP_*_x64-setup.exe` |
-| macOS Apple Silicon / Intel | `Coding.Tools.MCP_*_universal.dmg` |
+| macOS Apple Silicon | `Coding Tools MCP_*_aarch64.dmg` |
 
 The macOS build is currently unsigned. If macOS blocks the first launch, allow it from System Settings → Privacy & Security.
 
@@ -58,6 +58,8 @@ When the AI client is not running on the same machine, expose MCP through HTTPS:
 - Install or detect `frpc` / `cloudflared` from **Software management**.
 - Save the server, port, and token under **FRP settings**, or select Cloudflare in the workspace.
 - Give each workspace a distinct subdomain. The app manages the FRP process and aggregates multiple proxy routes.
+
+If you do not have an FRPS server yet, follow this [FRPS server installation guide (Chinese, WeChat)](https://mp.weixin.qq.com/s/kmpQhHsvmHlaLfj4rw3A0Q). After deployment, enter the server address, port, and token under **FRP settings** in the desktop client.
 
 ### 4. Start MCP
 
