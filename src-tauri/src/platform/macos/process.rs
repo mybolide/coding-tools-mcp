@@ -19,9 +19,11 @@ pub fn process_image_path(pid: u32) -> AppResult<Option<String>> {
     if size <= 0 {
         return Ok(None);
     }
-    let path = std::ffi::CStr::from_bytes_until_nul(&buffer[..size as usize])
-        .map_err(|err| AppError::Message(format!("invalid proc path: {err}")))?;
-    Ok(Some(path.to_string_lossy().into_owned()))
+    // proc_pidpath 返回的长度不包含末尾 NUL；只解析有效字节。
+    // 若对 buffer[..size] 按 C 字符串读取，macOS 上会稳定报 invalid proc path。
+    Ok(Some(
+        String::from_utf8_lossy(&buffer[..size as usize]).into_owned(),
+    ))
 }
 
 pub fn terminate_process_tree(root_pid: u32) -> AppResult<()> {
@@ -96,4 +98,18 @@ fn signal_pid(pid: u32, signal: i32) -> AppResult<()> {
         "kill({pid}, {signal}) failed: {}",
         std::io::Error::last_os_error()
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_image_path_reads_current_process() {
+        let path = process_image_path(std::process::id())
+            .expect("读取当前进程路径不应失败")
+            .expect("当前进程应存在可读取的镜像路径");
+
+        assert!(!path.trim().is_empty());
+    }
 }
