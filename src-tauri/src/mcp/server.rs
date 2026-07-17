@@ -43,7 +43,7 @@ fn initialize_result() -> Value {
     serde_json::json!({
         "protocolVersion": "2025-06-18",
         "capabilities": {
-            "tools": { "listChanged": false },
+            "tools": { "listChanged": true },
             "logging": {}
         },
         "serverInfo": {
@@ -62,8 +62,9 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         .ok_or_else(|| serde_json::json!({ "code": -32602, "message": "Missing tool name" }))?;
     let args = tool_arguments(name, params);
 
+    let canonical_name = crate::tools::registry::canonical_tool_name(name);
     let known = crate::tools::registry::exposed_tool_names(&state.tool_profile);
-    if !known.iter().any(|n| n == &name) {
+    if !known.iter().any(|n| n == &canonical_name) {
         return Err(serde_json::json!({
             "code": -32602,
             "message": format!("Unknown tool: {name}"),
@@ -71,8 +72,8 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         }));
     }
 
-    let structured = call_tool(state.as_ref(), name, &args);
-    Ok(wrap_mcp_tool_result(name, &args, structured))
+    let structured = call_tool(state.as_ref(), canonical_name, &args);
+    Ok(wrap_mcp_tool_result(canonical_name, &args, structured))
 }
 
 fn tool_arguments(name: &str, params: &Value) -> Value {
@@ -184,5 +185,33 @@ mod tests {
             .expect("read history file");
         assert!(content.contains("**Session key:** chatgpt-session"));
         assert!(!content.contains("explicit-session"));
+    }
+
+    #[test]
+    fn legacy_grep_calls_are_mapped_to_the_public_grep_text_tool() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let harness = tempfile::tempdir().expect("harness tempdir");
+        fs::write(workspace.path().join("sample.txt"), "catalog needle")
+            .expect("write sample file");
+        let state = Arc::new(
+            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                .expect("tool context"),
+        );
+
+        let response = handle_request(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "grep",
+                    "arguments": {"query": "needle", "path": "."}
+                }
+            }),
+        );
+
+        assert!(response.get("error").is_none());
+        assert_eq!(response["result"]["structuredContent"]["ok"], true);
     }
 }

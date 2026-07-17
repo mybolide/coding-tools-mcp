@@ -186,9 +186,9 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
         false,
     ),
     (
-        "grep",
-        "Grep",
-        "Grep-compatible alias for search_text with regex, glob, context, and bounded results.",
+        "grep_text",
+        "Grep workspace text",
+        "Search workspace text with grep-style regex, glob, context, and bounded results.",
         true,
         false,
         false,
@@ -312,7 +312,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
-    "grep",
+    "grep_text",
     "apply_patch",
     "exec_command",
     "write_stdin",
@@ -336,7 +336,7 @@ pub const CORE_READ_ONLY_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
-    "grep",
+    "grep_text",
     "read_output",
     "git_status",
     "git_diff",
@@ -362,6 +362,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep_text",
     "grep",
     "apply_patch",
     "patch_check",
@@ -414,6 +415,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep_text",
     "grep",
     "read_output",
     "git_status",
@@ -432,6 +434,13 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
 
 pub fn is_allowed_tool(name: &str) -> bool {
     ALLOWED_TOOLS.contains(&name)
+}
+
+pub fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "grep" => "grep_text",
+        _ => name,
+    }
 }
 
 pub fn normalize_tool_profile(profile: &str) -> &'static str {
@@ -646,7 +655,7 @@ pub fn input_schema(name: &str) -> Value {
             },
             "additionalProperties": false
         }),
-        "search_text" | "grep" => json!({
+        "search_text" | "grep_text" | "grep" => json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string", "minLength": 1 },

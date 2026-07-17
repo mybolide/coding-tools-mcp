@@ -122,7 +122,7 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
         "read_file" => file::read_file(ws, &effective_args),
         "list_dir" => file::list_dir(ws, &effective_args),
         "list_files" => file::list_files(ws, &effective_args),
-        "search_text" | "grep" => file::search_text(ws, &effective_args),
+        "search_text" | "grep_text" | "grep" => file::search_text(ws, &effective_args),
         "patch_check" => patch::patch_check(ctx, &effective_args),
         "apply_patch" => patch::apply_patch(ctx, &effective_args),
         "exec_command" => exec::exec_command(ctx, &effective_args),
@@ -226,7 +226,7 @@ fn apply_default_cwd(ctx: &ToolContext, name: &str, args: &Value) -> Value {
             let path = effective.get("path").and_then(Value::as_str).unwrap_or(".");
             effective["path"] = Value::String(prefix_relative_path(&base, path));
         }
-        "read_file" | "search_text" | "grep" | "git_blame" | "view_image" => {
+        "read_file" | "search_text" | "grep_text" | "grep" | "git_blame" | "view_image" => {
             if let Some(path) = effective.get("path").and_then(Value::as_str) {
                 effective["path"] = Value::String(prefix_relative_path(&base, path));
             }

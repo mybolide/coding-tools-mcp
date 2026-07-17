@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::{Form, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header::CACHE_CONTROL, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -165,12 +165,16 @@ fn bind_listener(port: u16) -> Result<tokio::net::TcpListener, String> {
         .map_err(|err| format!("MCP 本地监听器初始化失败: {err}"))
 }
 
-async fn mcp_discovery() -> Json<Value> {
-    Json(json!({
+async fn mcp_discovery() -> Response {
+    ([(CACHE_CONTROL, "no-store")], Json(mcp_discovery_payload())).into_response()
+}
+
+fn mcp_discovery_payload() -> Value {
+    json!({
         "name": "coding-tools-mcp",
-        "version": "0.1.0",
+        "version": env!("CARGO_PKG_VERSION"),
         "protocolVersion": "2025-06-18"
-    }))
+    })
 }
 
 fn resolve_oauth_base(state: &ListenerState, headers: &HeaderMap) -> String {
@@ -370,7 +374,10 @@ fn oauth_not_configured() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{bind_listener, mcp_discovery};
+    use axum::http::header::CACHE_CONTROL;
+    use axum::response::IntoResponse;
+
+    use super::{bind_listener, mcp_discovery, mcp_discovery_payload};
 
     #[test]
     fn bind_listener_reports_port_conflict_synchronously() {
@@ -382,8 +389,15 @@ mod tests {
 
     #[tokio::test]
     async fn discovery_reports_the_current_package_version() {
-        let discovery = mcp_discovery().await;
+        let discovery = mcp_discovery_payload();
 
-        assert_eq!(discovery.0["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(discovery["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn discovery_prevents_stale_tool_catalog_caching() {
+        let response = mcp_discovery().await.into_response();
+
+        assert_eq!(response.headers()[CACHE_CONTROL], "no-store");
     }
 }
