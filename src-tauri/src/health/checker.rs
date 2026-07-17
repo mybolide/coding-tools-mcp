@@ -481,4 +481,9 @@ mod tests {
 
     #[test]
     fn oauth_challenge_requires_resource_metadata() {
-        asser
+        assert!(has_bearer_challenge(
+            "Bearer realm=\"coding-tools-mcp\", resource_metadata=\"https://example.com/meta\""
+        ));
+        assert!(!has_bearer_challenge("Bearer realm=\"coding-tools-mcp\""));
+    }
+}
