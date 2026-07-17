@@ -370,7 +370,7 @@ fn oauth_not_configured() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::bind_listener;
+    use super::{bind_listener, mcp_discovery};
 
     #[test]
     fn bind_listener_reports_port_conflict_synchronously() {
@@ -378,5 +378,12 @@ mod tests {
         let port = occupied.local_addr().expect("读取测试端口").port();
 
         assert!(bind_listener(port).is_err());
+    }
+
+    #[tokio::test]
+    async fn discovery_reports_the_current_package_version() {
+        let discovery = mcp_discovery().await;
+
+        assert_eq!(discovery.0["version"], env!("CARGO_PKG_VERSION"));
     }
 }

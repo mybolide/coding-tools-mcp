@@ -813,3 +813,37 @@ pub fn input_schema(name: &str) -> Value {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{input_schema, list_tools_for_profile};
+
+    #[test]
+    fn core_catalog_exposes_24_chatgpt_compatible_tools() {
+        let tools = list_tools_for_profile("core");
+        let names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect();
+        let unique: HashSet<_> = names.iter().copied().collect();
+
+        assert_eq!(tools.len(), 24);
+        assert_eq!(unique.len(), tools.len());
+        assert!(names.contains(&"history_session_bootstrap"));
+        assert!(names.contains(&"history_session_checkpoint"));
+        assert!(names.contains(&"history_session_validate"));
+        assert!(names.contains(&"grep_text"));
+        assert!(!names.contains(&"grep"));
+
+        for name in names {
+            let schema = input_schema(name);
+            assert_eq!(schema["type"], "object", "{name} schema type");
+            assert!(schema["properties"].is_object(), "{name} properties");
+            assert!(schema.get("oneOf").is_none(), "{name} oneOf");
+            assert!(schema.get("anyOf").is_none(), "{name} anyOf");
+            assert!(schema.get("$ref").is_none(), "{name} ref");
+        }
+    }
+}

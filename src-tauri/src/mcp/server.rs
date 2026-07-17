@@ -135,6 +135,13 @@ mod tests {
     }
 
     #[test]
+    fn initialize_declares_that_the_tool_catalog_can_change() {
+        let initialized = initialize_result();
+
+        assert_eq!(initialized["capabilities"]["tools"]["listChanged"], true);
+    }
+
+    #[test]
     fn chatgpt_session_metadata_is_injected_only_for_history_tools() {
         let params = json!({
             "arguments": {"session_key": "explicit"},
