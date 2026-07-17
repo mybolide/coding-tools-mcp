@@ -11,6 +11,7 @@
   import RuntimePolicyForm, {
     type RuntimePolicyDraft,
   } from "$lib/components/RuntimePolicyForm.svelte";
+  import ChatGptSessionPrompt from "$lib/components/ChatGptSessionPrompt.svelte";
   import ServicePanel from "$lib/components/ServicePanel.svelte";
   import GptQuickCopy from "$lib/components/GptQuickCopy.svelte";
   import StatusOrb from "$lib/components/StatusOrb.svelte";
@@ -535,6 +536,10 @@
           onSave={saveWorkspaceName}
           onUpdatePath={saveWorkspacePath}
         />
+      </div>
+
+      <div class="mt-4">
+        <ChatGptSessionPrompt />
       </div>
 
       <div class="mt-4 flex flex-wrap items-center gap-2">
