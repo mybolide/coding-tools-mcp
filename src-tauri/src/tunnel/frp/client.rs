@@ -649,7 +649,10 @@ fn frp_release_asset() -> AppResult<(&'static str, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{aggregate_uses_proxy, successful_proxy_names};
+    use super::{
+        aggregate_uses_proxy, managed_frpc_config_path, managed_frpc_pid_path,
+        successful_proxy_names,
+    };
     use crate::tunnel::TunnelServiceKind;
     use crate::workspace::WorkspaceProfile;
 
@@ -688,5 +691,24 @@ mod tests {
             (&direct, TunnelServiceKind::Mcp),
         ]));
         assert!(!aggregate_uses_proxy(&[(&direct, TunnelServiceKind::Mcp)]));
+    }
+
+    #[test]
+    fn managed_config_paths_are_isolated_by_workspace() {
+        let first = managed_frpc_config_path("first-workspace").unwrap();
+        let second = managed_frpc_config_path("second-workspace").unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.ends_with("first-workspace/frpc.toml"));
+        assert!(second.ends_with("second-workspace/frpc.toml"));
+    }
+
+    #[test]
+    fn managed_pid_paths_are_isolated_and_sanitize_workspace_ids() {
+        let path = managed_frpc_pid_path("../unsafe workspace").unwrap();
+        let normalized = path.to_string_lossy().replace('\\', "/");
+
+        assert!(normalized.ends_with("frpc/___unsafe_workspace/frpc.pid"));
+        assert!(!normalized.contains("/../"));
     }
 }

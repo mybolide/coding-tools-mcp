@@ -407,6 +407,31 @@ mod tests {
     }
 
     #[test]
+    fn same_name_workspaces_receive_distinct_proxy_names() {
+        let first = WorkspaceProfile::new("/tmp/first".into(), Some("Same Name".into()));
+        let second = WorkspaceProfile::new("/tmp/second".into(), Some("Same Name".into()));
+        let settings = AppSettings::default();
+
+        let first_config = frp_server_config(&first, TunnelServiceKind::Mcp, &settings, None);
+        let second_config = frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None);
+
+        assert_ne!(first_config.proxy.proxy_name, second_config.proxy.proxy_name);
+    }
+
+    #[test]
+    fn proxy_name_is_stable_when_workspace_is_renamed() {
+        let original = WorkspaceProfile::new("/tmp/demo".into(), Some("Before".into()));
+        let mut renamed = original.clone();
+        renamed.name = "After".into();
+        let settings = AppSettings::default();
+
+        let before = frp_server_config(&original, TunnelServiceKind::Mcp, &settings, None);
+        let after = frp_server_config(&renamed, TunnelServiceKind::Mcp, &settings, None);
+
+        assert_eq!(before.proxy.proxy_name, after.proxy.proxy_name);
+    }
+
+    #[test]
     fn resolve_token_from_matching_global_profile_when_manual_server() {
         let mut profile = WorkspaceProfile::new("/tmp/demo".into(), Some("Demo".into()));
         profile.tunnel.frp_server = "frp.example.com".into();

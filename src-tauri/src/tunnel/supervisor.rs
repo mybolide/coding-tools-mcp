@@ -852,6 +852,27 @@ mod tests {
     }
 
     #[test]
+    fn different_workspaces_may_use_different_frp_servers() {
+        let settings = AppSettings::default();
+        let first = frp_profile("first", "first");
+        let mut second = frp_profile("second", "second");
+        second.tunnel.frp_server = "another-frp.example.com".into();
+        let mut supervisor = TunnelSupervisor::new();
+        supervisor.frp_routes.insert(
+            (first.id.clone(), TunnelServiceKind::Mcp),
+            FrpRoute {
+                profile: first,
+                kind: TunnelServiceKind::Mcp,
+            },
+        );
+
+        let config = frp::frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None);
+        assert!(supervisor
+            .validate_frp_route_compatibility(&second.id, &config, &settings)
+            .is_ok());
+    }
+
+    #[test]
     fn stale_profile_does_not_match_a_replaced_route() {
         let settings = AppSettings::default();
         let current = frp_profile("demo", "aa");
@@ -937,5 +958,35 @@ mod tests {
                 .map(|session| (session.public_url.as_str(), session.pid)),
             Some(("https://new-subdomain.frp.example.com", Some(42)))
         );
+    }
+
+    #[test]
+    fn syncing_one_workspace_does_not_change_another_workspace_pid() {
+        let settings = AppSettings::default();
+        let first = frp_profile("first", "first");
+        let second = frp_profile("second", "second");
+        let first_key = (first.id.clone(), TunnelServiceKind::Mcp);
+        let second_key = (second.id.clone(), TunnelServiceKind::Mcp);
+        let mut supervisor = TunnelSupervisor::new();
+        supervisor.frp_routes.insert(
+            first_key.clone(),
+            FrpRoute {
+                profile: first,
+                kind: TunnelServiceKind::Mcp,
+            },
+        );
+        supervisor.frp_routes.insert(
+            second_key.clone(),
+            FrpRoute {
+                profile: second,
+                kind: TunnelServiceKind::Mcp,
+            },
+        );
+        supervisor.sync_frp_sessions_for_workspace(&settings, &second_key.0, Some(99));
+
+        supervisor.sync_frp_sessions_for_workspace(&settings, &first_key.0, Some(42));
+
+        assert_eq!(supervisor.sessions.get(&first_key).and_then(|s| s.pid), Some(42));
+        assert_eq!(supervisor.sessions.get(&second_key).and_then(|s| s.pid), Some(99));
     }
 }

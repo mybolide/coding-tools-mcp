@@ -54,7 +54,7 @@
 
 ### 阶段 4：RED——每工作区 frpc
 
-- [ ] 4.1 增加工作区配置路径、proxy name、PID 归属和局部进程状态失败测试，并运行得到目标 RED。
+- [x] 4.1 增加工作区配置路径、proxy name、PID 归属和局部进程状态失败测试，并运行得到目标 RED。
   - **证据块**：`managed_frpc_config_path` 当前返回全局 `frpc-active.toml`；`stop_running_frpc_instances` 当前按所有已知镜像路径结束进程。
   - **涉及文件**：`tunnel/frp/client.rs`、`tunnel/frp/mod.rs`、`tunnel/supervisor.rs` 测试模块，新增约 180 行测试。
   - _需求：FR-1、FR-2、FR-5_ ｜ _设计：进程隔离、进程恢复_
@@ -88,7 +88,7 @@
 - [x] 阶段 1 完成后：`check_spec` 通过；GitNexus 对 Rust 符号返回 UNKNOWN，已按高风险人工调用链评估并告知用户。
 - [x] 阶段 2 完成后：资源冲突测试因缺少实现而产生 E0432 目标 RED，并创建只含本任务测试的 checkpoint commit。
 - [x] 阶段 3 完成后：资源冲突专项测试 8 项 GREEN，并创建最小实现 checkpoint commit。
-- [ ] 阶段 4 完成后：工作区 frpc 隔离测试 RED，并创建第二个测试 checkpoint commit。
+- [x] 阶段 4 完成后：工作区 frpc 隔离测试产生 6 个目标编译错误 RED，并创建第二个测试 checkpoint commit。
 - [ ] 阶段 5 完成后：隔离专项测试 GREEN，A 工作区操作不改变 B 状态。
 - [ ] 阶段 6 完成后：全量门禁通过，安装包哈希完成。
 
