@@ -1,8 +1,178 @@
+use std::collections::HashMap;
+
+use crate::error::{AppError, AppResult};
+use crate::workspace::WorkspaceProfile;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceService {
+    Mcp,
+    Actions,
+}
+
+impl WorkspaceService {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mcp => "MCP",
+            Self::Actions => "Actions",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ServiceClaim<'a> {
+    profile: &'a WorkspaceProfile,
+    service: WorkspaceService,
+    local_port: u16,
+    subdomain: &'a str,
+    uses_frp: bool,
+}
+
+pub fn validate_workspace_resources(
+    profiles: &[WorkspaceProfile],
+    candidate: &WorkspaceProfile,
+) -> AppResult<()> {
+    let existing_claims: Vec<_> = profiles
+        .iter()
+        .filter(|profile| profile.id != candidate.id)
+        .flat_map(service_claims)
+        .collect();
+    let candidate_claims = service_claims(candidate);
+
+    validate_candidate_ports(&existing_claims, &candidate_claims)?;
+    validate_candidate_subdomains(&existing_claims, &candidate_claims)
+}
+
+pub fn validate_service_start(
+    profiles: &[WorkspaceProfile],
+    workspace_id: &str,
+    service: WorkspaceService,
+) -> AppResult<()> {
+    let target = profiles
+        .iter()
+        .find(|profile| profile.id == workspace_id)
+        .ok_or_else(|| AppError::Message(format!("workspace not found: {workspace_id}")))?;
+    let target_claim = claim_for(target, service);
+
+    for profile in profiles {
+        for claim in service_claims(profile) {
+            if claim.profile.id == workspace_id && claim.service == service {
+                continue;
+            }
+            if claim.local_port == target_claim.local_port {
+                return Err(port_conflict_error(target_claim, claim));
+            }
+            if same_non_empty_subdomain(target_claim, claim) {
+                return Err(subdomain_conflict_error(target_claim, claim));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_candidate_ports(
+    existing: &[ServiceClaim<'_>],
+    candidate: &[ServiceClaim<'_>],
+) -> AppResult<()> {
+    let mut candidate_ports = HashMap::<u16, ServiceClaim<'_>>::new();
+    for claim in candidate.iter().copied() {
+        if let Some(owner) = existing
+            .iter()
+            .copied()
+            .find(|owner| owner.local_port == claim.local_port)
+        {
+            return Err(port_conflict_error(claim, owner));
+        }
+        if let Some(owner) = candidate_ports.insert(claim.local_port, claim) {
+            return Err(port_conflict_error(claim, owner));
+        }
+    }
+    Ok(())
+}
+
+fn validate_candidate_subdomains(
+    existing: &[ServiceClaim<'_>],
+    candidate: &[ServiceClaim<'_>],
+) -> AppResult<()> {
+    let mut candidate_subdomains = HashMap::<String, ServiceClaim<'_>>::new();
+    for claim in candidate.iter().copied().filter(|claim| claim.uses_frp) {
+        let subdomain = claim.subdomain.trim();
+        if subdomain.is_empty() {
+            continue;
+        }
+        if let Some(owner) = existing
+            .iter()
+            .copied()
+            .find(|owner| same_non_empty_subdomain(claim, *owner))
+        {
+            return Err(subdomain_conflict_error(claim, owner));
+        }
+        let normalized = subdomain.to_ascii_lowercase();
+        if let Some(owner) = candidate_subdomains.insert(normalized, claim) {
+            return Err(subdomain_conflict_error(claim, owner));
+        }
+    }
+    Ok(())
+}
+
+fn service_claims(profile: &WorkspaceProfile) -> [ServiceClaim<'_>; 2] {
+    [
+        claim_for(profile, WorkspaceService::Mcp),
+        claim_for(profile, WorkspaceService::Actions),
+    ]
+}
+
+fn claim_for(profile: &WorkspaceProfile, service: WorkspaceService) -> ServiceClaim<'_> {
+    match service {
+        WorkspaceService::Mcp => ServiceClaim {
+            profile,
+            service,
+            local_port: profile.runtime.local_port,
+            subdomain: profile.tunnel.frp_subdomain.as_str(),
+            uses_frp: profile.tunnel.tunnel_type == "frp",
+        },
+        WorkspaceService::Actions => ServiceClaim {
+            profile,
+            service,
+            local_port: profile.actions.local_port,
+            subdomain: profile.actions.frp_subdomain.as_str(),
+            uses_frp: profile.actions.tunnel_type == "frp",
+        },
+    }
+}
+
+fn same_non_empty_subdomain(left: ServiceClaim<'_>, right: ServiceClaim<'_>) -> bool {
+    if !left.uses_frp || !right.uses_frp {
+        return false;
+    }
+    let left = left.subdomain.trim();
+    let right = right.subdomain.trim();
+    !left.is_empty() && !right.is_empty() && left.eq_ignore_ascii_case(right)
+}
+
+fn port_conflict_error(target: ServiceClaim<'_>, owner: ServiceClaim<'_>) -> AppError {
+    AppError::Message(format!(
+        "本地端口 {} 与工作区“{}”的 {} 服务重复。请修改当前工作区 {} 端口后再启动。",
+        target.local_port,
+        owner.profile.name,
+        owner.service.label(),
+        target.service.label()
+    ))
+}
+
+fn subdomain_conflict_error(target: ServiceClaim<'_>, owner: ServiceClaim<'_>) -> AppError {
+    AppError::Message(format!(
+        "FRP 子域名“{}”已被工作区“{}”的 {} 服务使用，当前工作区 {} 不能启动。",
+        target.subdomain.trim(),
+        owner.profile.name,
+        owner.service.label(),
+        target.service.label()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{
-        validate_service_start, validate_workspace_resources, WorkspaceService,
-    };
+    use super::{validate_service_start, validate_workspace_resources, WorkspaceService};
     use crate::workspace::WorkspaceProfile;
 
     fn profile(name: &str, mcp_port: u16, actions_port: u16) -> WorkspaceProfile {
@@ -87,12 +257,9 @@ mod tests {
         let first = profile("first", 28_766, 8_787);
         let target = profile("target", 28_766, 8_788);
 
-        let error = validate_service_start(
-            &[first, target.clone()],
-            &target.id,
-            WorkspaceService::Mcp,
-        )
-        .unwrap_err();
+        let error =
+            validate_service_start(&[first, target.clone()], &target.id, WorkspaceService::Mcp)
+                .unwrap_err();
 
         assert!(error.to_string().contains("端口"));
     }

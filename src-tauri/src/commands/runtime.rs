@@ -17,6 +17,7 @@ use crate::tunnel::{
     maybe_start_for_runtime, stop_for_runtime, sync_managed_runtime_routes, TunnelServiceKind,
 };
 
+use crate::workspace::resources::{validate_service_start, WorkspaceService};
 use crate::workspace::RuntimeStatusDto;
 
 fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::WorkspaceProfile> {
@@ -26,6 +27,14 @@ fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::Work
             .cloned()
             .ok_or_else(|| AppError::Message(format!("workspace not found: {id}")))
     })
+}
+
+fn validate_start_resources(
+    state: &AppState,
+    id: &str,
+    service: WorkspaceService,
+) -> AppResult<()> {
+    state.with_workspaces(|store| validate_service_start(store.list(), id, service))
 }
 
 fn persist_tunnel_url(
@@ -90,6 +99,7 @@ async fn ensure_port_available(port: u16, service_label: &str) -> AppResult<()> 
 #[tauri::command]
 
 pub async fn start_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
+    validate_start_resources(&state, &id, WorkspaceService::Mcp)?;
     let profile = profile_by_id(&state, &id)?;
 
     ensure_port_available(profile.runtime.local_port, "本地 MCP").await?;
@@ -161,6 +171,7 @@ pub async fn start_actions_runtime(
 
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
+    validate_start_resources(&state, &id, WorkspaceService::Actions)?;
     let profile = profile_by_id(&state, &id)?;
 
     ensure_port_available(profile.actions.local_port, "本地 Actions").await?;
@@ -236,6 +247,7 @@ pub fn get_actions_runtime_status(
 #[tauri::command]
 
 pub fn restart_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
+    validate_start_resources(&state, &id, WorkspaceService::Mcp)?;
     let profile = profile_by_id(&state, &id)?;
 
     state.with_runtime(|runtime| runtime.restart_mcp(&profile))
@@ -248,6 +260,7 @@ pub fn restart_actions_runtime(
 
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
+    validate_start_resources(&state, &id, WorkspaceService::Actions)?;
     let profile = profile_by_id(&state, &id)?;
 
     state.with_runtime(|runtime| runtime.restart_actions(&profile))
