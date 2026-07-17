@@ -60,6 +60,10 @@
   - 证据块: OpenAI Apps SDK `instructions` 与工具描述契约
   - 文件: `src-tauri/src/mcp/server.rs`、`src-tauri/src/tools/registry.rs`、`src-tauri/src/tools/history/mod.rs`
   - _需求: FR-8_ · _设计: 决策 5_
+- [x] 2.7 在每个工作区的 MCP GPT 配置区增加会话恢复提示词与一键复制反馈
+  - 证据块: `src/lib/components/GptQuickCopy.svelte`
+  - 文件: `src/lib/components/ChatGptSessionPrompt.svelte`、`src/lib/components/GptQuickCopy.svelte`
+  - _需求: FR-8_ · _设计: 决策 5_
 
 ---
 
@@ -91,7 +95,7 @@
 | FR-5 | 技术选型、风险评估 | 1.2, 2.2, 3.1 | 已完成 |
 | FR-6 | 数据模型、风险评估 | 1.2, 2.1, 3.1 | 已完成 |
 | FR-7 | 架构设计、决策 4 | 1.1, 2.4, 2.5, 3.1 | 已完成 |
-| FR-8 | 决策 5 | 1.3, 2.6, 3.1 | 已完成 |
+| FR-8 | 决策 5 | 1.3, 2.6, 2.7, 3.1 | 已完成 |
 
 ---
 

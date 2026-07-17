@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ChatGptSessionPrompt from "$lib/components/ChatGptSessionPrompt.svelte";
   import CopyFieldRow from "$lib/components/CopyFieldRow.svelte";
   import { getSecret, getSharedSecret } from "$lib/api/secrets";
   import type { AuthConfig, WorkspaceProfile } from "$lib/types";
@@ -164,4 +165,10 @@
       {/if}
     {/if}
   </div>
+
+  {#if service === "mcp"}
+    <div class="mt-4 border-t border-[var(--color-border)] pt-4">
+      <ChatGptSessionPrompt />
+    </div>
+  {/if}
 </article>

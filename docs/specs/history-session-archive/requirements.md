@@ -129,6 +129,7 @@
 2. WHEN `history_session_bootstrap` 成功 THEN 系统 SHALL 返回结构化 `assistant_instructions`、`required_next_actions` 和 `checkpoint_policy`，再次强化当前会话的持久化规则。
 3. WHEN客户端调用 `tools/list` THEN bootstrap 与 checkpoint 描述 SHALL 明确说明调用时机，使模型能够据此选择工具。
 4. WHEN模型未执行 checkpoint THEN 服务端 SHALL 不宣称已自动持久化；第一版不修改或拦截现有工具，也不具备脱离模型调用的后台自动写入能力。
+5. WHEN用户打开任一工作区的 MCP 配置 THEN 页面 SHALL 展示完整会话恢复提示词和一键复制按钮，并提供复制成功或失败反馈。
 
 ---
 
