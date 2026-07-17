@@ -172,7 +172,10 @@ fn subdomain_conflict_error(target: ServiceClaim<'_>, owner: ServiceClaim<'_>) -
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_service_start, validate_workspace_resources, WorkspaceService};
+    use super::{
+        validate_service_start, validate_workspace_resources, validate_workspace_resources_update,
+        WorkspaceService,
+    };
     use crate::workspace::WorkspaceProfile;
 
     fn profile(name: &str, mcp_port: u16, actions_port: u16) -> WorkspaceProfile {
@@ -241,6 +244,38 @@ mod tests {
         let updated = original.clone();
 
         assert!(validate_workspace_resources(&[original], &updated).is_ok());
+    }
+
+    #[test]
+    fn allows_fixing_mcp_port_when_legacy_actions_conflict_is_unchanged() {
+        let owner = profile("owner", 28_765, 8_787);
+        let current = profile("target", 28_766, 8_787);
+        let mut candidate = current.clone();
+        candidate.runtime.local_port = 28_767;
+
+        assert!(validate_workspace_resources_update(
+            &[owner, current.clone()],
+            &current,
+            &candidate,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_changed_mcp_port_that_conflicts_with_another_service() {
+        let owner = profile("owner", 28_765, 8_787);
+        let current = profile("target", 28_766, 8_788);
+        let mut candidate = current.clone();
+        candidate.runtime.local_port = owner.runtime.local_port;
+
+        let error = validate_workspace_resources_update(
+            &[owner, current.clone()],
+            &current,
+            &candidate,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("28765"));
     }
 
     #[test]
