@@ -61,11 +61,11 @@
 
 ### 阶段 5：GREEN——每工作区 frpc
 
-- [ ] 5.1 将单一 frpc 状态替换为工作区进程映射，所有启动、停止、删除和 orphan 清理只操作目标工作区。
+- [x] 5.1 将单一 frpc 状态替换为工作区进程映射，所有启动、停止、删除和 orphan 清理只操作目标工作区。
   - **证据块**：`restart_frpc` 当前聚合 `self.frp_routes.values()`，会把全部工作区写入一个配置并全局重启。
   - **涉及文件**：`tunnel/supervisor.rs` 当前 931 行；新增逻辑优先提取小型纯函数，业务文件净增预算 180 行，不继续堆叠无关职责。
   - _需求：FR-1、FR-2、FR-5_ ｜ _设计：决策 1、架构设计_
-- [ ] 5.2 改造 frpc 工作区配置、PID、锁和有界释放重试，移除正常流程的全局镜像路径批量终止。
+- [x] 5.2 改造 frpc 工作区配置、PID、锁和有界释放重试，移除正常流程的全局镜像路径批量终止。
   - **证据块**：`tunnel/frp/client.rs:20` 仅有 600ms grace；`stop_running_frpc_instances` 会终止所有同路径 `frpc`。
   - **涉及文件**：`tunnel/frp/client.rs` 当前 686 行，新增路径/PID职责控制在约 170 行；`tunnel/frp/mod.rs` 修改约 30 行。
   - _需求：FR-4、FR-5、NFR-2、NFR-3_ ｜ _设计：决策 3、决策 4_
@@ -89,7 +89,7 @@
 - [x] 阶段 2 完成后：资源冲突测试因缺少实现而产生 E0432 目标 RED，并创建只含本任务测试的 checkpoint commit。
 - [x] 阶段 3 完成后：资源冲突专项测试 8 项 GREEN，并创建最小实现 checkpoint commit。
 - [x] 阶段 4 完成后：工作区 frpc 隔离测试产生 6 个目标编译错误 RED，并创建第二个测试 checkpoint commit。
-- [ ] 阶段 5 完成后：隔离专项测试 GREEN，A 工作区操作不改变 B 状态。
+- [x] 阶段 5 完成后：隧道专项 24 项和 Rust 全量 146 项 GREEN，A 工作区 session 同步不改变 B 的 PID。
 - [ ] 阶段 6 完成后：全量门禁通过，安装包哈希完成。
 
 ---

@@ -137,8 +137,6 @@ pub async fn stop_runtime(state: State<'_, AppState>, id: String) -> AppResult<R
 
     let port = profile.runtime.local_port;
 
-    stop_for_runtime(&profile, TunnelServiceKind::Mcp).await?;
-
     let handle = state.with_runtime(|runtime| Ok(runtime.begin_stop(&id, ServiceKind::Mcp)))?;
 
     await_listener_shutdown(handle, port).await;
@@ -148,6 +146,7 @@ pub async fn stop_runtime(state: State<'_, AppState>, id: String) -> AppResult<R
 
         Ok(runtime.mcp_status(&profile))
     })?;
+    stop_for_runtime(&profile, TunnelServiceKind::Mcp).await?;
     sync_tunnel_routes_from_runtime(&state).await?;
     state.with_runtime(|runtime| Ok(runtime.mcp_status(&profile)))
 }
@@ -213,8 +212,6 @@ pub async fn stop_actions_runtime(
 
     let port = profile.actions.local_port;
 
-    stop_for_runtime(&profile, TunnelServiceKind::Actions).await?;
-
     let handle = state.with_runtime(|runtime| Ok(runtime.begin_stop(&id, ServiceKind::Actions)))?;
 
     await_listener_shutdown(handle, port).await;
@@ -224,6 +221,7 @@ pub async fn stop_actions_runtime(
 
         Ok(runtime.actions_status(&profile))
     })?;
+    stop_for_runtime(&profile, TunnelServiceKind::Actions).await?;
     sync_tunnel_routes_from_runtime(&state).await?;
     state.with_runtime(|runtime| Ok(runtime.actions_status(&profile)))
 }

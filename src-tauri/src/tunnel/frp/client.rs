@@ -28,14 +28,47 @@ pub struct FrpcHandle {
     pub pid: Option<u32>,
 }
 
-pub(crate) fn managed_frpc_config_path() -> AppResult<PathBuf> {
-    let dir = platform().app_config_dir()?.join("frpc");
+fn managed_frpc_dir(workspace_id: &str) -> AppResult<PathBuf> {
+    let dir = platform()
+        .app_config_dir()?
+        .join("frpc")
+        .join(sanitize_workspace_id(workspace_id));
     std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("frpc-active.toml"))
+    Ok(dir)
 }
 
-pub(crate) fn managed_frpc_config_matches(expected: &str) -> AppResult<bool> {
-    let path = managed_frpc_config_path()?;
+pub(crate) fn managed_frpc_config_path(workspace_id: &str) -> AppResult<PathBuf> {
+    Ok(managed_frpc_dir(workspace_id)?.join("frpc.toml"))
+}
+
+pub(crate) fn managed_frpc_pid_path(workspace_id: &str) -> AppResult<PathBuf> {
+    Ok(managed_frpc_dir(workspace_id)?.join("frpc.pid"))
+}
+
+fn managed_frpc_operation_lock_path(workspace_id: &str) -> AppResult<PathBuf> {
+    Ok(managed_frpc_dir(workspace_id)?.join("frpc-operation.lock"))
+}
+
+fn sanitize_workspace_id(workspace_id: &str) -> String {
+    let sanitized: String = workspace_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "workspace".into()
+    } else {
+        sanitized
+    }
+}
+
+pub(crate) fn managed_frpc_config_matches(workspace_id: &str, expected: &str) -> AppResult<bool> {
+    let path = managed_frpc_config_path(workspace_id)?;
     let actual = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -65,8 +98,10 @@ impl Drop for FrpcOperationLock {
     }
 }
 
-pub(crate) async fn acquire_frpc_operation_lock() -> AppResult<FrpcOperationLock> {
-    let path = platform().app_config_dir()?.join("frpc-operation.lock");
+pub(crate) async fn acquire_frpc_operation_lock(
+    workspace_id: &str,
+) -> AppResult<FrpcOperationLock> {
+    let path = managed_frpc_operation_lock_path(workspace_id)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -142,7 +177,83 @@ pub async fn ensure_frpc() -> AppResult<PathBuf> {
     download_frpc_to_cache().await
 }
 
+fn write_managed_frpc_pid(workspace_id: &str, pid: u32, image_path: &Path) -> AppResult<()> {
+    let path = managed_frpc_pid_path(workspace_id)?;
+    std::fs::write(path, format!("{pid}\n{}\n", image_path.to_string_lossy()))?;
+    Ok(())
+}
+
+pub(crate) fn clear_managed_frpc_pid(workspace_id: &str) {
+    if let Ok(path) = managed_frpc_pid_path(workspace_id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+pub(crate) async fn stop_recorded_frpc_instance(workspace_id: &str) -> AppResult<bool> {
+    let path = managed_frpc_pid_path(workspace_id)?;
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut lines = contents.lines();
+    let pid = lines
+        .next()
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let recorded_image = lines
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (Some(pid), Some(recorded_image)) = (pid, recorded_image) else {
+        clear_managed_frpc_pid(workspace_id);
+        return Ok(false);
+    };
+
+    if !platform().is_process_alive(pid) {
+        clear_managed_frpc_pid(workspace_id);
+        return Ok(false);
+    }
+    let Some(actual_image) = platform().process_image_path(pid)? else {
+        clear_managed_frpc_pid(workspace_id);
+        return Ok(false);
+    };
+    if !same_process_image(Path::new(recorded_image), Path::new(&actual_image)) {
+        clear_managed_frpc_pid(workspace_id);
+        return Ok(false);
+    }
+
+    platform().terminate_process_tree(pid)?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while platform().is_process_alive(pid) && tokio::time::Instant::now() < deadline {
+        sleep(Duration::from_millis(50)).await;
+    }
+    if platform().is_process_alive(pid) {
+        return Err(AppError::Message(format!(
+            "停止工作区 frpc 超时，PID {pid} 仍在运行。"
+        )));
+    }
+    clear_managed_frpc_pid(workspace_id);
+    sleep(FRPC_RESTART_GRACE).await;
+    Ok(true)
+}
+
+fn same_process_image(left: &Path, right: &Path) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .trim_start_matches("\\\\?\\")
+            .eq_ignore_ascii_case(right.to_string_lossy().trim_start_matches("\\\\?\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
 pub async fn spawn_frpc(
+    workspace_id: &str,
     routes: &[(&WorkspaceProfile, TunnelServiceKind)],
     settings: &crate::settings::AppSettings,
 ) -> AppResult<FrpcHandle> {
@@ -159,7 +270,7 @@ pub async fn spawn_frpc(
         validate_frp_config(config)?;
     }
 
-    let config_path = managed_frpc_config_path()?;
+    let config_path = managed_frpc_config_path(workspace_id)?;
     let log_paths: Vec<PathBuf> = routes
         .iter()
         .map(|(profile, kind)| -> AppResult<PathBuf> {
@@ -208,6 +319,12 @@ pub async fn spawn_frpc(
         .spawn()
         .map_err(|err| AppError::Message(format!("启动 frpc 失败: {err}")))?;
     let pid = child.id();
+    if let Some(pid) = pid {
+        if let Err(error) = write_managed_frpc_pid(workspace_id, pid, &frpc) {
+            let _ = stop_child(child, Some(pid)).await;
+            return Err(error);
+        }
+    }
     if let Some(stdout) = child.stdout.take() {
         let log_paths = log_paths.clone();
         tokio::spawn(async move {
@@ -225,11 +342,13 @@ pub async fn spawn_frpc(
         Ok(ready) => ready,
         Err(error) => {
             let _ = stop_child(child, pid).await;
+            clear_managed_frpc_pid(workspace_id);
             return Err(error);
         }
     };
     if !ready {
         let _ = stop_child(child, pid).await;
+        clear_managed_frpc_pid(workspace_id);
         return Err(AppError::Message(
             "frpc 已启动但很快退出。请检查 FRP 服务器地址、端口、Token 与子域名配置。".into(),
         ));
@@ -243,41 +362,6 @@ fn aggregate_uses_proxy(routes: &[(&WorkspaceProfile, TunnelServiceKind)]) -> bo
         TunnelServiceKind::Mcp => profile.tunnel.use_proxy,
         TunnelServiceKind::Actions => profile.actions.use_proxy,
     })
-}
-
-/// Stop every frpc instance that this desktop client can launch before a new
-/// aggregate configuration is launched.
-///
-/// Collect every known/bundled/cached executable path instead of only the
-/// currently resolved path: upgrades and PATH changes can leave a previous
-/// client instance using another known copy. Cleanup must happen after the
-/// supervisor has stopped its current Child, but before `spawn_frpc` starts the
-/// replacement.
-pub(crate) async fn stop_running_frpc_instances() -> AppResult<usize> {
-    // 清理所有本应用可能使用过的路径。不能只清理当前 resolve_frpc()
-    // 的结果，否则升级、PATH 变化或旧版本使用缓存路径时仍可能留下孤儿。
-    let mut paths = Vec::new();
-    if let Some(path) = bundled_frpc() {
-        paths.push(path);
-    }
-    if let Some(path) = cached_frpc_path() {
-        paths.push(path);
-    }
-    paths.extend(platform().frpc_candidates());
-    if let Ok(path) = resolve_frpc() {
-        paths.push(path);
-    }
-    paths.sort();
-    paths.dedup();
-
-    let mut terminated = 0;
-    for path in paths {
-        terminated += platform().terminate_processes_by_image_path(&path)?;
-    }
-    if terminated > 0 {
-        sleep(FRPC_RESTART_GRACE).await;
-    }
-    Ok(terminated)
 }
 
 #[allow(dead_code)]

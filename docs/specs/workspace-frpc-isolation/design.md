@@ -38,7 +38,7 @@ TunnelSupervisor[workspace_id]
   └─ 当前工作区失败恢复与有界重试
 ```
 
-停止顺序：先停止当前服务对应隧道 route，再关闭本地监听器；`TunnelSupervisor` 只重建当前工作区 `frpc`。另一个服务仍有 route 时保留该代理，无 route 时删除 PID 记录并停止进程。
+停止顺序：先关闭当前 MCP/Actions 本地监听器，再移除对应隧道 route；`TunnelSupervisor` 只重建当前工作区 `frpc`。另一个服务仍有 route 时保留该代理，无 route 时删除 PID 记录并停止进程。
 
 ---
 

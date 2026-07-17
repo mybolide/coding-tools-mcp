@@ -270,7 +270,8 @@ mod tests {
         let mut candidate = profile("target", 28_766, 8_788);
         candidate.tunnel.frp_subdomain = owner.tunnel.frp_subdomain.clone();
 
-        let error = validate_workspace_resources(&[owner.clone()], &candidate).unwrap_err();
+        let error =
+            validate_workspace_resources(std::slice::from_ref(&owner), &candidate).unwrap_err();
 
         let message = error.to_string();
         assert!(message.contains(&owner.tunnel.frp_subdomain));
