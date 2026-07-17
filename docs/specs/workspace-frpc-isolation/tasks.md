@@ -40,7 +40,7 @@
 
 ### 阶段 2：RED——资源冲突
 
-- [ ] 2.1 先增加端口、proxy name 和 subdomain 冲突失败测试，并运行得到目标 RED。
+- [x] 2.1 先增加端口、proxy name 和 subdomain 冲突失败测试，并运行得到目标 RED。
   - **证据块**：`WorkspaceProfile` 已在 `runtime.local_port`、`actions.local_port` 记录端口；现有测试只覆盖 subdomain。
   - **涉及文件**：新增 `src-tauri/src/workspace/resources.rs`（约 220 行），修改 `workspace/mod.rs`（约 5 行）。
   - _需求：FR-3、FR-4_ ｜ _设计：资源校验、测试策略_
@@ -86,7 +86,7 @@
 ## 检查点
 
 - [x] 阶段 1 完成后：`check_spec` 通过；GitNexus 对 Rust 符号返回 UNKNOWN，已按高风险人工调用链评估并告知用户。
-- [ ] 阶段 2 完成后：资源冲突测试因缺少实现而 RED，并创建只含本任务测试的 checkpoint commit。
+- [x] 阶段 2 完成后：资源冲突测试因缺少实现而产生 E0432 目标 RED，并创建只含本任务测试的 checkpoint commit。
 - [ ] 阶段 3 完成后：同一专项测试 GREEN，并创建最小实现 checkpoint commit。
 - [ ] 阶段 4 完成后：工作区 frpc 隔离测试 RED，并创建第二个测试 checkpoint commit。
 - [ ] 阶段 5 完成后：隔离专项测试 GREEN，A 工作区操作不改变 B 状态。
