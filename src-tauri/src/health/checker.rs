@@ -283,6 +283,22 @@ pub async fn run_health_checks(profile: &WorkspaceProfile) -> Vec<HealthItem> {
     } else {
         actions_public.clone()
     };
+    let mcp_local_oauth_url = well_known_url(
+        &mcp_local_base,
+        ".well-known/oauth-authorization-server",
+    );
+    let mcp_public_oauth_url = well_known_url(
+        &mcp_public_base,
+        ".well-known/oauth-authorization-server",
+    );
+    let mcp_local_protected_url =
+        well_known_url(&mcp_local_base, ".well-known/oauth-protected-resource");
+    let mcp_public_protected_url =
+        well_known_url(&mcp_public_base, ".well-known/oauth-protected-resource");
+    let actions_oauth_url = well_known_url(
+        &actions_oauth_base,
+        ".well-known/oauth-authorization-server",
+    );
     let (bearer_token, bearer_token_error) = bearer_probe_credentials(profile);
 
     let (
@@ -313,31 +329,25 @@ pub async fn run_health_checks(profile: &WorkspaceProfile) -> Vec<HealthItem> {
         ),
         check_oauth_json_field(
             &client,
-            &well_known_url(
-                &mcp_local_base,
-                ".well-known/oauth-authorization-server"
-            ),
+            &mcp_local_oauth_url,
             "token_endpoint_auth_methods_supported",
             &profile.auth.auth_type,
         ),
         check_oauth_json_field(
             &client,
-            &well_known_url(
-                &mcp_public_base,
-                ".well-known/oauth-authorization-server"
-            ),
+            &mcp_public_oauth_url,
             "token_endpoint_auth_methods_supported",
             &profile.auth.auth_type,
         ),
         check_oauth_json_field(
             &client,
-            &well_known_url(&mcp_local_base, ".well-known/oauth-protected-resource"),
+            &mcp_local_protected_url,
             "authorization_servers",
             &profile.auth.auth_type,
         ),
         check_oauth_json_field(
             &client,
-            &well_known_url(&mcp_public_base, ".well-known/oauth-protected-resource"),
+            &mcp_public_protected_url,
             "authorization_servers",
             &profile.auth.auth_type,
         ),
@@ -358,10 +368,7 @@ pub async fn run_health_checks(profile: &WorkspaceProfile) -> Vec<HealthItem> {
         check_url(&client, &actions_openapi_public),
         check_oauth_json_field(
             &client,
-            &well_known_url(
-                &actions_oauth_base,
-                ".well-known/oauth-authorization-server"
-            ),
+            &actions_oauth_url,
             "token_endpoint_auth_methods_supported",
             &profile.actions.auth_type,
         ),
@@ -474,9 +481,4 @@ mod tests {
 
     #[test]
     fn oauth_challenge_requires_resource_metadata() {
-        assert!(has_bearer_challenge(
-            "Bearer realm=\"coding-tools-mcp\", resource_metadata=\"https://example.com/meta\""
-        ));
-        assert!(!has_bearer_challenge("Bearer realm=\"coding-tools-mcp\""));
-    }
-}
+        asser
