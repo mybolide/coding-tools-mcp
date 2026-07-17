@@ -14,12 +14,13 @@ permissions:
 jobs:
   build-universal-macos:
     runs-on: macos-14
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
@@ -38,7 +39,10 @@ jobs:
 
       - name: 运行 Rust 测试
         working-directory: src-tauri
-        run: cargo test
+        run: cargo test --locked
+
+      - name: 构建前端
+        run: npm run build
 
       - name: 构建通用 macOS 应用与 DMG
         run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg
@@ -46,7 +50,7 @@ jobs:
       - name: 上传 Actions 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          name: coding-tools-mcp-${{ github.run_id }}-macos-universal
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
@@ -55,21 +59,29 @@ jobs:
   upload-release:
     if: ${{ inputs.release_tag != '' }}
     needs: build-universal-macos
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
       - name: 下载 macOS 构建产物
         uses: actions/download-artifact@v4
         with:
-          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          name: coding-tools-mcp-${{ github.run_id }}-macos-universal
           path: dist/macos
 
       - name: 上传 DMG 到指定 Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: >-
-          gh release upload "$RELEASE_TAG" dist/macos/dmg/*.dmg
-          --repo "$GITHUB_REPOSITORY"
-          --clobber
+        run: |
+          set -euo pipefail
+          dmg="$(find dist/macos -type f -name '*.dmg' -print -quit)"
+          if [[ -z "$dmg" ]]; then
+            echo "未找到 DMG 构建产物" >&2
+            find dist/macos -type f -print >&2
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null
+          gh release upload "$RELEASE_TAG" "$dmg" --repo "$GH_REPO" --clobber

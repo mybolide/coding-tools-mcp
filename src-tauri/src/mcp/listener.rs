@@ -277,14 +277,23 @@ async fn mcp_post(
 }
 
 fn require_mcp_auth(state: &ListenerState, headers: &HeaderMap) -> Option<Response> {
+    let server_url = resolve_oauth_base(state, headers);
+    let resource_metadata_url = format!(
+        "{}/.well-known/oauth-protected-resource",
+        server_url.trim_end_matches('/')
+    );
     if state.auth.bearer_enabled() {
         let expected = state.bearer_token.as_deref().unwrap_or("");
-        return verify_bearer_header(headers, expected);
+        return verify_bearer_header(headers, expected, &resource_metadata_url);
     }
     if state.auth.oauth_enabled() {
         if let Some(oauth) = state.oauth.as_ref() {
-            let server_url = resolve_oauth_base(state, headers);
-            return verify_oauth_bearer_header(headers, oauth, &server_url);
+            return verify_oauth_bearer_header(
+                headers,
+                oauth,
+                &server_url,
+                Some(&resource_metadata_url),
+            );
         }
     }
     None

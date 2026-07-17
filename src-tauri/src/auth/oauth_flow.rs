@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use super::bearer::constant_time_eq_str;
+use super::bearer::{constant_time_eq_str, unauthorized_response};
 
 pub const OAUTH_CODE_TTL_SECONDS: u64 = 300;
 pub const OAUTH_TOKEN_TTL_SECONDS: i64 = 60 * 60 * 24 * 30;
@@ -91,20 +91,33 @@ pub fn verify_oauth_bearer_header(
     headers: &HeaderMap,
     oauth: &OAuthRuntime,
     server_url: &str,
+    resource_metadata_url: Option<&str>,
 ) -> Option<Response> {
     let Some(header_value) = headers.get(AUTHORIZATION) else {
-        return Some((StatusCode::UNAUTHORIZED, "Missing Authorization header").into_response());
+        return Some(unauthorized_response(
+            "Missing Authorization header",
+            resource_metadata_url,
+        ));
     };
     let Ok(header_str) = header_value.to_str() else {
-        return Some((StatusCode::UNAUTHORIZED, "Invalid Authorization header").into_response());
+        return Some(unauthorized_response(
+            "Invalid Authorization header",
+            resource_metadata_url,
+        ));
     };
     let Some(token) = header_str.strip_prefix("Bearer ").map(str::trim) else {
-        return Some((StatusCode::UNAUTHORIZED, "Invalid bearer token").into_response());
+        return Some(unauthorized_response(
+            "Invalid bearer token",
+            resource_metadata_url,
+        ));
     };
     if oauth.verify_access_token(token, server_url) {
         None
     } else {
-        Some((StatusCode::UNAUTHORIZED, "Invalid bearer token").into_response())
+        Some(unauthorized_response(
+            "Invalid bearer token",
+            resource_metadata_url,
+        ))
     }
 }
 
@@ -503,5 +516,31 @@ mod tests {
         let verifier = "dBjftJeZ4CVP-mB92Kpru-AEJvkQlLgi3ThpmQ45N_Xyo";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         assert!(verify_pkce(verifier, &challenge));
+    }
+
+    #[test]
+    fn rejected_oauth_request_includes_resource_challenge() {
+        use axum::http::header::WWW_AUTHENTICATE;
+
+        let oauth = OAuthRuntime::new(
+            "https://example.com".into(),
+            "chatgpt-client-test".into(),
+            None,
+            "test-password".into(),
+            "token-signing-secret".into(),
+        );
+        let response = verify_oauth_bearer_header(
+            &HeaderMap::new(),
+            &oauth,
+            "https://example.com",
+            Some("https://example.com/.well-known/oauth-protected-resource"),
+        )
+        .expect("missing token should be rejected");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(WWW_AUTHENTICATE).unwrap(),
+            "Bearer realm=\"coding-tools-mcp\", resource_metadata=\"https://example.com/.well-known/oauth-protected-resource\""
+        );
     }
 }

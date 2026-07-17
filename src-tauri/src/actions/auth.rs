@@ -104,6 +104,7 @@ pub async fn require_actions_auth(
                 auth.bind_port,
                 &auth.configured_public_url,
             ),
+            None,
         ) {
             return response;
         }
