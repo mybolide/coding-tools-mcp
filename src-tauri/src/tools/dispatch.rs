@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use crate::tools::context::ToolContext;
 use crate::tools::policy::{validate_tool_arguments_for_workspace, PolicyError};
 use crate::tools::workspace::{tool_err, tool_err_code, tool_ok, WorkspaceError};
-use crate::tools::{exec, file, git, image_tool, patch, session};
+use crate::tools::{exec, file, git, history, image_tool, patch, session};
 
 fn policy_tool_err(err: PolicyError) -> Value {
     let dangerous = err
@@ -111,6 +111,9 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
 
     let ws = &ctx.workspace;
     let result = match name {
+        "history_session_bootstrap" => history::bootstrap(ctx, &effective_args),
+        "history_session_checkpoint" => history::checkpoint(ctx, &effective_args),
+        "history_session_validate" => history::validate(ctx, &effective_args),
         "server_info" => server_info(ctx),
         "check_exec_environment" => check_exec_environment(ctx),
         "exec_health_check" => exec::exec_health_check(ctx),

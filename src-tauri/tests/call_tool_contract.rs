@@ -162,7 +162,7 @@ fn advanced_profile_exposes_every_declared_tool() {
 }
 
 #[test]
-fn core_profile_matches_the_old_default_toolset() {
+fn core_profile_keeps_the_old_default_toolset_and_adds_history_tools() {
     let tools = coding_tools_mcp_desktop_lib::tools::list_tools_for_profile("core");
     let names = tools
         .iter()
@@ -173,8 +173,11 @@ fn core_profile_matches_the_old_default_toolset() {
         .copied()
         .collect::<std::collections::HashSet<_>>();
     assert_eq!(names, expected);
-    assert_eq!(names.len(), 21);
+    assert_eq!(names.len(), 24);
     assert!(names.contains("grep"));
+    assert!(names.contains("history_session_bootstrap"));
+    assert!(names.contains("history_session_checkpoint"));
+    assert!(names.contains("history_session_validate"));
     assert!(!names.contains("harness_status"));
     assert!(!names.contains("start_task"));
 }
