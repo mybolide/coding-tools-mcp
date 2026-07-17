@@ -6,7 +6,9 @@ use crate::app_state::{bootstrap_workspace, teardown_workspace, AppState};
 use crate::error::{AppError, AppResult};
 use crate::platform::open_path_in_file_manager;
 use crate::tunnel::drop_workspace as drop_tunnel_workspace;
-use crate::workspace::resources::validate_workspace_resources;
+use crate::workspace::resources::{
+    validate_workspace_resources, validate_workspace_resources_update,
+};
 use crate::workspace::WorkspaceProfile;
 
 #[tauri::command]
@@ -22,6 +24,7 @@ pub fn create_workspace(
 ) -> AppResult<WorkspaceProfile> {
     state.with_workspaces(|store| {
         let profile = WorkspaceProfile::new(path, name);
+        validate_workspace_resources(store.list(), &profile)?;
         bootstrap_workspace(store, &profile.id)?;
         store.add(profile.clone())?;
         Ok(profile)
@@ -31,7 +34,11 @@ pub fn create_workspace(
 #[tauri::command]
 pub fn update_workspace(state: State<'_, AppState>, profile: WorkspaceProfile) -> AppResult<()> {
     state.with_workspaces(|store| {
-        validate_workspace_resources(store.list(), &profile)?;
+        let current = store
+            .get(&profile.id)
+            .cloned()
+            .ok_or_else(|| AppError::Message(format!("workspace not found: {}", profile.id)))?;
+        validate_workspace_resources_update(store.list(), &current, &profile)?;
         store.update(profile)
     })
 }

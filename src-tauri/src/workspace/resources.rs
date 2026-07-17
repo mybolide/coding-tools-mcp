@@ -42,6 +42,24 @@ pub fn validate_workspace_resources(
     validate_candidate_subdomains(&existing_claims, &candidate_claims)
 }
 
+/// Validate an update without blocking a repair because another, unchanged
+/// service already has a legacy duplicate resource.
+pub fn validate_workspace_resources_update(
+    profiles: &[WorkspaceProfile],
+    current: &WorkspaceProfile,
+    candidate: &WorkspaceProfile,
+) -> AppResult<()> {
+    let existing_claims: Vec<_> = profiles
+        .iter()
+        .filter(|profile| profile.id != candidate.id)
+        .flat_map(service_claims)
+        .collect();
+    let candidate_claims = service_claims(candidate);
+
+    validate_changed_candidate_ports(&existing_claims, &candidate_claims, current, candidate)?;
+    validate_changed_candidate_subdomains(&existing_claims, &candidate_claims, current, candidate)
+}
+
 pub fn validate_service_start(
     profiles: &[WorkspaceProfile],
     workspace_id: &str,
@@ -90,6 +108,35 @@ fn validate_candidate_ports(
     Ok(())
 }
 
+fn validate_changed_candidate_ports(
+    existing: &[ServiceClaim<'_>],
+    candidate: &[ServiceClaim<'_>],
+    current: &WorkspaceProfile,
+    next: &WorkspaceProfile,
+) -> AppResult<()> {
+    for claim in candidate
+        .iter()
+        .copied()
+        .filter(|claim| service_changed(current, next, claim.service))
+    {
+        if let Some(owner) = existing
+            .iter()
+            .copied()
+            .find(|owner| owner.local_port == claim.local_port)
+        {
+            return Err(port_conflict_error(claim, owner));
+        }
+        if let Some(owner) = candidate
+            .iter()
+            .copied()
+            .find(|owner| owner.service != claim.service && owner.local_port == claim.local_port)
+        {
+            return Err(port_conflict_error(claim, owner));
+        }
+    }
+    Ok(())
+}
+
 fn validate_candidate_subdomains(
     existing: &[ServiceClaim<'_>],
     candidate: &[ServiceClaim<'_>],
@@ -115,11 +162,55 @@ fn validate_candidate_subdomains(
     Ok(())
 }
 
+fn validate_changed_candidate_subdomains(
+    existing: &[ServiceClaim<'_>],
+    candidate: &[ServiceClaim<'_>],
+    current: &WorkspaceProfile,
+    next: &WorkspaceProfile,
+) -> AppResult<()> {
+    for claim in candidate
+        .iter()
+        .copied()
+        .filter(|claim| service_changed(current, next, claim.service) && claim.uses_frp)
+    {
+        if claim.subdomain.trim().is_empty() {
+            continue;
+        }
+        if let Some(owner) = existing
+            .iter()
+            .copied()
+            .find(|owner| same_non_empty_subdomain(claim, *owner))
+        {
+            return Err(subdomain_conflict_error(claim, owner));
+        }
+        if let Some(owner) = candidate
+            .iter()
+            .copied()
+            .find(|owner| owner.service != claim.service && same_non_empty_subdomain(claim, *owner))
+        {
+            return Err(subdomain_conflict_error(claim, owner));
+        }
+    }
+    Ok(())
+}
+
 fn service_claims(profile: &WorkspaceProfile) -> [ServiceClaim<'_>; 2] {
     [
         claim_for(profile, WorkspaceService::Mcp),
         claim_for(profile, WorkspaceService::Actions),
     ]
+}
+
+fn service_changed(
+    current: &WorkspaceProfile,
+    next: &WorkspaceProfile,
+    service: WorkspaceService,
+) -> bool {
+    let current = claim_for(current, service);
+    let next = claim_for(next, service);
+    current.local_port != next.local_port
+        || current.subdomain != next.subdomain
+        || current.uses_frp != next.uses_frp
 }
 
 fn claim_for(profile: &WorkspaceProfile, service: WorkspaceService) -> ServiceClaim<'_> {
@@ -268,12 +359,9 @@ mod tests {
         let mut candidate = current.clone();
         candidate.runtime.local_port = owner.runtime.local_port;
 
-        let error = validate_workspace_resources_update(
-            &[owner, current.clone()],
-            &current,
-            &candidate,
-        )
-        .unwrap_err();
+        let error =
+            validate_workspace_resources_update(&[owner, current.clone()], &current, &candidate)
+                .unwrap_err();
 
         assert!(error.to_string().contains("28765"));
     }
