@@ -1,23 +1,50 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { runHealthChecks, type HealthItem } from "$lib/api/health";
 
   interface Props {
     workspaceId: string;
     onRunCheck?: (workspaceId: string) => Promise<HealthItem[]>;
+    onFailure?: (items: HealthItem[]) => void | Promise<void>;
+    autoRefresh?: boolean;
+    refreshIntervalMs?: number;
   }
 
-  let { workspaceId, onRunCheck }: Props = $props();
+  let {
+    workspaceId,
+    onRunCheck,
+    onFailure,
+    autoRefresh = true,
+    refreshIntervalMs = 15_000,
+  }: Props = $props();
 
   let items = $state<HealthItem[]>([]);
   let busy = $state(false);
   let error = $state("");
+  let lastCheckedAt = $state<Date | null>(null);
+  let failureSignature = "";
+  const failedCount = $derived(items.filter((item) => !item.ok).length);
+
+  function applyResults(nextItems: HealthItem[]) {
+    items = nextItems;
+    lastCheckedAt = new Date();
+    const failedItems = nextItems.filter((item) => !item.ok);
+    const nextSignature = failedItems.map((item) => `${item.label}:${item.detail}`).join("|");
+    if (failedItems.length > 0 && nextSignature !== failureSignature) {
+      failureSignature = nextSignature;
+      void onFailure?.(failedItems);
+    } else if (failedItems.length === 0) {
+      failureSignature = "";
+    }
+  }
 
   async function runCheck() {
     if (busy || !workspaceId) return;
     busy = true;
     error = "";
     try {
-      items = onRunCheck ? await onRunCheck(workspaceId) : await runHealthChecks(workspaceId);
+      const nextItems = onRunCheck ? await onRunCheck(workspaceId) : await runHealthChecks(workspaceId);
+      applyResults(nextItems);
     } catch (err) {
       error = String(err);
       items = [];
@@ -25,6 +52,13 @@
       busy = false;
     }
   }
+
+  onMount(() => {
+    if (!autoRefresh) return;
+    void runCheck();
+    const timer = window.setInterval(() => void runCheck(), refreshIntervalMs);
+    return () => window.clearInterval(timer);
+  });
 </script>
 
 <section class="tx-card p-5">
@@ -33,6 +67,7 @@
       <h3 class="font-semibold">健康检查</h3>
       <p class="mt-1 text-sm text-[var(--color-text-muted)]">
         MCP、Actions 本地/公网 endpoint 与 OAuth 元数据
+        {#if lastCheckedAt} · 最近 {lastCheckedAt.toLocaleTimeString()}{/if}
       </p>
     </div>
     <button
@@ -49,6 +84,12 @@
     <p class="mt-4 rounded-lg border border-[var(--color-error)]/30 bg-[var(--color-error)]/10 px-3 py-2 text-sm text-[var(--color-error)]">
       {error}
     </p>
+  {/if}
+
+  {#if failedCount > 0}
+    <div class="tx-alert tx-alert--error mt-4" role="status">
+      发现 {failedCount} 项连接检查失败。请先查看失败项；公网失败通常表示隧道或连接器仍未恢复。
+    </div>
   {/if}
 
   {#if items.length > 0}

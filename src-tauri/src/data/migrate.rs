@@ -11,7 +11,10 @@ const LEGACY_PROFILES_FILE: &str = "profiles.json";
 const LEGACY_SETTINGS_FILE: &str = "app_settings.json";
 
 pub fn data_file_path() -> AppResult<PathBuf> {
-    Ok(platform().app_config_dir()?.join("data").join("profiles.json"))
+    Ok(platform()
+        .app_config_dir()?
+        .join("data")
+        .join("profiles.json"))
 }
 
 pub fn load_or_migrate() -> AppResult<AppData> {

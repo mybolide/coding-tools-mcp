@@ -40,7 +40,10 @@ fn read_file_allows_explicit_external_read_only_path() {
         json!({"path": fx.outside_secret.to_string_lossy()}),
     );
     let result = assert_ok(&out);
-    assert!(result["content"].as_str().unwrap_or("").contains("TOP_SECRET"));
+    assert!(result["content"]
+        .as_str()
+        .unwrap_or("")
+        .contains("TOP_SECRET"));
 }
 
 #[test]
@@ -50,11 +53,7 @@ fn external_read_tools_allow_directory_listing_and_search() {
     let parent = fx.outside_secret.parent().expect("外部目录");
     let parent_text = parent.to_string_lossy().to_string();
 
-    let listed_result = invoke(
-        &ctx,
-        "list_dir",
-        json!({"path": parent_text}),
-    );
+    let listed_result = invoke(&ctx, "list_dir", json!({"path": parent_text}));
     let listed = assert_ok(&listed_result);
     assert!(listed["entries"]
         .as_array()
@@ -102,10 +101,9 @@ fn view_image_allows_explicit_external_read_only_path() {
         .expect("外部目录")
         .join("outside-probe.png");
     let png_1x1: &[u8] = &[
-        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0,
-        0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99,
-        248, 207, 192, 240, 31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69,
-        78, 68, 174, 66, 96, 130,
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+        0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240,
+        31, 0, 5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
     fs::write(&image_path, png_1x1).expect("写入测试图片");
     let result = invoke(
@@ -188,7 +186,10 @@ fn deleting_readme_requires_explicit_confirmation() {
             "patch": "--- a/README.md\n+++ /dev/null\n@@\n-project\n"
         }),
     );
-    assert_eq!(out["error"]["code"], "DANGEROUS_OPERATION_REQUIRES_CONFIRMATION");
+    assert_eq!(
+        out["error"]["code"],
+        "DANGEROUS_OPERATION_REQUIRES_CONFIRMATION"
+    );
 }
 
 #[test]
@@ -351,12 +352,14 @@ fn apply_patch_rejects_absolute_path_target() {
 #[test]
 fn exec_command_allows_python_c_but_rejects_shell_escape() {
     let policy = coding_tools_mcp_desktop_lib::tools::policy::PolicySettings::default();
-    assert!(coding_tools_mcp_desktop_lib::tools::policy::validate_tool_arguments(
-        "exec_command",
-        &json!({"cmd": "python -c \"import os; print(os.getcwd())\""}),
-        &policy,
-    )
-    .is_ok());
+    assert!(
+        coding_tools_mcp_desktop_lib::tools::policy::validate_tool_arguments(
+            "exec_command",
+            &json!({"cmd": "python -c \"import os; print(os.getcwd())\""}),
+            &policy,
+        )
+        .is_ok()
+    );
     assert_policy_rejects(
         "exec_command",
         json!({"cmd": "python -c \"print(1)\" && rm -rf /"}),

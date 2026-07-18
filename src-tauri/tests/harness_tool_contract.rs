@@ -34,7 +34,8 @@ fn codex_patch格式支持新增文件dry_run和实际应用() {
     let temp = tempfile::tempdir().expect("创建临时目录");
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).expect("创建工作区");
-    let ctx = ToolContext::for_test(workspace.clone(), temp.path().join("harness")).expect("创建上下文");
+    let ctx =
+        ToolContext::for_test(workspace.clone(), temp.path().join("harness")).expect("创建上下文");
     let patch = "*** Begin Patch\n*** Add File: probe.txt\n+probe-v2\n*** End Patch\n";
 
     let dry_run = call_tool(
@@ -65,7 +66,8 @@ fn 无任务时普通_patch也可执行并保留撤销能力() {
     let workspace = temp.path().join("workspace");
     fs::create_dir_all(&workspace).expect("创建工作区");
     fs::write(workspace.join("README.md"), "初始内容\n").expect("写入文件");
-    let ctx = ToolContext::for_test(workspace.clone(), temp.path().join("harness")).expect("创建上下文");
+    let ctx =
+        ToolContext::for_test(workspace.clone(), temp.path().join("harness")).expect("创建上下文");
 
     let result = call_tool(
         &ctx,
@@ -77,7 +79,10 @@ fn 无任务时普通_patch也可执行并保留撤销能力() {
 
     assert_eq!(result["ok"], true);
     assert_eq!(result["harness_mode"], "standalone");
-    assert!(!result.as_object().unwrap().contains_key("pre_change_snapshot_id"));
+    assert!(!result
+        .as_object()
+        .unwrap()
+        .contains_key("pre_change_snapshot_id"));
     assert_eq!(
         fs::read_to_string(workspace.join("README.md")).unwrap(),
         "已修改\n"
@@ -116,7 +121,10 @@ fn 无任务时_exec_command不返回任务门禁错误() {
     assert_eq!(result["duration_ms"], result["elapsed_ms"]);
     assert_eq!(result["next_actions"], json!([]));
     assert!(result["recovery_hint"].is_string());
-    assert!(!result.as_object().unwrap().contains_key("pre_change_snapshot_id"));
+    assert!(!result
+        .as_object()
+        .unwrap()
+        .contains_key("pre_change_snapshot_id"));
 }
 
 #[test]

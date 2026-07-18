@@ -33,23 +33,25 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
         .unwrap_or("workspace")
         .to_string();
     validate_child_process_scope(ctx, args)?;
-    if let Some(result) = run_native_diagnostic(ctx, cmd, &workdir.path)? {
-        let mut result = result;
-        if let Some(object) = result.as_object_mut() {
-            object.insert(
-                "filesystem_scope".into(),
-                Value::String(filesystem_scope.clone()),
-            );
-            object.insert("sandbox_enforced".into(), Value::Bool(false));
-            object.insert(
-                "execution_boundary".into(),
-                Value::String("policy_only".into()),
-            );
-            object.insert("child_process".into(), Value::Bool(false));
-            object.insert("transport_ok".into(), Value::Bool(true));
-            object.insert("command_ok".into(), Value::Bool(true));
+    if !ctx.policy.skip_permission_gates() {
+        if let Some(result) = run_native_diagnostic(ctx, cmd, &workdir.path)? {
+            let mut result = result;
+            if let Some(object) = result.as_object_mut() {
+                object.insert(
+                    "filesystem_scope".into(),
+                    Value::String(filesystem_scope.clone()),
+                );
+                object.insert("sandbox_enforced".into(), Value::Bool(false));
+                object.insert(
+                    "execution_boundary".into(),
+                    Value::String("policy_only".into()),
+                );
+                object.insert("child_process".into(), Value::Bool(false));
+                object.insert("transport_ok".into(), Value::Bool(true));
+                object.insert("command_ok".into(), Value::Bool(true));
+            }
+            return Ok(tool_ok(result));
         }
-        return Ok(tool_ok(result));
     }
     let timeout_ms = args
         .get("timeout_ms")
@@ -77,6 +79,7 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
             max_output,
             tty,
             stdin_text,
+            args.get("env"),
         )
         .await
     });
@@ -91,23 +94,37 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
                     Value::String("policy_only".into()),
                 );
                 object.insert("child_process".into(), Value::Bool(true));
+                object.insert(
+                    "execution_mode".into(),
+                    Value::String(if ctx.policy.skip_permission_gates() {
+                        "shell".into()
+                    } else {
+                        "direct".into()
+                    }),
+                );
+                object.insert(
+                    "permission_gates_skipped".into(),
+                    Value::Bool(ctx.policy.skip_permission_gates()),
+                );
             }
             Ok(tool_ok(out))
         }
-        Err(error) => match execution_failure_result(&error, cmd, &workdir.path) {
+        Err(error) => match execution_failure_result(&error, cmd, &workdir.path, &filesystem_scope)
+        {
             Some(result) => Ok(tool_ok(result)),
             None => Err(error),
         },
     }
 }
 
-fn validate_child_process_scope(_ctx: &ToolContext, args: &Value) -> Result<(), WorkspaceError> {
+fn validate_child_process_scope(ctx: &ToolContext, args: &Value) -> Result<(), WorkspaceError> {
     let scope = args
         .get("filesystem_scope")
         .and_then(Value::as_str)
         .unwrap_or("workspace");
     match scope {
         "workspace" => Ok(()),
+        "host" if ctx.policy.skip_permission_gates() => Ok(()),
         "host" => Err(WorkspaceError::ToolDetails {
             code: "EXTERNAL_EXECUTION_NOT_ALLOWED",
             message: "exec_command 只允许在 Workspace 内执行，Workspace 外执行已禁用。".into(),
@@ -230,16 +247,46 @@ async fn run_command(
     max_output: usize,
     tty: bool,
     stdin_text: &str,
+    env: Option<&Value>,
 ) -> Result<Value, WorkspaceError> {
-    let (program, args) = parse_and_resolve(cmd, cwd, ctx.workspace.root(), &ctx.policy)?;
     let start = Instant::now();
 
-    let mut command = command_for_program(&program, &args);
+    // macOS strips DYLD_* variables while starting the platform shell.  Keep
+    // dangerous-mode env arguments effective for the actual child executable
+    // by exporting them from inside the shell as well.  This is needed for
+    // Homebrew runtimes whose dependent dylibs are supplied through a
+    // DYLD_LIBRARY_PATH override; ordinary environment variables continue to
+    // use Command::env below.
+    let shell_command = if ctx.policy.skip_permission_gates() {
+        shell_command_with_dynamic_loader_env(cmd, env)?
+    } else {
+        cmd.to_string()
+    };
+
+    let mut command = if ctx.policy.skip_permission_gates() {
+        command_for_shell(&shell_command)
+    } else {
+        let (program, args) = parse_and_resolve(cmd, cwd, ctx.workspace.root(), &ctx.policy)?;
+        command_for_program(&program, &args)
+    };
     command
         .current_dir(platform_command_path(cwd))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    if let Some(env) = env {
+        let env = env
+            .as_object()
+            .ok_or_else(|| WorkspaceError::invalid_argument("env must be an object"))?;
+        for (key, value) in env {
+            let value = value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string());
+            command.env(key, value);
+        }
+    }
 
     #[cfg(windows)]
     command
@@ -326,6 +373,55 @@ async fn run_command(
     }
 }
 
+fn shell_command_with_dynamic_loader_env(
+    cmd: &str,
+    env: Option<&Value>,
+) -> Result<String, WorkspaceError> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = env;
+        return Ok(cmd.to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let Some(env) = env else {
+            return Ok(cmd.to_string());
+        };
+        let env = env
+            .as_object()
+            .ok_or_else(|| WorkspaceError::invalid_argument("env must be an object"))?;
+        let mut exports = Vec::new();
+        for (key, value) in env {
+            if !key.starts_with("DYLD_") || !is_shell_identifier(key) {
+                continue;
+            }
+            let value = value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string());
+            exports.push(format!("export {key}={}", shell_single_quote(&value)));
+        }
+        if exports.is_empty() {
+            Ok(cmd.to_string())
+        } else {
+            Ok(format!("{}; {}", exports.join("; "), cmd))
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn is_shell_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some('_' | 'A'..='Z' | 'a'..='z'))
+        && chars.all(|ch| matches!(ch, '_' | 'A'..='Z' | 'a'..='z' | '0'..='9'))
+}
+
+#[cfg(target_os = "macos")]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn spawn_timeout_monitor(session: std::sync::Arc<ExecSession>, deadline: Instant) {
     tauri::async_runtime::spawn(async move {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -357,6 +453,7 @@ pub fn exec_health_check(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
         16_384,
         false,
         "",
+        None,
     ));
 
     let mut response = json!({
@@ -408,7 +505,12 @@ pub fn exec_health_check(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
     Ok(tool_ok(response))
 }
 
-fn execution_failure_result(error: &WorkspaceError, command: &str, cwd: &Path) -> Option<Value> {
+fn execution_failure_result(
+    error: &WorkspaceError,
+    command: &str,
+    cwd: &Path,
+    filesystem_scope: &str,
+) -> Option<Value> {
     let code = match &error {
         WorkspaceError::Tool { code, .. } | WorkspaceError::ToolDetails { code, .. } => *code,
     };
@@ -440,7 +542,7 @@ fn execution_failure_result(error: &WorkspaceError, command: &str, cwd: &Path) -
         object.insert("command".into(), json!(command));
         object.insert("resolved_cwd".into(), json!(cwd.display().to_string()));
         object.insert("execution_mode".into(), json!("direct"));
-        object.insert("filesystem_scope".into(), json!("workspace"));
+        object.insert("filesystem_scope".into(), json!(filesystem_scope));
         object.insert("sandbox_enforced".into(), Value::Bool(false));
         object.insert("execution_boundary".into(), json!("policy_only"));
         object.insert("child_process".into(), Value::Bool(true));
@@ -515,6 +617,19 @@ fn parse_and_resolve(
 
     let program = resolve_program(&parts[0], cwd, workspace_root, policy)?;
     Ok((program, parts[1..].to_vec()))
+}
+
+fn command_for_shell(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut shell = Command::new("cmd.exe");
+        shell.args(["/d", "/s", "/c", command]);
+        return shell;
+    }
+
+    let mut shell = Command::new("/bin/sh");
+    shell.args(["-c", command]);
+    shell
 }
 
 fn resolve_program(
@@ -605,12 +720,66 @@ mod tests {
     use tempfile::tempdir;
 
     fn assert_failure_result(error: WorkspaceError, expected_code: &str) {
-        let result = execution_failure_result(&error, "missing-command", Path::new("C:/workspace"))
-            .expect("应转换为统一执行结果");
+        let result = execution_failure_result(
+            &error,
+            "missing-command",
+            Path::new("C:/workspace"),
+            "workspace",
+        )
+        .expect("应转换为统一执行结果");
         assert_eq!(result["transport_ok"], true);
         assert_eq!(result["command_ok"], false);
         assert_eq!(result["status"], "spawn_failed");
         assert_eq!(result["error"]["code"], expected_code);
+    }
+
+    fn dangerous_context(workspace: &Path, harness: &Path) -> ToolContext {
+        let mut context =
+            ToolContext::for_test(workspace.to_path_buf(), harness.to_path_buf()).expect("context");
+        context.policy.permission_mode = "dangerous".into();
+        context.permission_mode = "dangerous".into();
+        context.workspace.set_unrestricted(true);
+        context
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangerous_mode_executes_host_shell_with_environment_and_absolute_read() {
+        let workspace = tempdir().expect("workspace");
+        let host = tempdir().expect("host");
+        let harness = tempdir().expect("harness");
+        let context = dangerous_context(workspace.path(), harness.path());
+
+        let output = call_tool(
+            &context,
+            "exec_command",
+            &json!({
+                "cmd": "printf '%s|%s' \"$CODEX_DANGER_PROBE\" \"$DYLD_LIBRARY_PATH\" > dangerous-probe.txt; printf '\\n' >> dangerous-probe.txt",
+                "workdir": host.path().to_string_lossy(),
+                "filesystem_scope": "host",
+                "timeout_ms": 3_600_000,
+                "yield_time_ms": 10_000,
+                "env": {
+                    "CODEX_DANGER_PROBE": "host-shell-ok",
+                    "DYLD_LIBRARY_PATH": "/tmp/codex-dangerous-dyld"
+                }
+            }),
+        );
+        assert_eq!(output["ok"], true, "{output}");
+        assert_eq!(output["command_ok"], true, "{output}");
+        assert_eq!(output["filesystem_scope"], "host");
+        assert_eq!(output["execution_mode"], "shell");
+        assert_eq!(output["permission_gates_skipped"], true);
+
+        let read = call_tool(
+            &context,
+            "read_file",
+            &json!({
+                "path": host.path().join("dangerous-probe.txt").to_string_lossy()
+            }),
+        );
+        assert_eq!(read["ok"], true, "{read}");
+        assert_eq!(read["content"], "host-shell-ok|/tmp/codex-dangerous-dyld\n");
     }
 
     #[test]

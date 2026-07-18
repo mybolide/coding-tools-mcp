@@ -1,0 +1,61 @@
+name: Public MCP Health
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-health
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: stable-worker
+            base_url: https://coding-tools-mcp-stable.billylovesunny.workers.dev
+          - name: tailscale-funnel
+            base_url: https://codex-mcp-huang.tail0afe04.ts.net
+    steps:
+      - name: 检查 MCP 公网入口
+        env:
+          BASE_URL: ${{ matrix.base_url }}
+        run: |
+          set -euo pipefail
+          base="${BASE_URL%/}"
+          status="$(curl --fail-with-body --silent --show-error \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
+            -D /tmp/mcp-headers -o /tmp/mcp-body -w '%{http_code}' \
+            "$base/mcp" || true)"
+          case "$status" in
+            200)
+              jq -e '.name == "coding-tools-mcp" and (.protocolVersion | length > 0)' /tmp/mcp-body >/dev/null
+              ;;
+            401)
+              grep -qi 'resource_metadata=' /tmp/mcp-headers
+              ;;
+            *)
+              echo "MCP endpoint returned HTTP $status" >&2
+              sed -n '1,80p' /tmp/mcp-body >&2 || true
+              exit 1
+              ;;
+          esac
+          curl --fail --silent --show-error --retry 3 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
+            "$base/.well-known/oauth-protected-resource" \
+            | jq -e '.authorization_servers | length > 0' >/dev/null
+          curl --fail --silent --show-error --retry 3 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 \
+            "$base/.well-known/oauth-authorization-server" \
+            | jq -e '.authorization_endpoint and .token_endpoint' >/dev/null
+          echo "${BASE_URL}: MCP and OAuth metadata healthy (HTTP ${status})"

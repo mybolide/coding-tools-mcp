@@ -34,10 +34,7 @@ pub fn get_download_config(state: State<'_, AppState>) -> AppResult<DownloadConf
 
 /// Persist the download config (mirror + proxy).
 #[tauri::command]
-pub fn set_download_config(
-    state: State<'_, AppState>,
-    config: DownloadConfig,
-) -> AppResult<()> {
+pub fn set_download_config(state: State<'_, AppState>, config: DownloadConfig) -> AppResult<()> {
     state.with_settings(|store| {
         let mut settings = store.settings();
         settings.download = config;

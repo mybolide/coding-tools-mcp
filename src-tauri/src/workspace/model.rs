@@ -53,6 +53,13 @@ pub struct RuntimeConfig {
     pub tool_profile: String,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
+    /// Start this MCP listener when the desktop app starts. A manual stop
+    /// clears this intent until the user starts the service again.
+    #[serde(default = "default_auto_start")]
+    pub auto_start: bool,
+    /// Restart this MCP listener after a confirmed runtime failure.
+    #[serde(default = "default_auto_recover")]
+    pub auto_recover: bool,
     #[serde(default)]
     pub runtime_command: String,
     /// Workspace execution policy shared by MCP clients.
@@ -88,6 +95,13 @@ pub struct ActionsConfig {
     pub local_port: u16,
     #[serde(default = "default_permission_mode")]
     pub permission_mode: String,
+    /// Start this Actions listener when the desktop app starts. A manual stop
+    /// clears this intent until the user starts the service again.
+    #[serde(default = "default_auto_start")]
+    pub auto_start: bool,
+    /// Restart this Actions listener after a confirmed runtime failure.
+    #[serde(default = "default_auto_recover")]
+    pub auto_recover: bool,
     #[serde(default)]
     pub runtime_command: String,
     #[serde(default = "default_actions_auth_type")]
@@ -159,11 +173,24 @@ fn default_actions_port() -> u16 {
 }
 
 fn default_tool_profile() -> String {
-    "core".to_string()
+    // New workspaces should preserve the user's explicitly requested
+    // full-access development behavior instead of silently falling back to a
+    // reduced tool profile after an import or reinstall.
+    "full".to_string()
 }
 
 fn default_permission_mode() -> String {
-    "trusted".to_string()
+    // This is an intentional opt-in for this local, user-owned MCP host.  The
+    // UI still exposes the safer modes for workspaces that need them.
+    "dangerous".to_string()
+}
+
+fn default_auto_start() -> bool {
+    true
+}
+
+fn default_auto_recover() -> bool {
+    true
 }
 
 fn default_allowed_commands() -> String {
@@ -213,6 +240,8 @@ impl Default for RuntimeConfig {
             local_port: default_mcp_port(),
             tool_profile: default_tool_profile(),
             permission_mode: default_permission_mode(),
+            auto_start: default_auto_start(),
+            auto_recover: default_auto_recover(),
             runtime_command: String::new(),
             allowed_commands: default_allowed_commands(),
             workspace_local_entries: default_workspace_local_entries(),
@@ -235,6 +264,8 @@ impl Default for ActionsConfig {
             use_proxy: default_use_proxy(),
             local_port: default_actions_port(),
             permission_mode: default_permission_mode(),
+            auto_start: default_auto_start(),
+            auto_recover: default_auto_recover(),
             runtime_command: String::new(),
             auth_type: default_actions_auth_type(),
             oauth_client_id: default_actions_oauth_client_id(),

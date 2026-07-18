@@ -1,4 +1,7 @@
-use tauri::State;
+use std::collections::HashMap;
+use std::time::Instant;
+
+use tauri::{AppHandle, Manager, State};
 
 use std::time::Duration;
 
@@ -14,7 +17,8 @@ use crate::runtime::{
 use crate::platform::platform;
 
 use crate::tunnel::{
-    maybe_start_for_runtime, stop_for_runtime, sync_managed_runtime_routes, TunnelServiceKind,
+    append_profile_log, maybe_start_for_runtime, stop_for_runtime, sync_managed_runtime_routes,
+    TunnelServiceKind,
 };
 
 use crate::workspace::RuntimeStatusDto;
@@ -25,6 +29,24 @@ fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::Work
             .get(id)
             .cloned()
             .ok_or_else(|| AppError::Message(format!("workspace not found: {id}")))
+    })
+}
+
+fn set_auto_start_intent(
+    state: &AppState,
+    id: &str,
+    kind: ServiceKind,
+    enabled: bool,
+) -> AppResult<()> {
+    state.with_workspaces(|store| {
+        let Some(mut profile) = store.get(id).cloned() else {
+            return Err(AppError::Message(format!("workspace not found: {id}")));
+        };
+        match kind {
+            ServiceKind::Mcp => profile.runtime.auto_start = enabled,
+            ServiceKind::Actions => profile.actions.auto_start = enabled,
+        }
+        store.update(profile)
     })
 }
 
@@ -87,9 +109,189 @@ async fn ensure_port_available(port: u16, service_label: &str) -> AppResult<()> 
     Ok(())
 }
 
+async fn start_runtime_for_kind(
+    state: &AppState,
+    profile: &crate::workspace::WorkspaceProfile,
+    kind: ServiceKind,
+) -> AppResult<RuntimeStatusDto> {
+    let port = match kind {
+        ServiceKind::Mcp => profile.runtime.local_port,
+        ServiceKind::Actions => profile.actions.local_port,
+    };
+    ensure_port_available(
+        port,
+        match kind {
+            ServiceKind::Mcp => "本地 MCP",
+            ServiceKind::Actions => "本地 Actions",
+        },
+    )
+    .await?;
+
+    state.with_runtime(|runtime| match kind {
+        ServiceKind::Mcp => runtime.start_mcp(profile),
+        ServiceKind::Actions => runtime.start_actions(profile),
+    })?;
+    sync_tunnel_routes_from_runtime(state).await?;
+
+    match maybe_start_for_runtime(
+        profile,
+        match kind {
+            ServiceKind::Mcp => TunnelServiceKind::Mcp,
+            ServiceKind::Actions => TunnelServiceKind::Actions,
+        },
+    )
+    .await
+    {
+        Ok(Some(url)) => {
+            persist_tunnel_url(
+                state,
+                &profile.id,
+                match kind {
+                    ServiceKind::Mcp => TunnelServiceKind::Mcp,
+                    ServiceKind::Actions => TunnelServiceKind::Actions,
+                },
+                &url,
+            )?;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            append_profile_log(
+                &profile.id,
+                match kind {
+                    ServiceKind::Mcp => "stderr.log",
+                    ServiceKind::Actions => "actions-stderr.log",
+                },
+                &format!("[watchdog] 隧道自动启动失败：{error}"),
+            );
+        }
+    }
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    state.with_runtime(|runtime| {
+        match kind {
+            ServiceKind::Mcp => runtime.refresh_mcp(profile),
+            ServiceKind::Actions => runtime.refresh_actions(profile),
+        }
+        Ok(match kind {
+            ServiceKind::Mcp => runtime.mcp_status(profile),
+            ServiceKind::Actions => runtime.actions_status(profile),
+        })
+    })
+}
+
+async fn restart_runtime_for_kind(
+    state: &AppState,
+    profile: &crate::workspace::WorkspaceProfile,
+    kind: ServiceKind,
+) -> AppResult<RuntimeStatusDto> {
+    let port = match kind {
+        ServiceKind::Mcp => profile.runtime.local_port,
+        ServiceKind::Actions => profile.actions.local_port,
+    };
+    stop_for_runtime(
+        profile,
+        match kind {
+            ServiceKind::Mcp => TunnelServiceKind::Mcp,
+            ServiceKind::Actions => TunnelServiceKind::Actions,
+        },
+    )
+    .await?;
+    let handle = state.with_runtime(|runtime| Ok(runtime.begin_stop(&profile.id, kind)))?;
+    await_listener_shutdown(handle, port).await;
+    state.with_runtime(|runtime| {
+        runtime.finish_stop(&profile.id, kind);
+        Ok(())
+    })?;
+    start_runtime_for_kind(state, profile, kind).await
+}
+
+/// Start remembered services after launch and recover a listener whose port
+/// disappeared. This loop is intentionally local and authenticated; it only
+/// acts on persisted user intent and never starts a service that the user
+/// explicitly stopped.
+pub async fn run_runtime_watchdog(app: AppHandle) {
+    let mut last_attempts: HashMap<(String, ServiceKind), Instant> = HashMap::new();
+    loop {
+        let state = app.state::<AppState>();
+        let profiles = match state.with_workspaces(|store| Ok(store.list().to_vec())) {
+            Ok(profiles) => profiles,
+            Err(error) => {
+                eprintln!("runtime watchdog could not load workspaces: {error}");
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                continue;
+            }
+        };
+
+        for profile in profiles {
+            for kind in [ServiceKind::Mcp, ServiceKind::Actions] {
+                let (auto_start, auto_recover, status) = match state.with_runtime(|runtime| {
+                    let (auto_start, auto_recover) = match kind {
+                        ServiceKind::Mcp => {
+                            (profile.runtime.auto_start, profile.runtime.auto_recover)
+                        }
+                        ServiceKind::Actions => {
+                            (profile.actions.auto_start, profile.actions.auto_recover)
+                        }
+                    };
+                    match kind {
+                        ServiceKind::Mcp => runtime.refresh_mcp(&profile),
+                        ServiceKind::Actions => runtime.refresh_actions(&profile),
+                    }
+                    Ok((
+                        auto_start,
+                        auto_recover,
+                        match kind {
+                            ServiceKind::Mcp => runtime.mcp_status(&profile),
+                            ServiceKind::Actions => runtime.actions_status(&profile),
+                        },
+                    ))
+                }) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        eprintln!("runtime watchdog status failed for {}: {error}", profile.id);
+                        continue;
+                    }
+                };
+
+                let should_start = status.state == "stopped" && auto_start;
+                let should_recover = status.state == "error" && auto_recover;
+                if !should_start && !should_recover {
+                    continue;
+                }
+                let key = (profile.id.clone(), kind);
+                if last_attempts
+                    .get(&key)
+                    .is_some_and(|last| last.elapsed() < Duration::from_secs(10))
+                {
+                    continue;
+                }
+                last_attempts.insert(key, Instant::now());
+
+                let result = if should_recover {
+                    restart_runtime_for_kind(&state, &profile, kind).await
+                } else {
+                    start_runtime_for_kind(&state, &profile, kind).await
+                };
+                if let Err(error) = result {
+                    append_profile_log(
+                        &profile.id,
+                        match kind {
+                            ServiceKind::Mcp => "stderr.log",
+                            ServiceKind::Actions => "actions-stderr.log",
+                        },
+                        &format!("[watchdog] 服务自动恢复失败：{error}"),
+                    );
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
 #[tauri::command]
 
 pub async fn start_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
+    set_auto_start_intent(&state, &id, ServiceKind::Mcp, true)?;
     let profile = profile_by_id(&state, &id)?;
 
     ensure_port_available(profile.runtime.local_port, "本地 MCP").await?;
@@ -123,6 +325,7 @@ pub async fn start_runtime(state: State<'_, AppState>, id: String) -> AppResult<
 #[tauri::command]
 
 pub async fn stop_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
+    set_auto_start_intent(&state, &id, ServiceKind::Mcp, false)?;
     let profile = profile_by_id(&state, &id)?;
 
     let port = profile.runtime.local_port;
@@ -161,6 +364,7 @@ pub async fn start_actions_runtime(
 
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
+    set_auto_start_intent(&state, &id, ServiceKind::Actions, true)?;
     let profile = profile_by_id(&state, &id)?;
 
     ensure_port_available(profile.actions.local_port, "本地 Actions").await?;
@@ -198,6 +402,7 @@ pub async fn stop_actions_runtime(
 
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
+    set_auto_start_intent(&state, &id, ServiceKind::Actions, false)?;
     let profile = profile_by_id(&state, &id)?;
 
     let port = profile.actions.local_port;
@@ -236,6 +441,7 @@ pub fn get_actions_runtime_status(
 #[tauri::command]
 
 pub fn restart_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
+    set_auto_start_intent(&state, &id, ServiceKind::Mcp, true)?;
     let profile = profile_by_id(&state, &id)?;
 
     state.with_runtime(|runtime| runtime.restart_mcp(&profile))
@@ -248,6 +454,7 @@ pub fn restart_actions_runtime(
 
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
+    set_auto_start_intent(&state, &id, ServiceKind::Actions, true)?;
     let profile = profile_by_id(&state, &id)?;
 
     state.with_runtime(|runtime| runtime.restart_actions(&profile))

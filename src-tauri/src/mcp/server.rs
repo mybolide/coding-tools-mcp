@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::tools::{call_tool, list_tools_for_profile, wrap_mcp_tool_result, SharedToolContext, ToolContext, Workspace};
+use crate::tools::{
+    call_tool, list_tools_for_profile, wrap_mcp_tool_result, SharedToolContext, ToolContext,
+    Workspace,
+};
 use crate::workspace::AuthConfig;
 
 pub type SharedState = SharedToolContext;
@@ -48,7 +51,7 @@ fn initialize_result() -> Value {
             "title": "Coding Tools MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use these tools only for local coding operations inside the configured workspace."
+        "instructions": "Use these tools according to the configured permission_mode. In dangerous mode, the authenticated caller explicitly permits host filesystem paths, shell syntax, environment variables, and unrestricted command execution."
     })
 }
 
@@ -57,7 +60,10 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| serde_json::json!({ "code": -32602, "message": "Missing tool name" }))?;
-    let args = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+    let args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
 
     let known = crate::tools::registry::exposed_tool_names(&state.tool_profile);
     if !known.iter().any(|n| n == &name) {

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use windows::Win32::UI::Shell::{FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+use windows::Win32::UI::Shell::{FOLDERID_RoamingAppData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
 
 use crate::error::{AppError, AppResult};
 use crate::platform::paths::{append_if_exists, resolve_from_path};
@@ -9,7 +9,9 @@ pub fn roaming_app_data() -> AppResult<PathBuf> {
     unsafe {
         let raw = SHGetKnownFolderPath(&FOLDERID_RoamingAppData, KF_FLAG_DEFAULT, None)
             .map_err(|err| AppError::Message(format!("SHGetKnownFolderPath failed: {err}")))?;
-        let path = raw.to_string().map_err(|err| AppError::Message(err.to_string()))?;
+        let path = raw
+            .to_string()
+            .map_err(|err| AppError::Message(err.to_string()))?;
         Ok(PathBuf::from(path))
     }
 }
@@ -20,9 +22,15 @@ pub fn cloudflared_candidates() -> Vec<PathBuf> {
         paths.push(found);
     }
     append_if_exists(&mut paths, r"C:\Program Files\cloudflared\cloudflared.exe");
-    append_if_exists(&mut paths, r"C:\Program Files (x86)\cloudflared\cloudflared.exe");
+    append_if_exists(
+        &mut paths,
+        r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
+    );
     if let Some(home) = dirs::home_dir() {
-        append_if_exists(&mut paths, home.join(".cloudflared").join("cloudflared.exe"));
+        append_if_exists(
+            &mut paths,
+            home.join(".cloudflared").join("cloudflared.exe"),
+        );
     }
     paths
 }

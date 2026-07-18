@@ -57,9 +57,8 @@ fn listener_table() -> AppResult<Vec<MIB_TCPROW_OWNER_PID>> {
     }
 
     let table = unsafe { &*(buffer.as_ptr() as *const MIB_TCPTABLE_OWNER_PID) };
-    let rows = unsafe {
-        std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
-    };
+    let rows =
+        unsafe { std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize) };
     Ok(rows.to_vec())
 }
 

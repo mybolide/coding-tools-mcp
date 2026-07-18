@@ -20,6 +20,7 @@
     type SaveTunnelOptions,
   } from "$lib/components/TunnelConfigForm.svelte";
   import WorkspaceMetaForm from "$lib/components/WorkspaceMetaForm.svelte";
+  import { runHealthChecks, type HealthItem } from "$lib/api/health";
   import {
     deleteWorkspace,
     getActionsRuntimeStatus,
@@ -35,7 +36,7 @@
   } from "$lib/api/workspaces";
   import { listFrpProfiles, setLastWorkspace, type FrpProfileDto } from "$lib/api/settings";
   import { confirm } from "@tauri-apps/plugin-dialog";
-  import { restartTunnel, stopTunnel } from "$lib/api/tunnel";
+  import { restartTunnel, startTunnel, stopTunnel } from "$lib/api/tunnel";
   import { runServiceToggle, notifyStartFailure } from "$lib/runtime/service";
   import { showToast } from "$lib/stores/toast";
   import { promptServiceRestart } from "$lib/runtime/restart-hint";
@@ -70,6 +71,8 @@
   let actionsLocal = $state("");
   let actionsPublic = $state("");
   let frpProfiles = $state<FrpProfileDto[]>([]);
+  let statusRefreshing = $state(false);
+  let reconnectBusy = $state(false);
 
   let activeService = $state<ServiceTab>("mcp");
   let mcpSubTab = $state<SubTab>("config");
@@ -148,6 +151,31 @@
     actionsLocal = runtime.localEndpoint;
     actionsPublic = runtime.publicEndpoint;
     actionsRuntimeStates.update((current) => ({ ...current, [id]: runtime.state }));
+  }
+
+  async function refreshRuntimeStatuses(id = workspaceId, force = false): Promise<void> {
+    if (
+      !id ||
+      id !== workspaceId ||
+      statusRefreshing ||
+      (!force && (mcpBusy || actionsBusy || reconnectBusy))
+    ) {
+      return;
+    }
+    statusRefreshing = true;
+    try {
+      const [mcpRuntime, actionsRuntime] = await Promise.all([
+        getRuntimeStatus(id),
+        getActionsRuntimeStatus(id),
+      ]);
+      if (id !== workspaceId) return;
+      applyMcpRuntime(mcpRuntime, id);
+      applyActionsRuntime(actionsRuntime, id);
+    } catch {
+      // Polling is best-effort; keep the last visible state on transient IPC errors.
+    } finally {
+      statusRefreshing = false;
+    }
   }
 
   async function load(id = workspaceId) {
@@ -265,6 +293,163 @@
       }
     } finally {
       actionsBusy = false;
+    }
+  }
+
+  function healthFailureNotice(items: HealthItem[]) {
+    const labels = items.slice(0, 2).map((item) => item.label).join("、");
+    const suffix = items.length > 2 ? ` 等 ${items.length} 项` : "";
+    showToast(`${labels}${suffix}检查失败，请查看健康面板详情。`, {
+      title: "连接仍有问题",
+      kind: "warning",
+      duration: 8000,
+    });
+  }
+
+  async function reconnectAll() {
+    const id = workspaceId;
+    if (!id || reconnectBusy || mcpBusy || actionsBusy || statusRefreshing) return;
+    if (mcpStatus === "starting" || mcpStatus === "stopping" || actionsStatus === "starting" || actionsStatus === "stopping") {
+      showToast("服务正在切换状态，请稍后再重连。", { title: "请稍候", kind: "info" });
+      return;
+    }
+
+    const mcpSelected = Boolean(profile) && (
+      mcpStatus === "running" ||
+      mcpStatus === "error" ||
+      (profile?.runtime.auto_start ?? true)
+    );
+    const actionsSelected = Boolean(profile) && (
+      actionsStatus === "running" ||
+      actionsStatus === "error" ||
+      (actions?.auto_start ?? true)
+    );
+    if (!mcpSelected && !actionsSelected) {
+      showToast("没有启用自动启动的服务，也没有处于异常状态的服务。", { title: "无需重连", kind: "info" });
+      return;
+    }
+
+    const confirmed = await confirm(
+      "将重启运行中或异常的服务，并启动已启用自动启动的服务，然后重新连接已配置隧道。继续？",
+      {
+        title: "重新连接所有",
+        kind: "warning",
+        okLabel: "重新连接",
+        cancelLabel: "取消",
+      },
+    );
+    if (!confirmed || id !== workspaceId) return;
+
+    reconnectBusy = true;
+    const failures: string[] = [];
+    let reconnected = 0;
+
+    const reconnectService = async (
+      label: string,
+      service: "mcp" | "actions",
+      wasRunning: boolean,
+      tunnelType: string,
+      restartRuntimeForService: (workspaceId: string) => Promise<{
+        state: RuntimeState;
+        localEndpoint: string;
+        publicEndpoint: string;
+        localMessage?: string;
+      }>,
+      startRuntimeForService: (workspaceId: string) => Promise<{
+        state: RuntimeState;
+        localEndpoint: string;
+        publicEndpoint: string;
+        localMessage?: string;
+      }>,
+      applyRuntime: (runtime: {
+        state: RuntimeState;
+        localEndpoint: string;
+        publicEndpoint: string;
+        localMessage?: string;
+      }) => void,
+      setPublicEndpoint: (url: string) => void,
+    ) => {
+      try {
+        const runtime = wasRunning
+          ? await restartRuntimeForService(id)
+          : await startRuntimeForService(id);
+        if (id !== workspaceId) return;
+        applyRuntime(runtime);
+        if (runtime.state !== "running") {
+          failures.push(`${label} 未能恢复：${runtime.localMessage || "服务未运行"}`);
+          return;
+        }
+
+        if (tunnelConfigured(tunnelType)) {
+          let tunnel = await restartTunnel(id, service);
+          if (tunnel.state !== "running") {
+            tunnel = await startTunnel(id, service);
+          }
+          if (tunnel.state !== "running") {
+            throw new Error(tunnel.state || "隧道未进入运行状态");
+          }
+          if (tunnel.publicUrl) {
+            setPublicEndpoint(`${tunnel.publicUrl.replace(/\/$/, "")}/${service === "mcp" ? "mcp" : "openapi.json"}`);
+          }
+        }
+        reconnected += 1;
+      } catch (error) {
+        failures.push(`${label}：${String(error)}`);
+      }
+    };
+
+    try {
+      if (mcpSelected && profile) {
+        await reconnectService(
+          "MCP",
+          "mcp",
+          mcpStatus === "running",
+          profile.tunnel.type,
+          restartRuntime,
+          startRuntime,
+          (runtime) => applyMcpRuntime(runtime, id),
+          (url) => (mcpPublic = url),
+        );
+      }
+      if (actionsSelected && profile) {
+        await reconnectService(
+          "Actions",
+          "actions",
+          actionsStatus === "running",
+          actionsConfig(profile).tunnel_type,
+          restartActionsRuntime,
+          startActionsRuntime,
+          (runtime) => applyActionsRuntime(runtime, id),
+          (url) => (actionsPublic = url),
+        );
+      }
+
+      await refreshRuntimeStatuses(id, true);
+      try {
+        const health = await runHealthChecks(id);
+        const failedHealth = health.filter((item) => !item.ok);
+        if (failedHealth.length > 0) {
+          failures.push(`健康检查有 ${failedHealth.length} 项失败`);
+        }
+      } catch (error) {
+        failures.push(`健康检查：${String(error)}`);
+      }
+
+      if (failures.length > 0) {
+        showToast(failures.slice(0, 3).join("；"), {
+          title: reconnected > 0 ? "已部分重连" : "重连失败",
+          kind: reconnected > 0 ? "warning" : "error",
+          duration: 10_000,
+        });
+      } else {
+        showToast(`已重新连接 ${reconnected} 个服务及其隧道。`, {
+          title: "重连完成",
+          kind: "success",
+          duration: 6000,
+        });
+      }
+    } finally {
+      reconnectBusy = false;
     }
   }
 
@@ -406,6 +591,8 @@
         ...profile.runtime,
         tool_profile: draft.toolProfile,
         permission_mode: draft.permissionMode,
+        auto_start: draft.autoStart,
+        auto_recover: draft.autoRecover,
         allowed_commands: draft.allowedCommands,
         workspace_local_entries: draft.workspaceLocalEntries,
         workspace_script_extensions: draft.workspaceScriptExtensions,
@@ -427,6 +614,8 @@
         allowed_commands: draft.allowedCommands,
         max_patch_bytes: draft.maxPatchBytes,
         permission_mode: draft.permissionMode,
+        auto_start: draft.autoStart,
+        auto_recover: draft.autoRecover,
       },
     };
     await updateWorkspace(next);
@@ -504,9 +693,11 @@
     if (!id) return;
     profile = null;
     void load(id);
+    const timer = window.setInterval(() => void refreshRuntimeStatuses(id), 5_000);
 
     return () => {
       loadGeneration += 1;
+      window.clearInterval(timer);
     };
   });
 </script>
@@ -519,13 +710,31 @@
           <p class="page-kicker">工作区</p>
           <h2 class="page-title">{profile.name}</h2>
         </div>
-        <button
-          type="button"
-          class="tx-btn-ghost text-[var(--danger)]"
-          onclick={() => void removeWorkspace()}
-        >
-          删除工作区
-        </button>
+        <div class="flex shrink-0 flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            class="tx-btn-ghost"
+            disabled={statusRefreshing || reconnectBusy}
+            onclick={() => void refreshRuntimeStatuses()}
+          >
+            {statusRefreshing ? "刷新中…" : "刷新状态"}
+          </button>
+          <button
+            type="button"
+            class="tx-btn-primary"
+            disabled={reconnectBusy || mcpBusy || actionsBusy || statusRefreshing}
+            onclick={() => void reconnectAll()}
+          >
+            {reconnectBusy ? "重连中…" : "重新连接所有"}
+          </button>
+          <button
+            type="button"
+            class="tx-btn-ghost text-[var(--danger)]"
+            onclick={() => void removeWorkspace()}
+          >
+            删除工作区
+          </button>
+        </div>
       </div>
 
       <div class="mt-4">
@@ -622,6 +831,8 @@
               <RuntimePolicyForm
                 toolProfile={profile.runtime.tool_profile}
                 permissionMode={profile.runtime.permission_mode}
+                autoStart={profile.runtime.auto_start ?? true}
+                autoRecover={profile.runtime.auto_recover ?? true}
                 allowedCommands={profile.runtime.allowed_commands ?? ""}
                 workspaceLocalEntries={profile.runtime.workspace_local_entries ?? true}
                 workspaceScriptExtensions={profile.runtime.workspace_script_extensions ?? ".exe,.bat,.cmd,.ps1"}
@@ -635,7 +846,7 @@
           </div>
         {:else}
           <div class="mt-4">
-            <HealthPanel workspaceId={workspaceId!} />
+            <HealthPanel workspaceId={workspaceId!} onFailure={healthFailureNotice} />
           </div>
         {/if}
       {:else}
@@ -705,6 +916,8 @@
                 allowedCommands={actions.allowed_commands ?? ""}
                 maxPatchBytes={actions.max_patch_bytes ?? 200_000}
                 permissionMode={actions.permission_mode}
+                autoStart={actions.auto_start ?? true}
+                autoRecover={actions.auto_recover ?? true}
                 onSave={saveActionsPolicy}
               />
             </div>
@@ -715,7 +928,7 @@
           </div>
         {:else}
           <div class="mt-4">
-            <HealthPanel workspaceId={workspaceId!} />
+            <HealthPanel workspaceId={workspaceId!} onFailure={healthFailureNotice} />
           </div>
         {/if}
       {/if}

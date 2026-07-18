@@ -18,30 +18,39 @@
   import type { RuntimeState } from "$lib/types";
 
   let { children } = $props();
+  let refreshInFlight = false;
 
-  async function refreshWorkspaces() {
-    const items = await listWorkspaces();
-    workspaces.set(items);
+  async function refreshWorkspaces(): Promise<void> {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    try {
+      const items = await listWorkspaces();
+      workspaces.set(items);
 
-    const mcpStates: Record<string, RuntimeState> = {};
-    const actionsStates: Record<string, RuntimeState> = {};
-    await Promise.all(
-      items.map(async (item) => {
-        try {
-          const [mcp, actions] = await Promise.all([
-            getRuntimeStatus(item.id),
-            getActionsRuntimeStatus(item.id),
-          ]);
-          mcpStates[item.id] = mcp.state;
-          actionsStates[item.id] = actions.state;
-        } catch {
-          mcpStates[item.id] = "stopped";
-          actionsStates[item.id] = "stopped";
-        }
-      }),
-    );
-    mcpRuntimeStates.set(mcpStates);
-    actionsRuntimeStates.set(actionsStates);
+      const mcpStates: Record<string, RuntimeState> = {};
+      const actionsStates: Record<string, RuntimeState> = {};
+      await Promise.all(
+        items.map(async (item) => {
+          try {
+            const [mcp, actions] = await Promise.all([
+              getRuntimeStatus(item.id),
+              getActionsRuntimeStatus(item.id),
+            ]);
+            mcpStates[item.id] = mcp.state;
+            actionsStates[item.id] = actions.state;
+          } catch {
+            mcpStates[item.id] = "stopped";
+            actionsStates[item.id] = "stopped";
+          }
+        }),
+      );
+      mcpRuntimeStates.set(mcpStates);
+      actionsRuntimeStates.set(actionsStates);
+    } catch {
+      // A transient IPC failure must not erase the last known sidebar state.
+    } finally {
+      refreshInFlight = false;
+    }
   }
 
   async function addWorkspace() {
@@ -72,17 +81,33 @@
     goto("/settings/keys");
   }
 
-  onMount(async () => {
-    await refreshWorkspaces();
-    const path = $page.url.pathname;
-    if (path === "/") {
-      const lastId = await getLastWorkspaceId();
-      if (lastId && $workspaces.some((item) => item.id === lastId)) {
-        goto(`/workspace/${lastId}`);
-      } else if ($workspaces.length > 0) {
-        goto(`/workspace/${$workspaces[0].id}`);
+  onMount(() => {
+    let disposed = false;
+
+    const initialLoad = async () => {
+      await refreshWorkspaces();
+      if (disposed) return;
+      const path = $page.url.pathname;
+      if (path === "/") {
+        const lastId = await getLastWorkspaceId();
+        if (disposed) return;
+        if (lastId && $workspaces.some((item) => item.id === lastId)) {
+          goto(`/workspace/${lastId}`);
+        } else if ($workspaces.length > 0) {
+          goto(`/workspace/${$workspaces[0].id}`);
+        }
       }
-    }
+    };
+
+    void initialLoad();
+    const timer = window.setInterval(() => {
+      if (!disposed) void refreshWorkspaces();
+    }, 10_000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
   });
 </script>
 

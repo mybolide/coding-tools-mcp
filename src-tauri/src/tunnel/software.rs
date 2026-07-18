@@ -11,9 +11,9 @@ use serde::Serialize;
 
 use crate::error::{AppError, AppResult};
 use crate::platform::platform;
+use crate::tunnel::cloudflare::resolve_cloudflared;
 use crate::tunnel::cloudflare::{cached_cloudflared_path, download_cloudflared_to_cache};
 use crate::tunnel::frp::{cached_frpc_path, download_frpc_to_cache, resolve_frpc};
-use crate::tunnel::cloudflare::resolve_cloudflared;
 
 /// Status of a managed tunnel binary, serialized to the frontend.
 #[derive(Debug, Clone, Serialize)]

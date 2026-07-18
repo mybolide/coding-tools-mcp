@@ -82,7 +82,11 @@ impl PolicySettings {
             workspace_script_extensions: parse_workspace_script_extensions(
                 &runtime.workspace_script_extensions,
             ),
-            max_patch_bytes: 200_000,
+            max_patch_bytes: if runtime.permission_mode == "dangerous" {
+                usize::MAX
+            } else {
+                200_000
+            },
             permission_mode: runtime.permission_mode.clone(),
         }
     }
@@ -92,7 +96,11 @@ impl PolicySettings {
             allowed_commands: merge_default_allowed_commands(&actions.allowed_commands),
             workspace_local_entries: true,
             workspace_script_extensions: default_workspace_script_extension_set(),
-            max_patch_bytes: actions.max_patch_bytes as usize,
+            max_patch_bytes: if actions.permission_mode == "dangerous" {
+                usize::MAX
+            } else {
+                actions.max_patch_bytes as usize
+            },
             permission_mode: actions.permission_mode.clone(),
         }
     }
@@ -212,102 +220,111 @@ pub fn validate_command_for_workspace(
     if command.trim().is_empty() {
         return Err(PolicyError("exec_command requires a non-empty cmd".into()));
     }
-    if command.len() > 4_000 {
+    if !policy.skip_permission_gates() && command.len() > 4_000 {
         return Err(PolicyError("Command is too long".into()));
     }
     let filesystem_scope = arguments
         .get("filesystem_scope")
         .and_then(Value::as_str)
         .unwrap_or("workspace");
-    if filesystem_scope != "workspace" {
+    if !matches!(filesystem_scope, "workspace" | "host") {
+        return Err(PolicyError(
+            "filesystem_scope must be workspace or host".into(),
+        ));
+    }
+    let unrestricted = policy.skip_permission_gates();
+    if !unrestricted && filesystem_scope != "workspace" {
         return Err(PolicyError(
             "EXTERNAL_EXECUTION_NOT_ALLOWED: exec_command 只允许在 Workspace 内执行".into(),
         ));
     }
-    for key in ["workdir", "cwd"] {
-        if let Some(workdir) = arguments.get(key).and_then(Value::as_str) {
-            let path = Path::new(workdir);
-            if path.is_absolute() || path.components().any(|part| part == Component::ParentDir) {
-                return Err(PolicyError(
-                    "workdir must stay inside the configured workspace".into(),
-                ));
+    if !unrestricted {
+        for key in ["workdir", "cwd"] {
+            if let Some(workdir) = arguments.get(key).and_then(Value::as_str) {
+                let path = Path::new(workdir);
+                if path.is_absolute() || path.components().any(|part| part == Component::ParentDir)
+                {
+                    return Err(PolicyError(
+                        "workdir must stay inside the configured workspace".into(),
+                    ));
+                }
             }
         }
-    }
-    if has_forbidden_shell_syntax(command) {
-        return Err(PolicyError(
-            "Shell chaining, redirection and expansion are not allowed".into(),
-        ));
-    }
-    if (dangerous_command_pattern().is_match(command)
-        || interpreter_mutation_pattern().is_match(command))
-        && command_targets_protected_repository_asset(command)
-    {
-        return Err(PolicyError(
-            "PROTECTED_REPOSITORY_ASSET: 禁止删除或递归清空 .git/.github".into(),
-        ));
-    }
-    if interpreter_mutation_pattern().is_match(command) && command_contains_external_path(command) {
-        return Err(PolicyError(
-            "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程写入 Workspace 外部路径"
-                .into(),
-        ));
-    }
-    if dangerous_command_pattern().is_match(command)
-        && !arguments
-            .get("confirm")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    {
-        return Err(PolicyError(
-            "DANGEROUS_OPERATION_REQUIRES_CONFIRMATION: dangerous command requires confirm=true"
-                .into(),
-        ));
-    }
-    if !policy.skip_permission_gates()
-        && network_command_pattern().is_match(command)
-        && !policy.network_allowed()
-    {
-        return Err(PolicyError(
-            "Network-looking commands are blocked in safe permission mode".into(),
-        ));
-    }
+        if has_forbidden_shell_syntax(command) {
+            return Err(PolicyError(
+                "Shell chaining, redirection and expansion are not allowed".into(),
+            ));
+        }
+        if (dangerous_command_pattern().is_match(command)
+            || interpreter_mutation_pattern().is_match(command))
+            && command_targets_protected_repository_asset(command)
+        {
+            return Err(PolicyError(
+                "PROTECTED_REPOSITORY_ASSET: 禁止删除或递归清空 .git/.github".into(),
+            ));
+        }
+        if interpreter_mutation_pattern().is_match(command)
+            && command_contains_external_path(command)
+        {
+            return Err(PolicyError(
+                "WORKSPACE_PATH_PROTECTED: workspace scope 禁止通过子进程写入 Workspace 外部路径"
+                    .into(),
+            ));
+        }
+        if dangerous_command_pattern().is_match(command)
+            && !arguments
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        {
+            return Err(PolicyError(
+                "DANGEROUS_OPERATION_REQUIRES_CONFIRMATION: dangerous command requires confirm=true"
+                    .into(),
+            ));
+        }
+        if network_command_pattern().is_match(command) && !policy.network_allowed() {
+            return Err(PolicyError(
+                "Network-looking commands are blocked in safe permission mode".into(),
+            ));
+        }
 
-    let parts =
-        shell_words::split(command).map_err(|_| PolicyError("Invalid command syntax".into()))?;
-    if parts.is_empty() {
-        return Err(PolicyError("Empty command".into()));
-    }
+        let parts = shell_words::split(command)
+            .map_err(|_| PolicyError("Invalid command syntax".into()))?;
+        if parts.is_empty() {
+            return Err(PolicyError("Empty command".into()));
+        }
 
-    let executable = parts[0].trim_start_matches("./");
-    let base_name = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
-    let stem = base_name
-        .strip_suffix(".exe")
-        .or_else(|| base_name.strip_suffix(".cmd"))
-        .or_else(|| base_name.strip_suffix(".bat"))
-        .unwrap_or(base_name);
+        let executable = parts[0].trim_start_matches("./");
+        let base_name = executable.rsplit(['/', '\\']).next().unwrap_or(executable);
+        let stem = base_name
+            .strip_suffix(".exe")
+            .or_else(|| base_name.strip_suffix(".cmd"))
+            .or_else(|| base_name.strip_suffix(".bat"))
+            .unwrap_or(base_name);
 
-    let workspace_entry_candidate = workspace_local_entry_exists(workspace, arguments, executable)
-        || executable.contains(['/', '\\'])
-        || policy
-            .workspace_script_extensions
-            .iter()
-            .any(|extension| base_name.to_ascii_lowercase().ends_with(extension));
-    if !(policy.allowed_commands.contains(stem)
-        || (policy.workspace_local_entries && workspace_entry_candidate))
-    {
-        return Err(PolicyError(format!("Command is not allowlisted: {stem}")));
-    }
+        let workspace_entry_candidate =
+            workspace_local_entry_exists(workspace, arguments, executable)
+                || executable.contains(['/', '\\'])
+                || policy
+                    .workspace_script_extensions
+                    .iter()
+                    .any(|extension| base_name.to_ascii_lowercase().ends_with(extension));
+        if !(policy.allowed_commands.contains(stem)
+            || (policy.workspace_local_entries && workspace_entry_candidate))
+        {
+            return Err(PolicyError(format!("Command is not allowlisted: {stem}")));
+        }
 
-    if arguments.get("env").is_some() {
-        return Err(PolicyError(
-            "Environment variables cannot be supplied by GPT".into(),
-        ));
-    }
+        if arguments.get("env").is_some() {
+            return Err(PolicyError(
+                "Environment variables cannot be supplied by GPT".into(),
+            ));
+        }
 
-    if let Some(timeout_ms) = arguments.get("timeout_ms").and_then(Value::as_u64) {
-        if timeout_ms > 600_000 {
-            return Err(PolicyError("Command timeout exceeds 10 minutes".into()));
+        if let Some(timeout_ms) = arguments.get("timeout_ms").and_then(Value::as_u64) {
+            if timeout_ms > 600_000 {
+                return Err(PolicyError("Command timeout exceeds 10 minutes".into()));
+            }
         }
     }
 
@@ -348,6 +365,10 @@ pub fn validate_patch(arguments: &Value, policy: &PolicySettings) -> Result<(), 
         .ok_or_else(|| PolicyError("apply_patch requires a patch".into()))?;
     if patch.trim().is_empty() {
         return Err(PolicyError("apply_patch requires a patch".into()));
+    }
+
+    if policy.skip_permission_gates() {
+        return Ok(());
     }
 
     if patch.len() > policy.max_patch_bytes {
@@ -537,6 +558,9 @@ mod tests {
     fn patch_size_uses_workspace_limit() {
         let actions = ActionsConfig {
             max_patch_bytes: 10,
+            // The limit is intentionally tested in a restricted mode; the
+            // dangerous mode is designed to remove this gate.
+            permission_mode: "trusted".into(),
             ..ActionsConfig::default()
         };
         let policy = PolicySettings::from_actions_config(&actions);
@@ -578,5 +602,36 @@ mod tests {
         )
         .is_err());
         assert!(validate_command(&json!({"cmd": "echo hello > output.txt"}), &policy).is_err());
+    }
+
+    #[test]
+    fn dangerous_mode_skips_command_gates_and_allows_host_scope() {
+        let policy = PolicySettings {
+            permission_mode: "dangerous".into(),
+            ..PolicySettings::default()
+        };
+        let long_command = "x".repeat(4_001);
+        assert!(validate_command(
+            &json!({
+                "cmd": long_command,
+                "filesystem_scope": "host",
+                "timeout_ms": 3_600_000,
+                "env": {"CODEX_TEST": "enabled"}
+            }),
+            &policy
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn dangerous_actions_mode_removes_patch_size_gate() {
+        let actions = ActionsConfig {
+            permission_mode: "dangerous".into(),
+            max_patch_bytes: 1,
+            ..ActionsConfig::default()
+        };
+        let policy = PolicySettings::from_actions_config(&actions);
+        assert_eq!(policy.max_patch_bytes, usize::MAX);
+        assert!(validate_patch(&json!({ "patch": "x".repeat(200_001) }), &policy).is_ok());
     }
 }

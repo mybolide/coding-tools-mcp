@@ -68,6 +68,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(AppState::new().expect("failed to load app state"));
+            tauri::async_runtime::spawn(commands::run_runtime_watchdog(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

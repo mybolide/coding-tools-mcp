@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::secret::SecretStore;
+use crate::settings::AppSettings;
 use crate::workspace::WorkspaceProfile;
 
 const TIMEOUT: Duration = Duration::from_secs(4);
@@ -20,10 +21,27 @@ pub struct HealthItem {
 }
 
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .expect("failed to build HTTP client")
+    let settings = AppSettings::load_or_default();
+    let mut builder = reqwest::Client::builder().timeout(TIMEOUT);
+
+    match settings.proxy.mode.trim() {
+        "none" => {
+            builder = builder.no_proxy();
+        }
+        "manual" if !settings.proxy.url.trim().is_empty() => {
+            if let Ok(proxy) = reqwest::Proxy::all(settings.proxy.url.trim()) {
+                builder = builder.proxy(proxy);
+            }
+        }
+        // "system" intentionally leaves reqwest's environment/system detection enabled.
+        _ => {}
+    }
+
+    builder.build().expect("failed to build HTTP client")
+}
+
+fn status_is_reachable(status: reqwest::StatusCode) -> bool {
+    status.is_success() || status == reqwest::StatusCode::UNAUTHORIZED
 }
 
 fn format_single_value(value: &Value) -> String {
@@ -61,8 +79,9 @@ async fn check_url(client: &reqwest::Client, url: &str) -> (bool, String) {
     }
     match client.get(url).send().await {
         Ok(response) => {
-            let code = response.status().as_u16();
-            let ok = matches!(code, 200 | 401 | 404);
+            let status = response.status();
+            let code = status.as_u16();
+            let ok = status_is_reachable(status);
             (ok, format!("HTTP {code}"))
         }
         Err(err) => (false, err.to_string()),
@@ -89,7 +108,11 @@ async fn check_json_field(client: &reqwest::Client, url: &str, field: &str) -> (
                     }
                     (
                         true,
-                        format!("HTTP {}; {field}={}", status.as_u16(), format_field_value(value)),
+                        format!(
+                            "HTTP {}; {field}={}",
+                            status.as_u16(),
+                            format_field_value(value)
+                        ),
                     )
                 }
                 Err(err) => (false, err.to_string()),
@@ -205,13 +228,19 @@ async fn check_mcp_protocol(
         let Some(version) = initialize_protocol_version(&body) else {
             return (
                 false,
-                format!("HTTP {}; initialize response is not valid MCP JSON-RPC", status.as_u16()),
+                format!(
+                    "HTTP {}; initialize response is not valid MCP JSON-RPC",
+                    status.as_u16()
+                ),
             );
         };
         if auth_type == "bearer" && bearer_token.is_none() {
             return (
                 false,
-                format!("HTTP {}; bearer authentication was bypassed", status.as_u16()),
+                format!(
+                    "HTTP {}; bearer authentication was bypassed",
+                    status.as_u16()
+                ),
             );
         }
         if version != MCP_PROTOCOL_VERSION {
@@ -222,7 +251,10 @@ async fn check_mcp_protocol(
         }
         return (
             true,
-            format!("HTTP {}; initialize protocolVersion={version}", status.as_u16()),
+            format!(
+                "HTTP {}; initialize protocolVersion={version}",
+                status.as_u16()
+            ),
         );
     }
 
@@ -283,14 +315,10 @@ pub async fn run_health_checks(profile: &WorkspaceProfile) -> Vec<HealthItem> {
     } else {
         actions_public.clone()
     };
-    let mcp_local_oauth_url = well_known_url(
-        &mcp_local_base,
-        ".well-known/oauth-authorization-server",
-    );
-    let mcp_public_oauth_url = well_known_url(
-        &mcp_public_base,
-        ".well-known/oauth-authorization-server",
-    );
+    let mcp_local_oauth_url =
+        well_known_url(&mcp_local_base, ".well-known/oauth-authorization-server");
+    let mcp_public_oauth_url =
+        well_known_url(&mcp_public_base, ".well-known/oauth-authorization-server");
     let mcp_local_protected_url =
         well_known_url(&mcp_local_base, ".well-known/oauth-protected-resource");
     let mcp_public_protected_url =
@@ -465,18 +493,30 @@ mod tests {
 
     #[test]
     fn endpoint_base_removes_mcp_suffix() {
-        assert_eq!(endpoint_base("http://127.0.0.1:28766/mcp"), "http://127.0.0.1:28766");
-        assert_eq!(endpoint_base("https://example.com/mcp/"), "https://example.com");
+        assert_eq!(
+            endpoint_base("http://127.0.0.1:28766/mcp"),
+            "http://127.0.0.1:28766"
+        );
+        assert_eq!(
+            endpoint_base("https://example.com/mcp/"),
+            "https://example.com"
+        );
     }
 
     #[test]
     fn initialize_protocol_version_supports_json_and_sse() {
         let json_body = r#"{"jsonrpc":"2.0","result":{"protocolVersion":"2025-06-18"}}"#;
-        assert_eq!(initialize_protocol_version(json_body).as_deref(), Some(MCP_PROTOCOL_VERSION));
+        assert_eq!(
+            initialize_protocol_version(json_body).as_deref(),
+            Some(MCP_PROTOCOL_VERSION)
+        );
 
         let sse_body =
             "event: message\ndata: {\"jsonrpc\":\"2.0\",\"result\":{\"protocolVersion\":\"2025-06-18\"}}\n";
-        assert_eq!(initialize_protocol_version(sse_body).as_deref(), Some(MCP_PROTOCOL_VERSION));
+        assert_eq!(
+            initialize_protocol_version(sse_body).as_deref(),
+            Some(MCP_PROTOCOL_VERSION)
+        );
     }
 
     #[test]
@@ -485,5 +525,15 @@ mod tests {
             "Bearer realm=\"coding-tools-mcp\", resource_metadata=\"https://example.com/meta\""
         ));
         assert!(!has_bearer_challenge("Bearer realm=\"coding-tools-mcp\""));
+    }
+
+    #[test]
+    fn http_404_is_not_treated_as_a_healthy_endpoint() {
+        assert!(status_is_reachable(reqwest::StatusCode::OK));
+        assert!(status_is_reachable(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!status_is_reachable(reqwest::StatusCode::NOT_FOUND));
+        assert!(!status_is_reachable(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
     }
 }

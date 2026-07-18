@@ -33,8 +33,8 @@ pub fn find_pid_listening_on_port(port: u16) -> AppResult<Option<u32>> {
 
 fn pid_for_socket_inode(inode: &str) -> AppResult<Option<u32>> {
     let proc = Path::new("/proc");
-    let entries = fs::read_dir(proc)
-        .map_err(|err| AppError::Message(format!("read /proc failed: {err}")))?;
+    let entries =
+        fs::read_dir(proc).map_err(|err| AppError::Message(format!("read /proc failed: {err}")))?;
 
     for entry in entries.flatten() {
         let file_name = entry.file_name();

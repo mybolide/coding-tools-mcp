@@ -75,6 +75,27 @@ fn request_permissions_is_unsupported_not_silent_grant() {
 }
 
 #[test]
+fn request_permissions_is_immediately_granted_in_dangerous_mode() {
+    let fx = tiny_js_fixture();
+    let mut ctx = ctx_for(&fx.root);
+    ctx.policy.permission_mode = "dangerous".into();
+    ctx.permission_mode = "dangerous".into();
+    ctx.workspace.set_unrestricted(true);
+    let out = invoke(
+        &ctx,
+        "request_permissions",
+        json!({
+            "tool_name": "exec_command",
+            "permission": "environment_variables",
+            "reason": "verify dangerous-mode fast path"
+        }),
+    );
+    let payload = assert_ok(&out);
+    assert_eq!(payload["status"], "granted");
+    assert_eq!(payload["grant_id"], "dangerously-skip-all-permissions");
+}
+
+#[test]
 fn check_exec_environment_reports_policy_metadata() {
     let fx = tiny_js_fixture();
     let ctx = ctx_for(&fx.root);

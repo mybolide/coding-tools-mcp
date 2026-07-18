@@ -67,11 +67,7 @@ pub fn spawn_listener(
 
     let configured_public_url = public_base_url.trim().to_string();
     let oauth = if auth_type == "oauth" {
-        let oauth_base = external_base_url(
-            &HeaderMap::new(),
-            actions_port,
-            &configured_public_url,
-        );
+        let oauth_base = external_base_url(&HeaderMap::new(), actions_port, &configured_public_url);
         Some(Arc::new(OAuthRuntime::new(
             oauth_base,
             oauth_client_id,
@@ -194,7 +190,10 @@ async fn serve(
             "/.well-known/oauth-authorization-server",
             get(oauth_authorization_server_metadata),
         )
-        .route("/oauth/authorize", get(oauth_authorize_get).post(oauth_authorize_post))
+        .route(
+            "/oauth/authorize",
+            get(oauth_authorize_get).post(oauth_authorize_post),
+        )
         .route("/oauth/token", post(oauth_token_post))
         .merge(protected)
         .with_state(state)
@@ -319,12 +318,7 @@ async fn oauth_token_post(
         )
             .into_response();
     };
-    token_exchange(
-        oauth,
-        &headers,
-        form,
-        &resolve_oauth_base(&state, &headers),
-    )
+    token_exchange(oauth, &headers, form, &resolve_oauth_base(&state, &headers))
 }
 
 fn oauth_not_configured() -> Response {
@@ -366,11 +360,62 @@ async fn execute_action(
             .into_response();
     }
 
+    // `call_tool` contains the synchronous exec/session kernel.  Actions
+    // handlers already run on Tokio; calling it inline lets exec_command's
+    // internal runtime bridge block (and, on macOS, can drop the HTTP
+    // connection before a response is written).  Keep the same blocking
+    // execution boundary used by the MCP listener.
+    let call_ctx = state.ctx.clone();
+    let call_tool_name = tool_name.clone();
+    let call_arguments = arguments.clone();
+    let run_tool = || {
+        tokio::task::spawn_blocking(move || {
+            tools::call_tool(call_ctx.as_ref(), &call_tool_name, &call_arguments)
+        })
+    };
     let structured = if tools::registry::MUTATING_TOOLS.contains(&tool_name.as_str()) {
         let _guard = state.write_lock.lock().await;
-        tools::call_tool(state.ctx.as_ref(), &tool_name, &arguments)
+        match run_tool().await {
+            Ok(result) => result,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "ok": false,
+                        "tool": tool_name,
+                        "is_error": true,
+                        "error": {
+                            "code": "ACTIONS_WORKER_FAILED",
+                            "message": format!("Actions tool worker failed: {error}"),
+                            "category": "runtime",
+                            "retryable": true
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
     } else {
-        tools::call_tool(state.ctx.as_ref(), &tool_name, &arguments)
+        match run_tool().await {
+            Ok(result) => result,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "ok": false,
+                        "tool": tool_name,
+                        "is_error": true,
+                        "error": {
+                            "code": "ACTIONS_WORKER_FAILED",
+                            "message": format!("Actions tool worker failed: {error}"),
+                            "category": "runtime",
+                            "retryable": true
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+        }
     };
     let result = wrap_tool_result(structured);
     let is_error = result

@@ -247,7 +247,11 @@ pub fn authorize_post(oauth: &OAuthRuntime, form: AuthorizeForm, server_url: &st
     if !form.state.is_empty() {
         qs.push_str(&format!("&state={}", urlencoding_encode(&form.state)));
     }
-    let sep = if form.redirect_uri.contains('?') { '&' } else { '?' };
+    let sep = if form.redirect_uri.contains('?') {
+        '&'
+    } else {
+        '?'
+    };
     // 授权页面通过 POST 表单提交，但客户端回调必须使用 GET。
     // 307 会保留 POST 并把表单体转发到 ChatGPT connector，导致 Bad Request。
     Redirect::to(&format!("{}{}{}", form.redirect_uri, sep, qs)).into_response()
@@ -260,7 +264,10 @@ pub fn token_exchange(
     server_url: &str,
 ) -> Response {
     if form.grant_type != "authorization_code" {
-        return token_error("unsupported_grant_type", "Only authorization_code is supported");
+        return token_error(
+            "unsupported_grant_type",
+            "Only authorization_code is supported",
+        );
     }
 
     if let Some((id, secret)) = basic_auth_credentials(headers) {
@@ -292,7 +299,10 @@ pub fn token_exchange(
         pending.remove(&form.code)
     };
     let Some(code_data) = code_data else {
-        return token_error("invalid_grant", "Unknown or already-used authorization code");
+        return token_error(
+            "invalid_grant",
+            "Unknown or already-used authorization code",
+        );
     };
     if unix_now() > code_data.expires_at {
         return token_error("invalid_grant", "Authorization code expired");

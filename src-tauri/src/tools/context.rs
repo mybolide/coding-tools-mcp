@@ -55,13 +55,17 @@ impl ToolContext {
     }
 
     pub fn from_workspace_with_harness_root(
-        workspace: Workspace,
+        mut workspace: Workspace,
         auth: AuthConfig,
         policy: PolicySettings,
         tool_profile: String,
         permission_mode: String,
         harness_root: PathBuf,
     ) -> Self {
+        // The dangerous mode is an explicit user opt-in.  Make the path
+        // resolver honor the same mode as command policy instead of leaving
+        // a hidden workspace-only boundary in the lower-level file tools.
+        workspace.set_unrestricted(permission_mode == "dangerous");
         let root = workspace.root().to_path_buf();
         Self {
             workspace,

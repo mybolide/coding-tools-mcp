@@ -85,9 +85,7 @@ pub async fn download_release_asset(
             }
         }
     }
-    Err(AppError::Message(format!(
-        "下载 {label} 失败: {last_err}"
-    )))
+    Err(AppError::Message(format!("下载 {label} 失败: {last_err}")))
 }
 
 async fn fetch_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {

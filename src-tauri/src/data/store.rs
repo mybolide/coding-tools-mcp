@@ -171,7 +171,11 @@ impl DataStore {
         self.save()
     }
 
-    pub fn regenerate_workspace_secret(&mut self, profile_id: &str, key: &str) -> AppResult<String> {
+    pub fn regenerate_workspace_secret(
+        &mut self,
+        profile_id: &str,
+        key: &str,
+    ) -> AppResult<String> {
         let value = shared_value_for_key(key);
         self.set_workspace_secret(profile_id, key, &value)?;
         Ok(value)
@@ -226,7 +230,6 @@ impl DataStore {
         }
         self.save()
     }
-
 }
 
 fn lock_data_file() -> AppResult<std::sync::MutexGuard<'static, ()>> {

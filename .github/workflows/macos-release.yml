@@ -1,10 +1,10 @@
-name: macOS Manual Release
+name: macOS Release
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "可选：上传 DMG 到已存在的 Release，例如 v0.1.8"
+        description: "可选：上传到此 Release；留空则只生成 Actions 产物"
         required: false
         type: string
 
@@ -17,6 +17,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
+      - name: 检查应用版本一致性
+        run: node scripts/check-version.mjs
 
       - uses: actions/setup-node@v5
         with:
@@ -37,24 +39,43 @@ jobs:
       - name: 检查前端
         run: npm run check
 
+      - name: 构建前端
+        run: npm run build
+
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
       - name: 运行 Rust 测试
         working-directory: src-tauri
         run: cargo test --locked
 
-      - name: 构建前端
-        run: npm run build
+      - name: 运行 Rust Clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: 构建通用 macOS 应用与 DMG
         run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg
+
+      - name: 生成 DMG 校验和
+        run: |
+          set -euo pipefail
+          mkdir -p dist/macos
+          dmg="$(find src-tauri/target/universal-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          app="$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$dmg"
+          test -n "$app"
+          cp "$dmg" dist/macos/
+          ditto "$app" "dist/macos/$(basename "$app")"
+          shasum -a 256 dist/macos/*.dmg > dist/macos/SHA256SUMS
 
       - name: 上传 Actions 构建产物
         uses: actions/upload-artifact@v4
         with:
           name: coding-tools-mcp-${{ github.run_id }}-macos-universal
-          path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          path: dist/macos/*
           if-no-files-found: error
+          retention-days: 14
 
   upload-release:
     if: ${{ inputs.release_tag != '' }}
@@ -70,18 +91,19 @@ jobs:
           name: coding-tools-mcp-${{ github.run_id }}-macos-universal
           path: dist/macos
 
-      - name: 上传 DMG 到指定 Release
+      - name: 创建或确认 Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
-          dmg="$(find dist/macos -type f -name '*.dmg' -print -quit)"
-          if [[ -z "$dmg" ]]; then
-            echo "未找到 DMG 构建产物" >&2
-            find dist/macos -type f -print >&2
-            exit 1
+          if ! gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GH_REPO" \
+              --title "Coding Tools MCP $RELEASE_TAG" \
+              --generate-notes
           fi
-          gh release view "$RELEASE_TAG" --repo "$GH_REPO" >/dev/null
-          gh release upload "$RELEASE_TAG" "$dmg" --repo "$GH_REPO" --clobber
+          gh release upload "$RELEASE_TAG" dist/macos/*.dmg dist/macos/SHA256SUMS \
+            --repo "$GH_REPO" \
+            --clobber

@@ -403,7 +403,7 @@ pub fn is_allowed_tool(name: &str) -> bool {
 
 pub fn normalize_tool_profile(profile: &str) -> &'static str {
     match profile {
-        "advanced" => "advanced",
+        "advanced" | "full" => "advanced",
         "read-only" => "read-only",
         "compat-readonly-all" => "compat-readonly-all",
         _ => "core",
@@ -613,13 +613,14 @@ pub fn input_schema(name: &str) -> Value {
             "properties": {
                 "cmd": { "type": "string", "minLength": 1 },
                 "workdir": { "type": "string", "default": "." },
-                "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 600000, "default": 30000 },
+                "timeout_ms": { "type": "integer", "minimum": 1, "default": 30000 },
                 "max_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 1048576, "default": 65536 },
                 "yield_time_ms": { "type": "integer", "minimum": 0, "maximum": 30000, "default": 1000 },
                 "tty": { "type": "boolean", "default": false },
                 "stdin": { "type": "string", "default": "" },
+                "env": { "type": "object", "additionalProperties": { "type": "string" }, "default": {} },
                 "confirm": { "type": "boolean", "default": false },
-                "filesystem_scope": { "type": "string", "enum": ["workspace"], "default": "workspace" },
+                "filesystem_scope": { "type": "string", "enum": ["workspace", "host"], "default": "workspace", "description": "host is available only when permission_mode=dangerous" },
                 "reason": { "type": "string", "default": "" }
             },
             "required": ["cmd"],
@@ -737,5 +738,32 @@ pub fn input_schema(name: &str) -> Value {
             "properties": {},
             "additionalProperties": false
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_schema;
+
+    #[test]
+    fn exec_schema_exposes_dangerous_mode_inputs() {
+        let schema = input_schema("exec_command");
+        let properties = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("exec properties");
+        assert_eq!(
+            properties["filesystem_scope"]["enum"],
+            serde_json::json!(["workspace", "host"])
+        );
+        assert!(properties.get("env").is_some());
+        assert!(properties["timeout_ms"].get("maximum").is_none());
+    }
+
+    #[test]
+    fn full_profile_alias_exposes_the_complete_tool_set() {
+        let tools = super::list_tools_for_profile("full");
+        assert_eq!(tools.len(), super::P0_TOOLS.len());
+        assert!(tools.iter().any(|tool| tool["name"] == "harness_status"));
     }
 }

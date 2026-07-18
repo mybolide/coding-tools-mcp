@@ -72,6 +72,17 @@ Open the workspace and click **Start** in the MCP panel. The desktop client show
 
 ![Local, public, and ChatGPT MCP connection details](docs/images/workspace-connection.png)
 
+### Automatic recovery and one-click diagnostics
+
+The workspace page continuously shows MCP and Actions runtime state and provides controls for long-running use:
+
+- **Auto-start** restores services that were explicitly enabled when the app launches.
+- **Auto-recover** retries a missing or failed listener with a backoff interval; a service that was manually stopped is not relaunched.
+- **Reconnect all** restarts running or failed MCP/Actions services, reconnects configured tunnels, and immediately runs health checks.
+- **Automatic health refresh** checks local endpoints, the public `/mcp` endpoint, and OAuth metadata periodically and surfaces failures in the UI and notifications.
+
+After the first deployment, enable auto-start and auto-recover for MCP and Actions in the workspace runtime policy. Use Stop for a temporary shutdown; the app remembers that manual intent.
+
 ### 5. Connect an AI client
 
 Use the public MCP URL shown by the app. With OAuth enabled, the client follows the server metadata into the authorization flow; authorization codes, Client IDs, and secrets can be generated and managed from the desktop client.

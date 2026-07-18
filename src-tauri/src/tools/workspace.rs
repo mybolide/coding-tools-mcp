@@ -142,6 +142,11 @@ pub type WorkspaceResult<T> = Result<T, WorkspaceError>;
 #[derive(Debug, Clone)]
 pub struct Workspace {
     root: PathBuf,
+    /// When enabled by the explicit `dangerous` runtime mode, path helpers
+    /// may address the host filesystem instead of enforcing the workspace
+    /// boundary. Authentication and normal argument validation still happen
+    /// above this layer.
+    unrestricted: bool,
 }
 
 impl Workspace {
@@ -154,7 +159,18 @@ impl Workspace {
                 "Workspace root must be a directory",
             ));
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            unrestricted: false,
+        })
+    }
+
+    pub fn set_unrestricted(&mut self, unrestricted: bool) {
+        self.unrestricted = unrestricted;
+    }
+
+    pub fn is_unrestricted(&self) -> bool {
+        self.unrestricted
     }
 
     pub fn root(&self) -> &Path {
@@ -173,6 +189,9 @@ impl Workspace {
         }
         if raw_path.contains('\0') {
             return Err(WorkspaceError::invalid_argument("Path contains a NUL byte"));
+        }
+        if self.unrestricted {
+            return Ok(());
         }
         if raw_path.starts_with('/') || raw_path.starts_with('\\') {
             return Err(WorkspaceError::absolute_path_denied());
@@ -214,7 +233,7 @@ impl Workspace {
             || input
                 .components()
                 .any(|part| matches!(part, Component::ParentDir));
-        if !explicit_external && candidate.starts_with(&self.root) {
+        if !self.unrestricted && !explicit_external && candidate.starts_with(&self.root) {
             self.ensure_inside_workspace(&candidate, &resolved)?;
         }
         Ok(ResolvedPath {
@@ -274,7 +293,7 @@ impl Workspace {
             self.ensure_parent_chain(parent)?;
             parent.to_path_buf()
         };
-        if !resolved_parent.starts_with(&self.root) {
+        if !self.unrestricted && !resolved_parent.starts_with(&self.root) {
             return Err(WorkspaceError::path_outside_workspace());
         }
         Ok(ResolvedPath {
@@ -296,7 +315,7 @@ impl Workspace {
             let resolved = cursor
                 .canonicalize()
                 .map_err(|_| WorkspaceError::not_found("Parent directory not found"))?;
-            if !resolved.starts_with(&self.root) {
+            if !self.unrestricted && !resolved.starts_with(&self.root) {
                 return Err(WorkspaceError::path_outside_workspace());
             }
         }
@@ -310,13 +329,16 @@ impl Workspace {
         if !resolved.is_dir() {
             return Err(WorkspaceError::not_a_directory("Base is not a directory"));
         }
-        if !resolved.starts_with(&self.root) {
+        if !self.unrestricted && !resolved.starts_with(&self.root) {
             return Err(WorkspaceError::path_outside_workspace());
         }
         Ok(resolved)
     }
 
     fn ensure_inside_workspace(&self, candidate: &Path, resolved: &Path) -> WorkspaceResult<()> {
+        if self.unrestricted {
+            return Ok(());
+        }
         if !resolved.starts_with(&self.root) {
             if candidate.is_symlink() {
                 return Err(WorkspaceError::symlink_escape());
@@ -328,6 +350,9 @@ impl Workspace {
 
     pub fn reject_write_symlink(&self, raw_path: &str) -> WorkspaceResult<()> {
         self.reject_unsafe_text(raw_path)?;
+        if self.unrestricted {
+            return Ok(());
+        }
         let candidate = self
             .root
             .join(raw_path.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -338,6 +363,9 @@ impl Workspace {
     }
 
     pub fn reject_protected_write_path(&self, raw_path: &str) -> WorkspaceResult<()> {
+        if self.unrestricted {
+            return Ok(());
+        }
         let normalized = raw_path.replace('\\', "/");
         let first = normalized.split('/').next().unwrap_or("");
         if matches!(first, ".git" | ".github") {
@@ -395,7 +423,7 @@ impl Workspace {
 
     pub fn is_safe_existing_path(&self, path: &Path) -> bool {
         path.canonicalize()
-            .map(|p| p.starts_with(&self.root))
+            .map(|p| self.unrestricted || p.starts_with(&self.root))
             .unwrap_or(false)
     }
 

@@ -132,18 +132,37 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
         "git_show" => git::git_show(ws, &effective_args),
         "git_blame" => git::git_blame(ws, &effective_args),
         "view_image" => image_tool::view_image(ws, &effective_args),
-        "request_permissions" => Ok(tool_ok(json!({
-            "ok": false,
-            "status": "unsupported",
-            "next_actions": [],
-            "error": {
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Permission elicitation is not available for this client.",
-                "category": "permission",
-                "retryable": false,
-                "details": { "requested": args }
+        "request_permissions" => {
+            if ctx.policy.skip_permission_gates() {
+                Ok(tool_ok(json!({
+                    "ok": true,
+                    "status": "granted",
+                    "grant_id": "dangerously-skip-all-permissions",
+                    "expires_at": null,
+                    "constraints": {
+                        "mode": "dangerous",
+                        "workspace": ctx.workspace.root_display(),
+                        "requested": args
+                    },
+                    "warnings": [
+                        "permission_mode=dangerous 已启用；权限门槛由已认证调用方自行承担"
+                    ]
+                })))
+            } else {
+                Ok(tool_ok(json!({
+                    "ok": false,
+                    "status": "unsupported",
+                    "next_actions": [],
+                    "error": {
+                        "code": "ELICITATION_UNSUPPORTED",
+                        "message": "Permission elicitation is not available for this client.",
+                        "category": "permission",
+                        "retryable": false,
+                        "details": { "requested": args }
+                    }
+                })))
             }
-        }))),
+        }
         _ => {
             return tool_err_code(
                 "INVALID_ARGUMENT",
@@ -170,7 +189,10 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
             object.insert("operation_id".into(), Value::String(operation.id.clone()));
         }
     }
-    if output.get("ok").and_then(Value::as_bool) == Some(false) {
+    // Permission elicitation is a control-plane response, not a workspace
+    // operation.  Do not trigger the expensive iCloud-backed harness baseline
+    // scan merely to decorate a denied/unsupported permission response.
+    if output.get("ok").and_then(Value::as_bool) == Some(false) && name != "request_permissions" {
         output = attach_harness_status(ctx, output, task_id.is_none());
     }
     if let Some(task_id) = task_id.as_deref() {
@@ -378,21 +400,24 @@ pub fn server_info(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
 }
 
 pub fn check_exec_environment(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
+    let unrestricted = ctx.policy.skip_permission_gates();
     Ok(tool_ok(json!({
         "workspace": ctx.workspace.root_display(),
         "permission_mode": ctx.permission_mode,
+        "permission_gates_skipped": unrestricted,
         "network_allowed": ctx.policy.network_allowed(),
         "landlock_enabled": false,
         "filesystem_sandbox": {
             "available": false,
             "enforced": false,
-            "default_scope": "workspace",
-            "host_scope_available": false
+            "default_scope": if unrestricted { "host" } else { "workspace" },
+            "host_scope_available": unrestricted
         },
         "global_tmp_write": if ctx.permission_mode == "dangerous" { "allowed" } else { "tmp-prefix" },
         "workspace_exec_available": true,
         "workspace_exec_sandbox_enforced": false,
         "workspace_exec_boundary": "policy_only",
+        "command_allowlist_enforced": !unrestricted,
         "system_command_allowlist": ctx.policy.allowed_commands.iter().cloned().collect::<Vec<_>>(),
         "workspace_local_entries": {
             "enabled": ctx.policy.workspace_local_entries,
@@ -401,7 +426,11 @@ pub fn check_exec_environment(ctx: &ToolContext) -> Result<Value, WorkspaceError
         },
         // Backward-compatible alias for older MCP clients.
         "allowed_commands": ctx.policy.allowed_commands.iter().cloned().collect::<Vec<_>>(),
-        "warnings": ["Workspace 子进程当前允许执行，但尚未启用操作系统级文件系统沙箱"]
+        "warnings": if unrestricted {
+            vec!["dangerous 模式已启用：命令、文件系统和工作区保护门槛由调用方自行承担"]
+        } else {
+            vec!["Workspace 子进程当前允许执行，但尚未启用操作系统级文件系统沙箱"]
+        }
     })))
 }
 

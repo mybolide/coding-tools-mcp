@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+      - name: 检查应用版本一致性
+        run: node scripts/check-version.mjs
       - name: 安装 Tauri Linux 系统依赖
         run: |
           sudo apt-get update
@@ -37,18 +39,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
       - name: cargo build
         working-directory: src-tauri
         run: cargo build --locked
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --locked
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
   frontend:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      - name: 检查应用版本一致性
+        run: node scripts/check-version.mjs
       - uses: actions/setup-node@v5
         with:
           node-version: "22"

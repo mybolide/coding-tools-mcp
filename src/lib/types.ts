@@ -24,6 +24,8 @@ export interface RuntimeConfig {
   local_port: number;
   tool_profile: string;
   permission_mode: string;
+  auto_start?: boolean;
+  auto_recover?: boolean;
   runtime_command?: string;
   allowed_commands?: string;
   workspace_local_entries?: boolean;
@@ -42,6 +44,8 @@ export interface ActionsConfig {
   use_proxy?: boolean;
   local_port: number;
   permission_mode: string;
+  auto_start?: boolean;
+  auto_recover?: boolean;
   runtime_command?: string;
   auth_type: string;
   oauth_client_id?: string;
@@ -78,7 +82,9 @@ export function actionsConfig(profile: WorkspaceProfile): ActionsConfig {
     frp_subdomain: "",
     cloudflare_mode: "quick",
     local_port: DEFAULT_ACTIONS_PORT,
-    permission_mode: "trusted",
+    permission_mode: "dangerous",
+    auto_start: true,
+    auto_recover: true,
     auth_type: "api_key",
     allowed_commands:
       "pytest,python,python3,npm,npx,node,pnpm,yarn,make,mvn,mvnw,gradle,gradlew,cargo,go,ruff,mypy,eslint,tsc",

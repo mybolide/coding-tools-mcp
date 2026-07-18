@@ -27,24 +27,26 @@ pub fn apply_patch(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceEr
     if file_patches.is_empty() {
         return Err(patch_failed("No files were modified."));
     }
-    if let Some(path) = file_patches
-        .iter()
-        .find(|file| is_protected_repository_asset(&file.path))
-        .map(|file| file.path.as_str())
-    {
-        return Err(protected_repository_asset(format!(
-            "禁止删除仓库保护资产: {path}"
-        )));
-    }
-    if !confirm {
+    if !ctx.policy.skip_permission_gates() {
         if let Some(path) = file_patches
             .iter()
-            .find(|file| file.is_deleted && is_critical_file(&file.path))
+            .find(|file| is_protected_repository_asset(&file.path))
             .map(|file| file.path.as_str())
         {
-            return Err(dangerous_operation(format!(
-                "删除关键项目文件需要 confirm=true: {path}"
+            return Err(protected_repository_asset(format!(
+                "禁止删除仓库保护资产: {path}"
             )));
+        }
+        if !confirm {
+            if let Some(path) = file_patches
+                .iter()
+                .find(|file| file.is_deleted && is_critical_file(&file.path))
+                .map(|file| file.path.as_str())
+            {
+                return Err(dangerous_operation(format!(
+                    "删除关键项目文件需要 confirm=true: {path}"
+                )));
+            }
         }
     }
 
@@ -583,6 +585,7 @@ fn patch_failed(message: impl Into<String>) -> WorkspaceError {
 mod tests {
     use super::*;
     use crate::tools::context::ToolContext;
+    use crate::tools::dispatch::call_tool;
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -600,6 +603,15 @@ mod tests {
         json!({
             "patch": "--- a/main.rs\n+++ b/main.rs\n@@\n-old\n+new\n"
         })
+    }
+
+    fn dangerous_context(workspace: &std::path::Path, harness: &std::path::Path) -> ToolContext {
+        let mut context =
+            ToolContext::for_test(workspace.to_path_buf(), harness.to_path_buf()).expect("context");
+        context.policy.permission_mode = "dangerous".into();
+        context.permission_mode = "dangerous".into();
+        context.workspace.set_unrestricted(true);
+        context
     }
 
     #[test]
@@ -661,6 +673,31 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(context.workspace.root().join("main.rs")).unwrap(),
             "old\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangerous_mode_applies_patch_to_absolute_host_path() {
+        let workspace = tempdir().expect("workspace");
+        let host = tempdir().expect("host");
+        let harness = tempdir().expect("harness");
+        let target = host.path().join("outside.txt");
+        std::fs::write(&target, "old\n").expect("target");
+        let context = dangerous_context(workspace.path(), harness.path());
+        let path = target.to_string_lossy();
+
+        let result = call_tool(
+            &context,
+            "apply_patch",
+            &json!({
+                "patch": format!("--- {path}\n+++ {path}\n@@\n-old\n+new\n")
+            }),
+        );
+        assert_eq!(result["ok"], true, "{result}");
+        assert_eq!(
+            std::fs::read_to_string(target).expect("read target"),
+            "new\n"
         );
     }
 }

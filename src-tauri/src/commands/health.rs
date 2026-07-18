@@ -14,7 +14,10 @@ fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::Work
 }
 
 #[tauri::command]
-pub async fn run_health_checks(state: State<'_, AppState>, id: String) -> AppResult<Vec<HealthItem>> {
+pub async fn run_health_checks(
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<Vec<HealthItem>> {
     let profile = profile_by_id(&state, &id)?;
     Ok(execute_health_checks(&profile).await)
 }

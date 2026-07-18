@@ -123,8 +123,7 @@ impl AppSettings {
     }
 
     pub fn load_or_default() -> Self {
-        crate::data::DataStore::read_file(|data| Ok(Self::from_data(data)))
-            .unwrap_or_default()
+        crate::data::DataStore::read_file(|data| Ok(Self::from_data(data))).unwrap_or_default()
     }
 
     pub fn find_frp_profile(&self, id: &str) -> Option<&FrpProfile> {

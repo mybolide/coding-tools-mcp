@@ -61,8 +61,7 @@ fn escape_quoted_value(value: &str) -> String {
     value
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
-        .replace('\r', "")
-        .replace('\n', "")
+        .replace(['\r', '\n'], "")
 }
 
 pub(crate) fn constant_time_eq_str(left: &str, right: &str) -> bool {
@@ -87,7 +86,9 @@ mod tests {
     fn accepts_valid_bearer_token() {
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer secret-token".parse().unwrap());
-        assert!(verify_bearer_header(&headers, "secret-token", "https://example.com/meta").is_none());
+        assert!(
+            verify_bearer_header(&headers, "secret-token", "https://example.com/meta").is_none()
+        );
     }
 
     #[test]
@@ -103,10 +104,14 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Basic secret-token".parse().unwrap());
-        assert!(verify_bearer_header(&headers, "secret-token", "https://example.com/meta").is_some());
+        assert!(
+            verify_bearer_header(&headers, "secret-token", "https://example.com/meta").is_some()
+        );
 
         let mut headers = HeaderMap::new();
         headers.insert(AUTHORIZATION, "Bearer wrong".parse().unwrap());
-        assert!(verify_bearer_header(&headers, "secret-token", "https://example.com/meta").is_some());
+        assert!(
+            verify_bearer_header(&headers, "secret-token", "https://example.com/meta").is_some()
+        );
     }
 }
