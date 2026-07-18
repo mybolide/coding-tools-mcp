@@ -21,6 +21,7 @@ use crate::tunnel::{
     TunnelServiceKind,
 };
 
+use crate::workspace::resources::{validate_service_start, WorkspaceService};
 use crate::workspace::RuntimeStatusDto;
 
 fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::WorkspaceProfile> {
@@ -48,6 +49,14 @@ fn set_auto_start_intent(
         }
         store.update(profile)
     })
+}
+
+fn validate_start_resources(
+    state: &AppState,
+    id: &str,
+    service: WorkspaceService,
+) -> AppResult<()> {
+    state.with_workspaces(|store| validate_service_start(store.list(), id, service))
 }
 
 fn persist_tunnel_url(
@@ -292,6 +301,7 @@ pub async fn run_runtime_watchdog(app: AppHandle) {
 
 pub async fn start_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
     set_auto_start_intent(&state, &id, ServiceKind::Mcp, true)?;
+    validate_start_resources(&state, &id, WorkspaceService::Mcp)?;
     let profile = profile_by_id(&state, &id)?;
 
     ensure_port_available(profile.runtime.local_port, "本地 MCP").await?;
@@ -330,8 +340,6 @@ pub async fn stop_runtime(state: State<'_, AppState>, id: String) -> AppResult<R
 
     let port = profile.runtime.local_port;
 
-    stop_for_runtime(&profile, TunnelServiceKind::Mcp).await?;
-
     let handle = state.with_runtime(|runtime| Ok(runtime.begin_stop(&id, ServiceKind::Mcp)))?;
 
     await_listener_shutdown(handle, port).await;
@@ -341,6 +349,7 @@ pub async fn stop_runtime(state: State<'_, AppState>, id: String) -> AppResult<R
 
         Ok(runtime.mcp_status(&profile))
     })?;
+    stop_for_runtime(&profile, TunnelServiceKind::Mcp).await?;
     sync_tunnel_routes_from_runtime(&state).await?;
     state.with_runtime(|runtime| Ok(runtime.mcp_status(&profile)))
 }
@@ -365,6 +374,7 @@ pub async fn start_actions_runtime(
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
     set_auto_start_intent(&state, &id, ServiceKind::Actions, true)?;
+    validate_start_resources(&state, &id, WorkspaceService::Actions)?;
     let profile = profile_by_id(&state, &id)?;
 
     ensure_port_available(profile.actions.local_port, "本地 Actions").await?;
@@ -407,8 +417,6 @@ pub async fn stop_actions_runtime(
 
     let port = profile.actions.local_port;
 
-    stop_for_runtime(&profile, TunnelServiceKind::Actions).await?;
-
     let handle = state.with_runtime(|runtime| Ok(runtime.begin_stop(&id, ServiceKind::Actions)))?;
 
     await_listener_shutdown(handle, port).await;
@@ -418,6 +426,7 @@ pub async fn stop_actions_runtime(
 
         Ok(runtime.actions_status(&profile))
     })?;
+    stop_for_runtime(&profile, TunnelServiceKind::Actions).await?;
     sync_tunnel_routes_from_runtime(&state).await?;
     state.with_runtime(|runtime| Ok(runtime.actions_status(&profile)))
 }
@@ -442,6 +451,7 @@ pub fn get_actions_runtime_status(
 
 pub fn restart_runtime(state: State<'_, AppState>, id: String) -> AppResult<RuntimeStatusDto> {
     set_auto_start_intent(&state, &id, ServiceKind::Mcp, true)?;
+    validate_start_resources(&state, &id, WorkspaceService::Mcp)?;
     let profile = profile_by_id(&state, &id)?;
 
     state.with_runtime(|runtime| runtime.restart_mcp(&profile))
@@ -455,6 +465,7 @@ pub fn restart_actions_runtime(
     id: String,
 ) -> AppResult<RuntimeStatusDto> {
     set_auto_start_intent(&state, &id, ServiceKind::Actions, true)?;
+    validate_start_resources(&state, &id, WorkspaceService::Actions)?;
     let profile = profile_by_id(&state, &id)?;
 
     state.with_runtime(|runtime| runtime.restart_actions(&profile))

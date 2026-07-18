@@ -8,8 +8,10 @@ use std::collections::HashSet;
 
 use super::TunnelServiceKind;
 
-pub(crate) use client::managed_frpc_config_matches;
-pub(crate) use client::{acquire_frpc_operation_lock, stop_running_frpc_instances};
+pub(crate) use client::{
+    acquire_frpc_operation_lock, clear_managed_frpc_pid, managed_frpc_config_matches,
+    stop_recorded_frpc_instance,
+};
 pub(crate) use client::{cached_frpc_path, download_frpc_to_cache};
 pub use client::{resolve_frpc, spawn_frpc};
 
@@ -228,15 +230,15 @@ pub(crate) fn build_frpc_toml_for_route_refs(
 }
 
 fn frp_proxy_config(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> FrpProxyConfig {
-    let slug = workspace_slug(&profile.name);
+    let prefix = workspace_proxy_prefix(&profile.id);
     match kind {
         TunnelServiceKind::Mcp => FrpProxyConfig {
-            proxy_name: format!("{slug}-mcp"),
+            proxy_name: format!("{prefix}-mcp"),
             local_port: profile.runtime.local_port,
             subdomain: profile.tunnel.frp_subdomain.clone(),
         },
         TunnelServiceKind::Actions => FrpProxyConfig {
-            proxy_name: format!("{slug}-actions"),
+            proxy_name: format!("{prefix}-actions"),
             local_port: profile.actions.local_port,
             subdomain: profile.actions.frp_subdomain.clone(),
         },
@@ -255,16 +257,16 @@ fn build_proxy_snippet(proxy: &FrpProxyConfig) -> String {
     .join("\n")
 }
 
-fn workspace_slug(name: &str) -> String {
-    let slug: String = name
-        .to_lowercase()
+fn workspace_proxy_prefix(workspace_id: &str) -> String {
+    let stable_id: String = workspace_id
         .chars()
-        .map(|c| if c.is_whitespace() { '-' } else { c })
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(12)
         .collect();
-    if slug.is_empty() || slug.chars().all(|c| c == '-') {
+    if stable_id.is_empty() {
         "workspace".to_string()
     } else {
-        slug
+        format!("ws-{}", stable_id.to_ascii_lowercase())
     }
 }
 
@@ -291,7 +293,10 @@ mod tests {
         profile.tunnel.frp_profile_id = "p1".into();
 
         let snippet = mcp_frp_snippet(&profile, &settings);
-        assert!(snippet.contains("name = \"demo-ws-mcp\""));
+        let proxy_name = frp_server_config(&profile, TunnelServiceKind::Mcp, &settings, None)
+            .proxy
+            .proxy_name;
+        assert!(snippet.contains(&format!("name = \"{proxy_name}\"")));
         assert!(snippet.contains("localPort = 28766"));
         assert!(snippet.contains("subdomain = \"demo-mcp\""));
     }
@@ -340,12 +345,14 @@ mod tests {
             frp_server_config(&first, TunnelServiceKind::Mcp, &settings, None),
             frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None),
         ];
+        let first_name = configs[0].proxy.proxy_name.clone();
+        let second_name = configs[1].proxy.proxy_name.clone();
         let toml = build_frpc_toml_for_routes(&configs);
 
         assert_eq!(toml.matches("[[proxies]]").count(), 2);
         assert!(toml.contains("serverAddr = \"frp.example.com\""));
-        assert!(toml.contains("name = \"first-mcp\""));
-        assert!(toml.contains("name = \"second-mcp\""));
+        assert!(toml.contains(&format!("name = \"{first_name}\"")));
+        assert!(toml.contains(&format!("name = \"{second_name}\"")));
         assert!(toml.contains("localPort = 28766"));
         assert!(toml.contains("localPort = 28767"));
     }
@@ -369,17 +376,19 @@ mod tests {
             frp_server_config(&mcp, TunnelServiceKind::Mcp, &settings, None),
             frp_server_config(&actions, TunnelServiceKind::Actions, &settings, None),
         ];
+        let mcp_name = configs[0].proxy.proxy_name.clone();
+        let actions_name = configs[1].proxy.proxy_name.clone();
         let toml = build_frpc_toml_for_routes(&configs);
 
         assert_eq!(toml.matches("[[proxies]]").count(), 2);
-        assert!(toml.contains("name = \"mcp-mcp\""));
-        assert!(toml.contains("name = \"actions-actions\""));
+        assert!(toml.contains(&format!("name = \"{mcp_name}\"")));
+        assert!(toml.contains(&format!("name = \"{actions_name}\"")));
         assert!(toml.contains("localPort = 28766"));
         assert!(toml.contains("localPort = 8787"));
     }
 
     #[test]
-    fn build_frpc_toml_for_routes_deduplicates_proxy_names() {
+    fn build_frpc_toml_for_routes_keeps_workspace_proxy_names_unique() {
         let mut first = WorkspaceProfile::new("/tmp/first".into(), Some("Same Name".into()));
         first.tunnel.frp_server = "frp.example.com".into();
         first.tunnel.frp_server_port = 7000;
@@ -395,15 +404,46 @@ mod tests {
             frp_server_config(&first, TunnelServiceKind::Mcp, &settings, None),
             frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None),
         ];
+        let first_name = configs[0].proxy.proxy_name.clone();
+        let second_name = configs[1].proxy.proxy_name.clone();
         let toml = build_frpc_toml_for_routes(&configs);
 
-        assert!(toml.contains("name = \"same-name-mcp\""));
-        assert!(toml.contains("name = \"same-name-mcp-2\""));
+        assert_ne!(first_name, second_name);
+        assert!(toml.contains(&format!("name = \"{first_name}\"")));
+        assert!(toml.contains(&format!("name = \"{second_name}\"")));
     }
 
     #[test]
     fn build_frpc_toml_for_routes_returns_empty_for_no_routes() {
         assert!(build_frpc_toml_for_routes(&[]).is_empty());
+    }
+
+    #[test]
+    fn same_name_workspaces_receive_distinct_proxy_names() {
+        let first = WorkspaceProfile::new("/tmp/first".into(), Some("Same Name".into()));
+        let second = WorkspaceProfile::new("/tmp/second".into(), Some("Same Name".into()));
+        let settings = AppSettings::default();
+
+        let first_config = frp_server_config(&first, TunnelServiceKind::Mcp, &settings, None);
+        let second_config = frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None);
+
+        assert_ne!(
+            first_config.proxy.proxy_name,
+            second_config.proxy.proxy_name
+        );
+    }
+
+    #[test]
+    fn proxy_name_is_stable_when_workspace_is_renamed() {
+        let original = WorkspaceProfile::new("/tmp/demo".into(), Some("Before".into()));
+        let mut renamed = original.clone();
+        renamed.name = "After".into();
+        let settings = AppSettings::default();
+
+        let before = frp_server_config(&original, TunnelServiceKind::Mcp, &settings, None);
+        let after = frp_server_config(&renamed, TunnelServiceKind::Mcp, &settings, None);
+
+        assert_eq!(before.proxy.proxy_name, after.proxy.proxy_name);
     }
 
     #[test]

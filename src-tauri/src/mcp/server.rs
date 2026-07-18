@@ -43,7 +43,7 @@ fn initialize_result() -> Value {
     serde_json::json!({
         "protocolVersion": "2025-06-18",
         "capabilities": {
-            "tools": { "listChanged": false },
+            "tools": { "listChanged": true },
             "logging": {}
         },
         "serverInfo": {
@@ -51,7 +51,7 @@ fn initialize_result() -> Value {
             "title": "Coding Tools MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use these tools according to the configured permission_mode. In dangerous mode, the authenticated caller explicitly permits host filesystem paths, shell syntax, environment variables, and unrestricted command execution."
+        "instructions": "Use these tools according to the configured permission_mode. In dangerous mode, the authenticated caller explicitly permits host filesystem paths, shell syntax, environment variables, and unrestricted command execution. Session history workflow: when the user asks to restore, resume, or continue previous project work, call history_session_bootstrap first, then read all_history_summary and latest_handoff before acting. For every turn that performs or analyzes project work after bootstrap, call history_session_checkpoint before every final response and only claim persistence after it returns ok=true. This is model-mediated tool usage, not automatic background persistence."
     })
 }
 
@@ -60,13 +60,11 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| serde_json::json!({ "code": -32602, "message": "Missing tool name" }))?;
-    let args = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or(serde_json::json!({}));
+    let args = tool_arguments(name, params);
 
+    let canonical_name = crate::tools::registry::canonical_tool_name(name);
     let known = crate::tools::registry::exposed_tool_names(&state.tool_profile);
-    if !known.iter().any(|n| n == &name) {
+    if !known.iter().any(|n| n == &canonical_name) {
         return Err(serde_json::json!({
             "code": -32602,
             "message": format!("Unknown tool: {name}"),
@@ -74,8 +72,30 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         }));
     }
 
-    let structured = call_tool(state.as_ref(), name, &args);
-    Ok(wrap_mcp_tool_result(name, &args, structured))
+    let structured = call_tool(state.as_ref(), canonical_name, &args);
+    Ok(wrap_mcp_tool_result(canonical_name, &args, structured))
+}
+
+fn tool_arguments(name: &str, params: &Value) -> Value {
+    let mut args = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    if name.starts_with("history_session_") {
+        if let Some(session_key) = params
+            .get("_meta")
+            .and_then(|meta| meta.get("openai/session"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !args.is_object() {
+                args = serde_json::json!({});
+            }
+            args["_host_session_key"] = Value::String(session_key.to_string());
+        }
+    }
+    args
 }
 
 pub fn new_state(
@@ -92,4 +112,106 @@ pub fn new_state(
         tool_profile,
         permission_mode,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::sync::Arc;
+
+    use serde_json::json;
+
+    use crate::tools::ToolContext;
+
+    use super::{handle_request, initialize_result, tool_arguments};
+
+    #[test]
+    fn initialize_instructions_define_the_history_persistence_workflow() {
+        let initialized = initialize_result();
+        let instructions = initialized["instructions"].as_str().expect("instructions");
+        assert!(instructions.contains("history_session_bootstrap"));
+        assert!(instructions.contains("history_session_checkpoint"));
+        assert!(instructions.contains("before every final response"));
+        assert!(instructions.contains("not automatic background persistence"));
+    }
+
+    #[test]
+    fn initialize_declares_that_the_tool_catalog_can_change() {
+        let initialized = initialize_result();
+
+        assert_eq!(initialized["capabilities"]["tools"]["listChanged"], true);
+    }
+
+    #[test]
+    fn chatgpt_session_metadata_is_injected_only_for_history_tools() {
+        let params = json!({
+            "arguments": {"session_key": "explicit"},
+            "_meta": {"openai/session": "chatgpt-conversation"}
+        });
+        let history = tool_arguments("history_session_bootstrap", &params);
+        assert_eq!(history["session_key"], "explicit");
+        assert_eq!(history["_host_session_key"], "chatgpt-conversation");
+
+        let existing = tool_arguments("read_file", &params);
+        assert_eq!(existing["session_key"], "explicit");
+        assert!(existing.get("_host_session_key").is_none());
+    }
+
+    #[test]
+    fn chatgpt_session_metadata_has_priority_over_explicit_session_key() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let harness = tempfile::tempdir().expect("harness tempdir");
+        let state = Arc::new(
+            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                .expect("tool context"),
+        );
+        let response = handle_request(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "history_session_bootstrap",
+                    "arguments": {"session_key": "explicit-session"},
+                    "_meta": {"openai/session": "chatgpt-session"}
+                }
+            }),
+        );
+        let structured = &response["result"]["structuredContent"];
+        assert_eq!(structured["ok"], true);
+        assert_eq!(structured["session_key_source"], "platform_conversation_id");
+        let content = fs::read_to_string(workspace.path().join("docs/history-session/1.md"))
+            .expect("read history file");
+        assert!(content.contains("**Session key:** chatgpt-session"));
+        assert!(!content.contains("explicit-session"));
+    }
+
+    #[test]
+    fn legacy_grep_calls_are_mapped_to_the_public_grep_text_tool() {
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let harness = tempfile::tempdir().expect("harness tempdir");
+        fs::write(workspace.path().join("sample.txt"), "catalog needle")
+            .expect("write sample file");
+        let state = Arc::new(
+            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                .expect("tool context"),
+        );
+
+        let response = handle_request(
+            &state,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "grep",
+                    "arguments": {"query": "needle", "path": "."}
+                }
+            }),
+        );
+
+        assert!(response.get("error").is_none());
+        assert_eq!(response["result"]["structuredContent"]["ok"], true);
+    }
 }

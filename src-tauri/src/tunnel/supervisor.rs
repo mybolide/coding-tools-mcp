@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use tokio::process::Child;
+use tokio::time::{sleep, Duration, Instant};
 
 use crate::error::{AppError, AppResult};
 use crate::platform::platform;
@@ -57,7 +58,7 @@ struct FrpcProcess {
 pub struct TunnelSupervisor {
     sessions: HashMap<(String, TunnelServiceKind), TunnelSession>,
     frp_routes: HashMap<(String, TunnelServiceKind), FrpRoute>,
-    frpc: Option<FrpcProcess>,
+    frpc: HashMap<String, FrpcProcess>,
 }
 
 impl Default for TunnelSupervisor {
@@ -72,7 +73,7 @@ impl TunnelSupervisor {
         Self {
             sessions: HashMap::new(),
             frp_routes: HashMap::new(),
-            frpc: None,
+            frpc: HashMap::new(),
         }
     }
 
@@ -161,7 +162,9 @@ impl TunnelSupervisor {
 
         if tunnel_type == "frp" {
             let config = frp::frp_server_config(profile, kind, settings, None);
-            if let Err(error) = self.validate_frp_route_compatibility(&config, settings) {
+            if let Err(error) =
+                self.validate_frp_route_compatibility(&profile.id, &config, settings)
+            {
                 self.restore_route_state(&key, previous_route.take(), previous_session.take());
                 return Err(error);
             }
@@ -173,10 +176,12 @@ impl TunnelSupervisor {
                     kind,
                 },
             );
-            if let Err(error) = self.ensure_frpc_matches_routes(settings).await {
+            if let Err(error) = self.ensure_frpc_matches_routes(&profile.id, settings).await {
                 self.frp_routes.remove(&key);
                 self.restore_route_state(&key, previous_route.take(), previous_session.take());
-                if let Err(rollback_error) = self.ensure_frpc_matches_routes(settings).await {
+                if let Err(rollback_error) =
+                    self.ensure_frpc_matches_routes(&profile.id, settings).await
+                {
                     return Err(AppError::Message(format!(
                         "启动新的 FRP 线路失败，且恢复原有线路失败：{error}; rollback: {rollback_error}"
                     )));
@@ -185,7 +190,7 @@ impl TunnelSupervisor {
             }
 
             let public_url = frp::frp_public_url(profile, kind, settings);
-            let pid = self.frpc.as_ref().and_then(|process| process.pid);
+            let pid = self.frpc.get(&profile.id).and_then(|process| process.pid);
             self.sessions.insert(
                 key,
                 TunnelSession {
@@ -269,12 +274,18 @@ impl TunnelSupervisor {
         let key = (workspace_id.to_string(), kind);
         if let Some(route) = self.frp_routes.remove(&key) {
             let session = self.sessions.remove(&key);
-            if let Err(error) = self.ensure_frpc_matches_routes(settings).await {
+            if let Err(error) = self
+                .ensure_frpc_matches_routes(workspace_id, settings)
+                .await
+            {
                 self.frp_routes.insert(key.clone(), route);
                 if let Some(session) = session {
                     self.sessions.insert(key, session);
                 }
-                if let Err(rollback_error) = self.ensure_frpc_matches_routes(settings).await {
+                if let Err(rollback_error) = self
+                    .ensure_frpc_matches_routes(workspace_id, settings)
+                    .await
+                {
                     return Err(AppError::Message(format!(
                         "停止 FRP 线路失败，且恢复原有线路失败：{error}; rollback: {rollback_error}"
                     )));
@@ -330,14 +341,20 @@ impl TunnelSupervisor {
         }
 
         if !removed_routes.is_empty() {
-            if let Err(error) = self.ensure_frpc_matches_routes(&settings).await {
+            if let Err(error) = self
+                .ensure_frpc_matches_routes(workspace_id, &settings)
+                .await
+            {
                 for (key, route, session) in removed_routes {
                     self.frp_routes.insert(key.clone(), route);
                     if let Some(session) = session {
                         self.sessions.insert(key, session);
                     }
                 }
-                if let Err(rollback_error) = self.ensure_frpc_matches_routes(&settings).await {
+                if let Err(rollback_error) = self
+                    .ensure_frpc_matches_routes(workspace_id, &settings)
+                    .await
+                {
                     return Err(AppError::Message(format!(
                         "删除工作区 FRP 线路失败，且恢复原有线路失败：{error}; rollback: {rollback_error}"
                     )));
@@ -387,7 +404,7 @@ impl TunnelSupervisor {
         active_runtime_keys: &HashSet<(String, TunnelServiceKind)>,
         settings: &AppSettings,
     ) {
-        let mut changed = false;
+        let mut changed_workspaces = HashSet::new();
         for profile in profiles {
             for kind in [TunnelServiceKind::Mcp, TunnelServiceKind::Actions] {
                 let key = (profile.id.clone(), kind);
@@ -398,7 +415,7 @@ impl TunnelSupervisor {
                 match self.frp_routes.get_mut(&key) {
                     Some(route) => {
                         route.profile = profile.clone();
-                        changed = true;
+                        changed_workspaces.insert(profile.id.clone());
                     }
                     None => {
                         self.frp_routes.insert(
@@ -408,20 +425,22 @@ impl TunnelSupervisor {
                                 kind,
                             },
                         );
-                        changed = true;
+                        changed_workspaces.insert(profile.id.clone());
                     }
                 }
             }
         }
 
-        if changed || self.frpc.is_some() {
-            let pid = self.frpc.as_ref().and_then(|process| process.pid);
-            self.sync_frp_sessions(settings, pid);
+        changed_workspaces.extend(self.frpc.keys().cloned());
+        for workspace_id in changed_workspaces {
+            let pid = self.frpc.get(&workspace_id).and_then(|process| process.pid);
+            self.sync_frp_sessions_for_workspace(settings, &workspace_id, pid);
         }
     }
 
     fn validate_frp_route_compatibility(
         &self,
+        workspace_id: &str,
         config: &FrpServerConfig,
         settings: &AppSettings,
     ) -> AppResult<()> {
@@ -441,7 +460,12 @@ impl TunnelSupervisor {
             )));
         }
 
-        let Some(existing) = self.frp_routes.values().next() else {
+        let Some(existing) = self
+            .frp_routes
+            .iter()
+            .find(|((route_workspace_id, _), _)| route_workspace_id == workspace_id)
+            .map(|(_, route)| route)
+        else {
             return Ok(());
         };
         let existing_config =
@@ -451,62 +475,98 @@ impl TunnelSupervisor {
             && existing_config.token == config.token;
         if !same_connection {
             return Err(AppError::Message(
-                "当前仅运行一个 frpc 进程；所有 FRP 线路必须使用同一服务器、端口和 Token。".into(),
+                "同一工作区的 MCP 与 Actions 必须使用同一 FRP 服务器、端口和 Token。".into(),
             ));
         }
         Ok(())
     }
 
-    async fn restart_frpc(&mut self, settings: &AppSettings) -> AppResult<()> {
-        // 这把锁必须覆盖“停止旧进程 → 等待退出 → 启动新进程”的完整窗口，
-        // 否则两个桌面实例仍可能分别 stop 后同时 spawn。
-        let _operation_lock = frp::acquire_frpc_operation_lock().await?;
+    async fn restart_workspace_frpc(
+        &mut self,
+        workspace_id: &str,
+        settings: &AppSettings,
+    ) -> AppResult<()> {
+        // 工作区锁覆盖“停止旧进程 → 等待退出 → 启动新进程”的完整窗口，
+        // 防止两个桌面实例同时管理同一工作区，同时允许不同工作区独立运行。
+        let _operation_lock = frp::acquire_frpc_operation_lock(workspace_id).await?;
 
-        if let Some(process) = self.frpc.take() {
-            let _ = cloudflare::stop_child(process.child, process.pid).await;
+        if let Some(process) = self.frpc.remove(workspace_id) {
+            let pid = process.pid;
+            cloudflare::stop_child(process.child, pid).await?;
+            if pid.is_some_and(|pid| platform().is_process_alive(pid)) {
+                return Err(AppError::Message(format!(
+                    "停止工作区 frpc 超时，PID {} 仍在运行。",
+                    pid.unwrap_or_default()
+                )));
+            }
+            frp::clear_managed_frpc_pid(workspace_id);
         }
-        self.sync_frp_sessions(settings, None);
+        self.sync_frp_sessions_for_workspace(settings, workspace_id, None);
 
-        // 一个桌面应用只允许存在一个由我们控制的 frpc。新增 Workspace
-        // 或测试连接时，先停止当前实例，再用全部线路生成新配置。
-        // 这里按完整镜像路径清理是应用级兜底，处理客户端重启后 supervisor
-        // 丢失 Child、但旧 frpc 仍由本应用留下的情况；不是按名称误杀其它程序。
-        frp::stop_running_frpc_instances().await?;
+        // 仅回收当前工作区 PID 文件明确记录的 frpc。应用重启后即使
+        // supervisor 丢失 Child，也不能按镜像路径批量终止其他工作区实例。
+        frp::stop_recorded_frpc_instance(workspace_id).await?;
 
-        if self.frp_routes.is_empty() {
+        if !self
+            .frp_routes
+            .keys()
+            .any(|(route_workspace_id, _)| route_workspace_id == workspace_id)
+        {
             return Ok(());
         }
 
         let route_specs: Vec<(WorkspaceProfile, TunnelServiceKind)> = self
             .frp_routes
-            .values()
+            .iter()
+            .filter(|((route_workspace_id, _), _)| route_workspace_id == workspace_id)
+            .map(|(_, route)| route)
             .map(|route| (route.profile.clone(), route.kind))
             .collect();
         let route_refs: Vec<(&WorkspaceProfile, TunnelServiceKind)> = route_specs
             .iter()
             .map(|(profile, kind)| (profile, *kind))
             .collect();
-        let handle = frp::spawn_frpc(&route_refs, settings).await?;
+        let deadline = Instant::now() + Duration::from_secs(35);
+        let handle = loop {
+            match frp::spawn_frpc(workspace_id, &route_refs, settings).await {
+                Ok(handle) => break handle,
+                Err(error) if proxy_already_exists(&error) && Instant::now() < deadline => {
+                    sleep(Duration::from_secs(1)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        };
         let pid = handle.pid;
-        self.frpc = Some(FrpcProcess {
-            child: handle.child,
-            pid,
-        });
-        self.sync_frp_sessions(settings, pid);
+        self.frpc.insert(
+            workspace_id.to_string(),
+            FrpcProcess {
+                child: handle.child,
+                pid,
+            },
+        );
+        self.sync_frp_sessions_for_workspace(settings, workspace_id, pid);
         Ok(())
     }
 
-    async fn ensure_frpc_matches_routes(&mut self, settings: &AppSettings) -> AppResult<()> {
-        if self.frp_routes.is_empty() {
-            if self.frpc.is_some() {
-                self.restart_frpc(settings).await?;
-            }
+    async fn ensure_frpc_matches_routes(
+        &mut self,
+        workspace_id: &str,
+        settings: &AppSettings,
+    ) -> AppResult<()> {
+        let has_routes = self
+            .frp_routes
+            .keys()
+            .any(|(route_workspace_id, _)| route_workspace_id == workspace_id);
+        if !has_routes {
+            self.restart_workspace_frpc(workspace_id, settings).await?;
             return Ok(());
         }
 
         let route_specs: Vec<(WorkspaceProfile, TunnelServiceKind)> = self
             .frp_routes
-            .values()
+            .iter()
+            .filter(|((route_workspace_id, _), _)| route_workspace_id == workspace_id)
+            .map(|(_, route)| route)
             .map(|route| (route.profile.clone(), route.kind))
             .collect();
         let route_refs: Vec<(&WorkspaceProfile, TunnelServiceKind)> = route_specs
@@ -515,28 +575,43 @@ impl TunnelSupervisor {
             .collect();
         let expected = frp::build_frpc_toml_for_route_refs(&route_refs, settings);
 
-        let process_alive = self.frpc.as_ref().is_some_and(|process| {
+        let process_alive = self.frpc.get(workspace_id).is_some_and(|process| {
             process
                 .pid
                 .map(|pid| platform().is_process_alive(pid))
                 .unwrap_or(true)
         });
 
-        if process_alive && frp::managed_frpc_config_matches(&expected)? {
-            let pid = self.frpc.as_ref().and_then(|process| process.pid);
-            self.sync_frp_sessions(settings, pid);
+        if process_alive && frp::managed_frpc_config_matches(workspace_id, &expected)? {
+            let pid = self.frpc.get(workspace_id).and_then(|process| process.pid);
+            self.sync_frp_sessions_for_workspace(settings, workspace_id, pid);
             return Ok(());
         }
 
-        self.restart_frpc(settings).await
+        self.restart_workspace_frpc(workspace_id, settings).await
     }
 
-    fn sync_frp_sessions(&mut self, settings: &AppSettings, pid: Option<u32>) {
-        let active_keys: HashSet<_> = self.frp_routes.keys().cloned().collect();
-        self.sessions
-            .retain(|key, session| session.child.is_some() || active_keys.contains(key));
+    fn sync_frp_sessions_for_workspace(
+        &mut self,
+        settings: &AppSettings,
+        workspace_id: &str,
+        pid: Option<u32>,
+    ) {
+        let active_keys: HashSet<_> = self
+            .frp_routes
+            .keys()
+            .filter(|(route_workspace_id, _)| route_workspace_id == workspace_id)
+            .cloned()
+            .collect();
+        self.sessions.retain(|key, session| {
+            key.0 != workspace_id || session.child.is_some() || active_keys.contains(key)
+        });
 
-        for (key, route) in &self.frp_routes {
+        for (key, route) in self
+            .frp_routes
+            .iter()
+            .filter(|((route_workspace_id, _), _)| route_workspace_id == workspace_id)
+        {
             let public_url = public_url_for_profile(&route.profile, route.kind, settings);
             match self.sessions.get_mut(key) {
                 Some(session) => {
@@ -589,7 +664,7 @@ impl TunnelSupervisor {
 
     fn session_is_running(&self, key: &(String, TunnelServiceKind)) -> bool {
         if self.frp_routes.contains_key(key) {
-            let process_alive = self.frpc.as_ref().is_some_and(|process| {
+            let process_alive = self.frpc.get(&key.0).is_some_and(|process| {
                 process
                     .pid
                     .map(|pid| platform().is_process_alive(pid))
@@ -604,6 +679,11 @@ impl TunnelSupervisor {
                 .unwrap_or(false)
         })
     }
+}
+
+fn proxy_already_exists(error: &AppError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("proxy") && message.contains("already exists")
 }
 
 fn tunnel_type_for(profile: &WorkspaceProfile, kind: TunnelServiceKind) -> &str {
@@ -804,7 +884,7 @@ mod tests {
 
         let config = frp::frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None);
         let error = supervisor
-            .validate_frp_route_compatibility(&config, &settings)
+            .validate_frp_route_compatibility(&second.id, &config, &settings)
             .unwrap_err();
         assert!(error.to_string().contains("不能重复"));
     }
@@ -825,7 +905,7 @@ mod tests {
 
         let config = frp::frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None);
         assert!(supervisor
-            .validate_frp_route_compatibility(&config, &settings)
+            .validate_frp_route_compatibility(&second.id, &config, &settings)
             .is_ok());
     }
 
@@ -847,7 +927,28 @@ mod tests {
 
         let config = frp::frp_server_config(&proxied, TunnelServiceKind::Mcp, &settings, None);
         assert!(supervisor
-            .validate_frp_route_compatibility(&config, &settings)
+            .validate_frp_route_compatibility(&proxied.id, &config, &settings)
+            .is_ok());
+    }
+
+    #[test]
+    fn different_workspaces_may_use_different_frp_servers() {
+        let settings = AppSettings::default();
+        let first = frp_profile("first", "first");
+        let mut second = frp_profile("second", "second");
+        second.tunnel.frp_server = "another-frp.example.com".into();
+        let mut supervisor = TunnelSupervisor::new();
+        supervisor.frp_routes.insert(
+            (first.id.clone(), TunnelServiceKind::Mcp),
+            FrpRoute {
+                profile: first,
+                kind: TunnelServiceKind::Mcp,
+            },
+        );
+
+        let config = frp::frp_server_config(&second, TunnelServiceKind::Mcp, &settings, None);
+        assert!(supervisor
+            .validate_frp_route_compatibility(&second.id, &config, &settings)
             .is_ok());
     }
 
@@ -909,7 +1010,7 @@ mod tests {
         let settings = AppSettings::default();
         let current = frp_profile("demo", "new-subdomain");
         let current_key = (current.id.clone(), TunnelServiceKind::Mcp);
-        let stale_key = ("stale".to_string(), TunnelServiceKind::Mcp);
+        let stale_key = (current_key.0.clone(), TunnelServiceKind::Actions);
         let mut supervisor = TunnelSupervisor::new();
         supervisor.frp_routes.insert(
             current_key.clone(),
@@ -927,7 +1028,7 @@ mod tests {
             },
         );
 
-        supervisor.sync_frp_sessions(&settings, Some(42));
+        supervisor.sync_frp_sessions_for_workspace(&settings, &current_key.0, Some(42));
 
         assert_eq!(supervisor.sessions.len(), 1);
         assert_eq!(
@@ -936,6 +1037,42 @@ mod tests {
                 .get(&current_key)
                 .map(|session| (session.public_url.as_str(), session.pid)),
             Some(("https://new-subdomain.frp.example.com", Some(42)))
+        );
+    }
+
+    #[test]
+    fn syncing_one_workspace_does_not_change_another_workspace_pid() {
+        let settings = AppSettings::default();
+        let first = frp_profile("first", "first");
+        let second = frp_profile("second", "second");
+        let first_key = (first.id.clone(), TunnelServiceKind::Mcp);
+        let second_key = (second.id.clone(), TunnelServiceKind::Mcp);
+        let mut supervisor = TunnelSupervisor::new();
+        supervisor.frp_routes.insert(
+            first_key.clone(),
+            FrpRoute {
+                profile: first,
+                kind: TunnelServiceKind::Mcp,
+            },
+        );
+        supervisor.frp_routes.insert(
+            second_key.clone(),
+            FrpRoute {
+                profile: second,
+                kind: TunnelServiceKind::Mcp,
+            },
+        );
+        supervisor.sync_frp_sessions_for_workspace(&settings, &second_key.0, Some(99));
+
+        supervisor.sync_frp_sessions_for_workspace(&settings, &first_key.0, Some(42));
+
+        assert_eq!(
+            supervisor.sessions.get(&first_key).and_then(|s| s.pid),
+            Some(42)
+        );
+        assert_eq!(
+            supervisor.sessions.get(&second_key).and_then(|s| s.pid),
+            Some(99)
         );
     }
 }

@@ -3,6 +3,7 @@ pub mod dispatch;
 pub mod exec;
 pub mod file;
 pub mod git;
+pub mod history;
 mod image_tool;
 pub mod patch;
 pub mod policy;

@@ -6,6 +6,7 @@ use crate::platform::platform;
 use crate::tunnel::{
     frp_snippet, supervisor, sync_managed_runtime_routes, TunnelServiceKind, TunnelStatus,
 };
+use crate::workspace::resources::{validate_service_start, WorkspaceService};
 
 fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::WorkspaceProfile> {
     state.with_workspaces(|store| {
@@ -14,6 +15,18 @@ fn profile_by_id(state: &AppState, id: &str) -> AppResult<crate::workspace::Work
             .cloned()
             .ok_or_else(|| AppError::Message(format!("workspace not found: {id}")))
     })
+}
+
+fn validate_tunnel_start_resources(
+    state: &AppState,
+    id: &str,
+    kind: TunnelServiceKind,
+) -> AppResult<()> {
+    let service = match kind {
+        TunnelServiceKind::Mcp => WorkspaceService::Mcp,
+        TunnelServiceKind::Actions => WorkspaceService::Actions,
+    };
+    state.with_workspaces(|store| validate_service_start(store.list(), id, service))
 }
 
 fn persist_public_url(
@@ -134,9 +147,10 @@ pub async fn restart_tunnel(
     id: String,
     service: String,
 ) -> AppResult<TunnelStatus> {
-    sync_tunnel_routes_from_runtime(&state).await?;
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
+    validate_tunnel_start_resources(&state, &id, kind)?;
+    sync_tunnel_routes_from_runtime(&state).await?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
 
     let result = {
@@ -189,9 +203,10 @@ pub async fn start_tunnel(
     id: String,
     service: String,
 ) -> AppResult<TunnelStatus> {
-    sync_tunnel_routes_from_runtime(&state).await?;
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
+    validate_tunnel_start_resources(&state, &id, kind)?;
+    sync_tunnel_routes_from_runtime(&state).await?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
 
     let status = {
@@ -244,9 +259,10 @@ pub async fn test_tunnel(
     id: String,
     service: String,
 ) -> AppResult<TunnelTestResult> {
-    sync_tunnel_routes_from_runtime(&state).await?;
     let profile = profile_by_id(&state, &id)?;
     let kind = TunnelServiceKind::parse(&service)?;
+    validate_tunnel_start_resources(&state, &id, kind)?;
+    sync_tunnel_routes_from_runtime(&state).await?;
     let settings = state.with_settings(|store| Ok(store.settings()))?;
     let runtime_running = local_service_listening(&profile, kind)?;
 

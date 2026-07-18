@@ -26,6 +26,30 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
         false,
     ),
     (
+        "history_session_bootstrap",
+        "Restore development session",
+        "When the user asks to restore, resume, or continue previous project work, call this first. It scans all archived sessions, returns ordered summaries plus the latest full handoff, and creates or resumes the current ChatGPT session file.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "history_session_checkpoint",
+        "Save development checkpoint",
+        "After bootstrap, call this before every final response for each turn that performs or analyzes project work. Save or update one idempotent, redacted development handoff checkpoint for the current ChatGPT conversation.",
+        false,
+        false,
+        false,
+    ),
+    (
+        "history_session_validate",
+        "Validate session archive",
+        "Validate history numbering, files, session mappings, and optionally rebuild the derived index without deleting history.",
+        false,
+        false,
+        false,
+    ),
+    (
         "project_state",
         "Project state",
         "Return the current project, task, change, and verification state.",
@@ -162,9 +186,9 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
         false,
     ),
     (
-        "grep",
-        "Grep",
-        "Grep-compatible alias for search_text with regex, glob, context, and bounded results.",
+        "grep_text",
+        "Grep workspace text",
+        "Search workspace text with grep-style regex, glob, context, and bounded results.",
         true,
         false,
         false,
@@ -278,6 +302,9 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
 /// old Python 版本默认提供的核心工具集。默认 MCP 只暴露这一组，保持 Agent 的工具面稳定。
 pub const CORE_TOOLS: &[&str] = &[
     "server_info",
+    "history_session_bootstrap",
+    "history_session_checkpoint",
+    "history_session_validate",
     "check_exec_environment",
     "get_default_cwd",
     "set_default_cwd",
@@ -285,7 +312,7 @@ pub const CORE_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
-    "grep",
+    "grep_text",
     "apply_patch",
     "exec_command",
     "write_stdin",
@@ -309,7 +336,7 @@ pub const CORE_READ_ONLY_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
-    "grep",
+    "grep_text",
     "read_output",
     "git_status",
     "git_diff",
@@ -324,6 +351,9 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "harness_status",
     "operation_log",
     "server_info",
+    "history_session_bootstrap",
+    "history_session_checkpoint",
+    "history_session_validate",
     "check_exec_environment",
     "exec_health_check",
     "get_default_cwd",
@@ -332,6 +362,7 @@ pub const ALLOWED_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep_text",
     "grep",
     "apply_patch",
     "patch_check",
@@ -358,6 +389,9 @@ pub const ALLOWED_TOOLS: &[&str] = &[
 ];
 
 pub const MUTATING_TOOLS: &[&str] = &[
+    "history_session_bootstrap",
+    "history_session_checkpoint",
+    "history_session_validate",
     "apply_patch",
     "exec_command",
     "write_stdin",
@@ -381,6 +415,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "list_dir",
     "list_files",
     "search_text",
+    "grep_text",
     "grep",
     "read_output",
     "git_status",
@@ -399,6 +434,13 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
 
 pub fn is_allowed_tool(name: &str) -> bool {
     ALLOWED_TOOLS.contains(&name)
+}
+
+pub fn canonical_tool_name(name: &str) -> &str {
+    match name {
+        "grep" => "grep_text",
+        _ => name,
+    }
 }
 
 pub fn normalize_tool_profile(profile: &str) -> &'static str {
@@ -454,6 +496,47 @@ pub fn list_tools_for_profile(tool_profile: &str) -> Vec<Value> {
 
 pub fn input_schema(name: &str) -> Value {
     match name {
+        "history_session_bootstrap" => json!({
+            "type": "object",
+            "properties": {
+                "workspace_root": { "type": "string", "minLength": 1 },
+                "session_key": { "type": "string", "minLength": 1 },
+                "title": { "type": "string" },
+                "history_dir": { "type": "string", "default": "docs/history-session" },
+                "create_if_missing": { "type": "boolean", "default": true }
+            },
+            "additionalProperties": false
+        }),
+        "history_session_checkpoint" => json!({
+            "type": "object",
+            "properties": {
+                "workspace_root": { "type": "string", "minLength": 1 },
+                "session_key": { "type": "string", "minLength": 1 },
+                "history_dir": { "type": "string", "default": "docs/history-session" },
+                "turn_id": { "type": "string", "minLength": 1 },
+                "timestamp": { "type": "string" },
+                "user_intent": { "type": "string" },
+                "findings": { "type": "array", "items": { "type": "string" } },
+                "decisions": { "type": "array", "items": { "type": "string" } },
+                "files_changed": { "type": "array", "items": { "type": "string" } },
+                "tests": { "type": "array", "items": { "type": "string" } },
+                "runtime_state": { "type": "array", "items": { "type": "string" } },
+                "remaining_issues": { "type": "array", "items": { "type": "string" } },
+                "next_actions": { "type": "array", "items": { "type": "string" } },
+                "notes": { "type": "string" }
+            },
+            "required": ["turn_id"],
+            "additionalProperties": false
+        }),
+        "history_session_validate" => json!({
+            "type": "object",
+            "properties": {
+                "workspace_root": { "type": "string", "minLength": 1 },
+                "history_dir": { "type": "string", "default": "docs/history-session" },
+                "repair": { "type": "boolean", "default": false }
+            },
+            "additionalProperties": false
+        }),
         "harness_status" => json!({
             "type": "object",
             "properties": {},
@@ -572,7 +655,7 @@ pub fn input_schema(name: &str) -> Value {
             },
             "additionalProperties": false
         }),
-        "search_text" | "grep" => json!({
+        "search_text" | "grep_text" | "grep" => json!({
             "type": "object",
             "properties": {
                 "query": { "type": "string", "minLength": 1 },
@@ -743,7 +826,9 @@ pub fn input_schema(name: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::input_schema;
+    use std::collections::HashSet;
+
+    use super::{input_schema, list_tools_for_profile};
 
     #[test]
     fn exec_schema_exposes_dangerous_mode_inputs() {
@@ -765,5 +850,32 @@ mod tests {
         let tools = super::list_tools_for_profile("full");
         assert_eq!(tools.len(), super::P0_TOOLS.len());
         assert!(tools.iter().any(|tool| tool["name"] == "harness_status"));
+    }
+
+    #[test]
+    fn core_catalog_exposes_24_chatgpt_compatible_tools() {
+        let tools = list_tools_for_profile("core");
+        let names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect();
+        let unique: HashSet<_> = names.iter().copied().collect();
+
+        assert_eq!(tools.len(), 24);
+        assert_eq!(unique.len(), tools.len());
+        assert!(names.contains(&"history_session_bootstrap"));
+        assert!(names.contains(&"history_session_checkpoint"));
+        assert!(names.contains(&"history_session_validate"));
+        assert!(names.contains(&"grep_text"));
+        assert!(!names.contains(&"grep"));
+
+        for name in names {
+            let schema = input_schema(name);
+            assert_eq!(schema["type"], "object", "{name} schema type");
+            assert!(schema["properties"].is_object(), "{name} properties");
+            assert!(schema.get("oneOf").is_none(), "{name} oneOf");
+            assert!(schema.get("anyOf").is_none(), "{name} anyOf");
+            assert!(schema.get("$ref").is_none(), "{name} ref");
+        }
     }
 }
