@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::model::CheckpointRecord;
 
@@ -207,15 +208,15 @@ pub fn checkpoint_from_args(
     args: &Value,
     default_timestamp: &str,
 ) -> Result<CheckpointRecord, String> {
-    let turn_id = args
+    let explicit_turn_id = args
         .get("turn_id")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "turn_id must be a non-empty string".to_string())?;
-    Ok(CheckpointRecord {
-        turn_id: turn_id.to_string(),
-        timestamp: string_field(args, "timestamp").unwrap_or_else(|| default_timestamp.to_string()),
+        .filter(|value| !value.is_empty());
+    let explicit_timestamp = string_field(args, "timestamp");
+    let mut record = CheckpointRecord {
+        turn_id: explicit_turn_id.unwrap_or_default().to_string(),
+        timestamp: explicit_timestamp.clone().unwrap_or_default(),
         user_intent: string_field(args, "user_intent").unwrap_or_default(),
         findings: string_array(args, "findings")?,
         decisions: string_array(args, "decisions")?,
@@ -225,7 +226,18 @@ pub fn checkpoint_from_args(
         remaining_issues: string_array(args, "remaining_issues")?,
         next_actions: string_array(args, "next_actions")?,
         notes: string_field(args, "notes").unwrap_or_default(),
-    })
+    };
+    if record.turn_id.is_empty() {
+        record.turn_id = automatic_turn_id(&record);
+    }
+    record.timestamp = explicit_timestamp.unwrap_or_else(|| default_timestamp.to_string());
+    Ok(record)
+}
+
+fn automatic_turn_id(record: &CheckpointRecord) -> String {
+    let encoded = serde_json::to_vec(record).expect("checkpoint record is serializable");
+    let hash = format!("{:x}", Sha256::digest(encoded));
+    format!("auto-{}", &hash[..16])
 }
 
 fn string_field(args: &Value, name: &str) -> Option<String> {

@@ -153,17 +153,16 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
         "full_history_included": false,
         "history_digest": format!("{:x}", digest.finalize()),
         "persistence_mode": "model_mediated_tool_calls",
-        "assistant_instructions": "Read all_history_summary and latest_handoff before continuing the project. For every turn that performs or analyzes project work, call history_session_checkpoint before the final response. Only state that the turn was persisted after checkpoint returns ok=true.",
+        "assistant_instructions": "Read all_history_summary and latest_handoff before continuing the project. Use history_session_checkpoint when the user or active workflow requests a persisted handoff. Only state that progress was persisted after checkpoint returns ok=true.",
         "required_next_actions": [
             "read_all_history_summary",
             "read_latest_handoff",
             "verify_workspace_state",
-            "execute_user_task",
-            "checkpoint_before_final_response"
+            "execute_user_task"
         ],
         "checkpoint_policy": {
             "tool": "history_session_checkpoint",
-            "required_before_final_response": true,
+            "required_before_final_response": false,
             "applies_after_bootstrap": true,
             "automatic_background_persistence": false
         },

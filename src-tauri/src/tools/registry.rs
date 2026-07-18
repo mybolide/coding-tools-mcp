@@ -36,7 +36,7 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
     (
         "history_session_checkpoint",
         "Save development checkpoint",
-        "After bootstrap, call this before every final response for each turn that performs or analyzes project work. Save or update one idempotent, redacted development handoff checkpoint for the current ChatGPT conversation.",
+        "Save or update one idempotent, redacted development handoff for a session that was initialized with history_session_bootstrap. The turn_id is optional and generated deterministically when omitted.",
         false,
         false,
         false,
@@ -525,7 +525,6 @@ pub fn input_schema(name: &str) -> Value {
                 "next_actions": { "type": "array", "items": { "type": "string" } },
                 "notes": { "type": "string" }
             },
-            "required": ["turn_id"],
             "additionalProperties": false
         }),
         "history_session_validate" => json!({

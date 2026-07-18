@@ -43,7 +43,7 @@ fn initialize_result() -> Value {
     serde_json::json!({
         "protocolVersion": "2025-06-18",
         "capabilities": {
-            "tools": { "listChanged": true },
+            "tools": { "listChanged": false },
             "logging": {}
         },
         "serverInfo": {
@@ -51,7 +51,7 @@ fn initialize_result() -> Value {
             "title": "Coding Tools MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use these tools only for local coding operations inside the configured workspace. Session history workflow: when the user asks to restore, resume, or continue previous project work, call history_session_bootstrap first, then read all_history_summary and latest_handoff before acting. For every turn that performs or analyzes project work after bootstrap, call history_session_checkpoint before every final response and only claim persistence after it returns ok=true. This is model-mediated tool usage, not automatic background persistence."
+        "instructions": "Use these tools only for local coding operations inside the configured workspace. When the user asks to restore, resume, or continue previous project work, use history_session_bootstrap and read all_history_summary plus latest_handoff before acting. Use history_session_checkpoint when the user or active workflow requests a persisted handoff. Persistence requires a successful tool call and is not automatic background persistence."
     })
 }
 

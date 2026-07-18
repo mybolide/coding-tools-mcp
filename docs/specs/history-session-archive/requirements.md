@@ -125,11 +125,23 @@
 
 #### 验收标准（EARS）
 
-1. WHEN ChatGPT 初始化 MCP 连接 THEN 系统 SHALL 在 `initialize.result.instructions` 中提供服务器级工作流：用户要求恢复时先调用 bootstrap，每轮最终回复前调用 checkpoint。
-2. WHEN `history_session_bootstrap` 成功 THEN 系统 SHALL 返回结构化 `assistant_instructions`、`required_next_actions` 和 `checkpoint_policy`，再次强化当前会话的持久化规则。
-3. WHEN客户端调用 `tools/list` THEN bootstrap 与 checkpoint 描述 SHALL 明确说明调用时机，使模型能够据此选择工具。
+1. WHEN ChatGPT 初始化 MCP 连接 THEN 系统 SHALL 在 `initialize.result.instructions` 中说明恢复时使用 bootstrap、需要持久化交接时使用 checkpoint，不得在工具元数据中注入“每次最终回复前必须调用”一类全局行为控制。
+2. WHEN `history_session_bootstrap` 成功 THEN 系统 SHALL 返回结构化 `assistant_instructions`、`required_next_actions` 和 `checkpoint_policy`，说明 checkpoint 能力可用但不会后台自动执行。
+3. WHEN客户端调用 `tools/list` THEN bootstrap 与 checkpoint 描述 SHALL 使用纯能力说明；强制每轮 checkpoint 的规则只保留在用户主动复制到会话中的提示词里。
 4. WHEN模型未执行 checkpoint THEN 服务端 SHALL 不宣称已自动持久化；第一版不修改或拦截现有工具，也不具备脱离模型调用的后台自动写入能力。
 5. WHEN用户打开任一工作区的 MCP 配置 THEN 页面 SHALL 展示完整会话恢复提示词和一键复制按钮，并提供复制成功或失败反馈。
+
+### FR-9: ChatGPT 工具目录升级提示
+
+**优先级:** Must
+**用户故事:** 作为插件用户，我希望升级服务端后能明确知道如何让 ChatGPT 重新读取工具 Schema，以便不再误以为修改版本号就会自动刷新。
+
+#### 验收标准（EARS）
+
+1. WHEN MCP 服务端版本升级但工具通知通道未实现 THEN 系统 SHALL 不得声明 `capabilities.tools.listChanged=true`。
+2. WHEN用户查看工作区的 ChatGPT 会话提示区域 THEN 页面 SHALL 明确说明 ChatGPT 不会依据服务端版本号自动刷新工具。
+3. WHEN用户需要加载新工具目录 THEN 页面 SHALL 提供 ChatGPT 连接器设置入口，并要求重新配置连接后新开会话。
+4. WHEN未来实现 `notifications/tools/list_changed` 的可达通知通道 THEN 系统 MAY 将 `listChanged` 改为 `true`，但必须有协议级集成测试证明通知能够到达客户端。
 
 ---
 
@@ -146,6 +158,8 @@
 ## 依赖关系
 
 - [OpenAI Apps SDK 官方变更记录](https://developers.openai.com/apps-sdk/changelog)（2026-01-15）：ChatGPT 工具调用会携带 `_meta["openai/session"]`，该匿名 conversation id 可用于关联同一 ChatGPT 会话内的请求。
+- [OpenAI tunnel-client 连接器文档](https://github.com/openai/tunnel-client/blob/master/docs/connectors.md)：连接器侧 MCP 端点为 POST JSON-RPC；通知只会在进行中的流式请求里回传，普通无状态 JSON 响应不构成长连接通知通道。
+- [OpenAI tunnel-client 用户指南](https://github.com/openai/tunnel-client/blob/master/docs/end-user-guide.md)：ChatGPT 连接器配置入口为 `https://chatgpt.com/#settings/Connectors`。
 - 现有 `src-tauri/src/mcp/server.rs`：读取 MCP `tools/call` 的 `_meta`。
 - 现有 `src-tauri/src/tools/registry.rs`：注册工具及 Schema。
 - 现有 `src-tauri/src/tools/dispatch.rs`：唯一执行入口。

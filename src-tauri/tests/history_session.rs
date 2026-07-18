@@ -284,11 +284,7 @@ fn checkpoint_generates_a_stable_turn_id_when_the_client_omits_it() {
         "findings": ["工具目录缓存已确认"],
         "next_actions": ["重新配置连接后新开会话"]
     });
-    let first_result = invoke(
-        &ctx,
-        "history_session_checkpoint",
-        args.clone(),
-    );
+    let first_result = invoke(&ctx, "history_session_checkpoint", args.clone());
     let first = assert_ok(&first_result);
     let turn_id = first["turn_id"].as_str().expect("generated turn id");
     assert!(turn_id.starts_with("auto-"));

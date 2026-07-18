@@ -71,8 +71,13 @@
 
 - [x] 3.1 运行格式化、历史模块测试、全量 Rust 测试和 Clippy，并核对现有工具契约无回归
   - 证据块: `docs/project-context/how-to-test.md:18`、`src-tauri/src/tools/registry.rs:180`、`src-tauri/src/tools/dispatch.rs:38`
-- 验收点: FR-1 至 FR-8、NFR-1 至 NFR-5；原需求 17 个验收场景
-  - _需求: FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8_
+- 验收点: FR-1 至 FR-9、NFR-1 至 NFR-5；原需求与工具刷新回归场景
+  - _需求: FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, FR-9_
+- [x] 3.2 修正 ChatGPT 工具目录刷新声明与 checkpoint 路由兼容性
+  - 将 `listChanged` 与实际通知能力保持一致
+  - checkpoint 描述改为纯能力说明，`turn_id` 缺失时稳定生成
+  - 工作区页面增加重新配置连接并新开会话的升级提示
+  - _需求: FR-8, FR-9_
 
 ---
 
@@ -96,6 +101,7 @@
 | FR-6 | 数据模型、风险评估 | 1.2, 2.1, 3.1 | 已完成 |
 | FR-7 | 架构设计、决策 4 | 1.1, 2.4, 2.5, 3.1 | 已完成 |
 | FR-8 | 决策 5 | 1.3, 2.6, 2.7, 3.1 | 已完成 |
+| FR-9 | 决策 6 | 3.2 | 已完成 |
 
 ---
 

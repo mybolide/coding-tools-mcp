@@ -104,6 +104,22 @@
     </div>
   </div>
 
+  <div
+    class="mt-2 flex flex-col gap-2 rounded-[10px] bg-[var(--surface-hover)] px-3 py-2 text-[11px] leading-5 text-[var(--color-text-muted)] sm:flex-row sm:items-center sm:justify-between"
+  >
+    <p>
+      插件升级后，ChatGPT 不会按服务端版本号自动刷新工具。请在连接器设置中重新配置连接，再新开会话。
+    </p>
+    <a
+      class="shrink-0 font-medium text-[var(--primary)] hover:underline"
+      href="https://chatgpt.com/#settings/Connectors"
+      target="_blank"
+      rel="noreferrer"
+    >
+      打开连接器设置
+    </a>
+  </div>
+
   {#if expanded}
     <div id="chatgpt-session-prompt-content" class="mt-3 border-t border-[var(--color-border)] pt-3">
       <pre
