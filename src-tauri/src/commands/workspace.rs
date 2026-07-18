@@ -7,7 +7,7 @@ use crate::error::{AppError, AppResult};
 use crate::platform::open_path_in_file_manager;
 use crate::tunnel::drop_workspace as drop_tunnel_workspace;
 use crate::workspace::resources::{
-    validate_workspace_resources, validate_workspace_resources_update,
+    assign_free_workspace_ports, validate_workspace_resources_update,
 };
 use crate::workspace::WorkspaceProfile;
 
@@ -23,8 +23,10 @@ pub fn create_workspace(
     name: Option<String>,
 ) -> AppResult<WorkspaceProfile> {
     state.with_workspaces(|store| {
-        let profile = WorkspaceProfile::new(path, name);
-        validate_workspace_resources(store.list(), &profile)?;
+        let mut profile = WorkspaceProfile::new(path, name);
+        // Create should not fail just because default ports are already claimed.
+        // Pick free ports now; start/update still enforce conflict checks.
+        assign_free_workspace_ports(store.list(), &mut profile)?;
         bootstrap_workspace(store, &profile.id)?;
         store.add(profile.clone())?;
         Ok(profile)

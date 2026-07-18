@@ -3,6 +3,7 @@ mod common;
 use std::fs;
 use std::process::Command;
 
+use coding_tools_mcp_desktop_lib::tools::list_tools_for_profile;
 use common::*;
 use serde_json::{json, Value};
 
@@ -72,6 +73,40 @@ fn request_permissions_is_unsupported_not_silent_grant() {
     assert_err(&out);
     assert_eq!(out["error"]["code"], "ELICITATION_UNSUPPORTED");
     assert_eq!(out["status"], "unsupported");
+}
+
+#[test]
+fn request_permissions_exposes_public_schema_and_grants_in_dangerous_mode() {
+    let tools = list_tools_for_profile("core");
+    let tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "request_permissions")
+        .expect("request_permissions descriptor");
+    let schema = &tool["inputSchema"];
+    assert_eq!(
+        schema["required"],
+        json!(["tool_name", "permission", "reason", "arguments"])
+    );
+    assert!(schema["properties"]["permission"]["enum"]
+        .as_array()
+        .expect("permission enum")
+        .contains(&json!("network")));
+
+    let fx = tiny_js_fixture();
+    let mut ctx = ctx_for(&fx.root);
+    ctx.permission_mode = "dangerous".into();
+    ctx.policy.permission_mode = "dangerous".into();
+    let args = json!({
+        "tool_name": "exec_command",
+        "permission": "network",
+        "reason": "verify dangerous-mode compatibility",
+        "arguments": {"cmd": "curl https://example.com"}
+    });
+    let out = invoke(&ctx, "request_permissions", args.clone());
+    let payload = assert_ok(&out);
+    assert_eq!(payload["status"], "granted");
+    assert_eq!(payload["constraints"]["mode"], "dangerous");
+    assert_eq!(payload["constraints"]["requested"], args);
 }
 
 #[test]

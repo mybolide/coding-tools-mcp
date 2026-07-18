@@ -27,6 +27,7 @@ struct ServiceClaim<'a> {
     uses_frp: bool,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn validate_workspace_resources(
     profiles: &[WorkspaceProfile],
     candidate: &WorkspaceProfile,
@@ -40,6 +41,44 @@ pub fn validate_workspace_resources(
 
     validate_candidate_ports(&existing_claims, &candidate_claims)?;
     validate_candidate_subdomains(&existing_claims, &candidate_claims)
+}
+
+/// Assign free MCP / Actions ports for a newly created workspace.
+///
+/// Creating a workspace should not force the user to edit ports first. Defaults
+/// are kept when free; otherwise the next free ports above the defaults are used.
+pub fn assign_free_workspace_ports(
+    profiles: &[WorkspaceProfile],
+    candidate: &mut WorkspaceProfile,
+) -> AppResult<()> {
+    let reserved: std::collections::HashSet<u16> = profiles
+        .iter()
+        .filter(|profile| profile.id != candidate.id)
+        .flat_map(service_claims)
+        .map(|claim| claim.local_port)
+        .collect();
+
+    let mcp_port = next_free_port(candidate.runtime.local_port, &reserved)?;
+    let mut reserved_with_mcp = reserved;
+    reserved_with_mcp.insert(mcp_port);
+    let actions_port = next_free_port(candidate.actions.local_port, &reserved_with_mcp)?;
+
+    candidate.runtime.local_port = mcp_port;
+    candidate.actions.local_port = actions_port;
+    Ok(())
+}
+
+fn next_free_port(preferred: u16, reserved: &std::collections::HashSet<u16>) -> AppResult<u16> {
+    let start = if preferred == 0 { 1 } else { preferred };
+    for port in start..=u16::MAX {
+        if reserved.contains(&port) {
+            continue;
+        }
+        return Ok(port);
+    }
+    Err(AppError::Message(format!(
+        "无法从端口 {preferred} 起找到可用本地端口"
+    )))
 }
 
 /// Validate an update without blocking a repair because another, unchanged
@@ -88,6 +127,7 @@ pub fn validate_service_start(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_candidate_ports(
     existing: &[ServiceClaim<'_>],
     candidate: &[ServiceClaim<'_>],
@@ -137,6 +177,7 @@ fn validate_changed_candidate_ports(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn validate_candidate_subdomains(
     existing: &[ServiceClaim<'_>],
     candidate: &[ServiceClaim<'_>],
@@ -264,8 +305,8 @@ fn subdomain_conflict_error(target: ServiceClaim<'_>, owner: ServiceClaim<'_>) -
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_service_start, validate_workspace_resources, validate_workspace_resources_update,
-        WorkspaceService,
+        assign_free_workspace_ports, validate_service_start, validate_workspace_resources,
+        validate_workspace_resources_update, WorkspaceService,
     };
     use crate::workspace::WorkspaceProfile;
 
@@ -296,6 +337,41 @@ mod tests {
         assert!(message.contains("28766"));
         assert!(message.contains(&owner.name));
         assert!(message.contains("MCP"));
+    }
+
+    #[test]
+    fn assign_free_ports_keeps_defaults_when_available() {
+        let mut candidate = WorkspaceProfile::new("C:/workspace/new".into(), Some("new".into()));
+
+        assign_free_workspace_ports(&[], &mut candidate).expect("assign");
+
+        assert_eq!(candidate.runtime.local_port, 28_766);
+        assert_eq!(candidate.actions.local_port, 8_787);
+    }
+
+    #[test]
+    fn assign_free_ports_skips_ports_claimed_by_other_workspaces() {
+        let owner = profile("owner", 28_766, 8_787);
+        let mut candidate = WorkspaceProfile::new("C:/workspace/new".into(), Some("new".into()));
+
+        assign_free_workspace_ports(std::slice::from_ref(&owner), &mut candidate).expect("assign");
+
+        assert_eq!(candidate.runtime.local_port, 28_767);
+        assert_eq!(candidate.actions.local_port, 8_788);
+        assert!(validate_workspace_resources(&[owner], &candidate).is_ok());
+    }
+
+    #[test]
+    fn assign_free_ports_avoids_colliding_mcp_and_actions() {
+        // MCP default is free, but preferred actions port is already claimed as MCP.
+        let owner = profile("owner", 8_787, 9_001);
+        let mut candidate = WorkspaceProfile::new("C:/workspace/new".into(), Some("new".into()));
+
+        assign_free_workspace_ports(std::slice::from_ref(&owner), &mut candidate).expect("assign");
+
+        assert_eq!(candidate.runtime.local_port, 28_766);
+        assert_eq!(candidate.actions.local_port, 8_788);
+        assert_ne!(candidate.runtime.local_port, candidate.actions.local_port);
     }
 
     #[test]

@@ -29,7 +29,13 @@ pub fn resolve_history_dir(
     history_dir: Option<&str>,
 ) -> WorkspaceResult<PathBuf> {
     if let Some(requested_root) = workspace_root {
-        let requested = Path::new(requested_root)
+        let requested_path = Path::new(requested_root.trim());
+        let candidate = if requested_path.is_absolute() {
+            requested_path.to_path_buf()
+        } else {
+            workspace.root().join(requested_path)
+        };
+        let requested = candidate
             .canonicalize()
             .map_err(|_| WorkspaceError::invalid_argument("workspace_root does not exist"))?;
         if requested != workspace.root() {

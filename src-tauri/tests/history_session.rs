@@ -103,6 +103,40 @@ fn bootstrap_requires_a_stable_session_id() {
 }
 
 #[test]
+fn workspace_root_accepts_dot_and_current_absolute_path_but_rejects_outside() {
+    let (workspace, _harness, ctx) = test_context();
+    let relative = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"workspace_root": ".", "session_key": "relative-root"}),
+    );
+    assert_eq!(assert_ok(&relative)["current_number"], 1);
+
+    let absolute = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({
+            "workspace_root": workspace.path().to_string_lossy(),
+            "session_key": "absolute-root"
+        }),
+    );
+    assert_eq!(assert_ok(&absolute)["current_number"], 2);
+
+    let outside = invoke(
+        &ctx,
+        "history_session_validate",
+        json!({
+            "workspace_root": workspace.path().parent().unwrap().to_string_lossy(),
+            "repair": false
+        }),
+    );
+    assert_eq!(
+        assert_err(&outside)["error"]["code"],
+        "PATH_OUTSIDE_WORKSPACE"
+    );
+}
+
+#[test]
 fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
     let (workspace, _harness, ctx) = test_context();
     prepare_history(workspace.path());

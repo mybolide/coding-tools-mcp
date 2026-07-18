@@ -3,24 +3,34 @@ use std::mem;
 use std::path::Path;
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
 use crate::error::{AppError, AppResult};
 
 pub fn is_process_alive(pid: u32) -> bool {
     unsafe {
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+        // Prefer synchronize access so we can tell a zombie/exiting process
+        // from a truly live one. OpenProcess can succeed briefly after exit.
+        let handle = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            pid,
+        )
+        .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid));
+        let Ok(handle) = handle else {
             return false;
         };
-        let alive = handle != INVALID_HANDLE_VALUE;
-        if alive {
-            let _ = CloseHandle(handle);
+        if handle == INVALID_HANDLE_VALUE {
+            return false;
         }
-        alive
+        // WAIT_OBJECT_0 means the process object is already signaled (exited).
+        let still_running = WaitForSingleObject(handle, 0) != WAIT_OBJECT_0;
+        let _ = CloseHandle(handle);
+        still_running
     }
 }
 
@@ -172,12 +182,20 @@ fn collect_child_pids(root_pid: u32) -> AppResult<Vec<u32>> {
 
 fn terminate_pid(pid: u32) -> AppResult<()> {
     unsafe {
-        let handle: HANDLE = OpenProcess(PROCESS_TERMINATE, false, pid)
+        let handle: HANDLE = OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, false, pid)
+            .or_else(|_| OpenProcess(PROCESS_TERMINATE, false, pid))
             .map_err(|err| AppError::Message(format!("OpenProcess terminate failed: {err}")))?;
         if handle == INVALID_HANDLE_VALUE {
             return Ok(());
         }
-        let result = windows::Win32::System::Threading::TerminateProcess(handle, 1);
+        // Already exited — treat as success so stop does not fail on zombies.
+        if WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 {
+            let _ = CloseHandle(handle);
+            return Ok(());
+        }
+        let result = TerminateProcess(handle, 1);
+        // Give the kernel a moment to signal exit before returning.
+        let _ = WaitForSingleObject(handle, 1_000);
         let _ = CloseHandle(handle);
         result.map_err(|err| AppError::Message(format!("TerminateProcess failed: {err}")))?;
         Ok(())

@@ -3,10 +3,11 @@
   import { onDestroy } from "svelte";
   import { showToast } from "$lib/stores/toast";
 
-  const sessionPrompt = `恢复会话。先调用 history_session_bootstrap。
-读取 all_history_summary 和 latest_handoff 后继续工作。
-本会话每轮最终回复前必须调用 history_session_checkpoint，
-只有 checkpoint 返回 ok=true 后才能回复我。`;
+  const sessionPrompt = `请初始化或恢复当前项目会话，先调用 history_session_bootstrap。
+如果没有历史记录，则创建首个 history-session；
+如果已有历史记录，则读取 all_history_summary 和 latest_handoff 后继续工作。
+本会话每轮任务完成后调用 history_session_checkpoint，
+只有 checkpoint 返回 ok=true 后才能确认进度已保存。`;
 
   let copying = $state(false);
   let copied = $state(false);
@@ -23,7 +24,7 @@
     try {
       await navigator.clipboard.writeText(sessionPrompt);
       copied = true;
-      showToast("会话恢复提示词已复制，可以直接粘贴到 ChatGPT。", {
+      showToast("新会话启动提示词已复制，可以直接粘贴到 ChatGPT。", {
         title: "复制成功",
         kind: "success",
         duration: 2500,
@@ -62,10 +63,10 @@
       </span>
       <div class="min-w-0">
         <h3 id="chatgpt-session-prompt-title" class="text-sm font-semibold text-[var(--color-text)]">
-          ChatGPT 会话恢复提示词
+          ChatGPT 新会话启动提示词
         </h3>
         <p class="mt-0.5 text-xs leading-5 text-[var(--color-text-muted)]">
-          新会话粘贴一次；之后由 checkpoint 持续保存开发状态。
+          首次使用会初始化历史；后续新会话会自动恢复已有进度。
         </p>
       </div>
     </div>
@@ -75,7 +76,7 @@
         type="button"
         class="tx-btn-primary min-h-11 shrink-0 px-3 py-2 text-xs active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
         disabled={copying}
-        aria-label="复制 ChatGPT 会话恢复提示词"
+        aria-label="复制 ChatGPT 新会话启动提示词"
         onclick={() => void copyPrompt()}
       >
         {#if copied}
@@ -102,22 +103,6 @@
         />
       </button>
     </div>
-  </div>
-
-  <div
-    class="mt-2 flex flex-col gap-2 rounded-[10px] bg-[var(--surface-hover)] px-3 py-2 text-[11px] leading-5 text-[var(--color-text-muted)] sm:flex-row sm:items-center sm:justify-between"
-  >
-    <p>
-      插件升级后，ChatGPT 不会按服务端版本号自动刷新工具。请在连接器设置中重新配置连接，再新开会话。
-    </p>
-    <a
-      class="shrink-0 font-medium text-[var(--primary)] hover:underline"
-      href="https://chatgpt.com/#settings/Connectors"
-      target="_blank"
-      rel="noreferrer"
-    >
-      打开连接器设置
-    </a>
   </div>
 
   {#if expanded}

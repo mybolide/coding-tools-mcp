@@ -135,18 +135,39 @@ pub fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Value {
         "git_show" => git::git_show(ws, &effective_args),
         "git_blame" => git::git_blame(ws, &effective_args),
         "view_image" => image_tool::view_image(ws, &effective_args),
-        "request_permissions" => Ok(tool_ok(json!({
-            "ok": false,
-            "status": "unsupported",
-            "next_actions": [],
-            "error": {
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Permission elicitation is not available for this client.",
-                "category": "permission",
-                "retryable": false,
-                "details": { "requested": args }
+        "request_permissions" => {
+            if ctx.policy.skip_permission_gates() {
+                Ok(tool_ok(json!({
+                    "ok": true,
+                    "status": "granted",
+                    "grant_id": "dangerously-skip-all-permissions",
+                    "expires_at": null,
+                    "constraints": {
+                        "mode": "dangerous",
+                        "workspace": ctx.workspace.root_display(),
+                        "requested": effective_args
+                    },
+                    "warnings": [
+                        "dangerous permission mode is enabled; permission-gated operations are auto-granted"
+                    ]
+                })))
+            } else {
+                Ok(tool_ok(json!({
+                    "ok": false,
+                    "status": "unsupported",
+                    "grant_id": null,
+                    "expires_at": null,
+                    "next_actions": [],
+                    "error": {
+                        "code": "ELICITATION_UNSUPPORTED",
+                        "message": "Permission elicitation is not available for this client.",
+                        "category": "permission",
+                        "retryable": false,
+                        "details": { "requested": effective_args }
+                    }
+                })))
             }
-        }))),
+        }
         _ => {
             return tool_err_code(
                 "INVALID_ARGUMENT",

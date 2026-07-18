@@ -222,11 +222,31 @@ pub(crate) async fn stop_recorded_frpc_instance(workspace_id: &str) -> AppResult
         return Ok(false);
     }
 
-    platform().terminate_process_tree(pid)?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while platform().is_process_alive(pid) && tokio::time::Instant::now() < deadline {
+    // Soft terminate, then escalate with retries. A single TerminateProcess can
+    // leave frpc alive long enough on Windows to fail the whole MCP stop.
+    let soft_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let _ = platform().terminate_process_tree(pid);
+    while platform().is_process_alive(pid) && tokio::time::Instant::now() < soft_deadline {
         sleep(Duration::from_millis(50)).await;
     }
+
+    if platform().is_process_alive(pid) {
+        let force_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while platform().is_process_alive(pid) && tokio::time::Instant::now() < force_deadline {
+            let _ = platform().terminate_process_tree(pid);
+            // Also match by image path in case the PID was recycled or the
+            // process tree root no longer owns child frpc workers.
+            let _ = platform().terminate_processes_by_image_path(Path::new(recorded_image));
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    if platform().is_process_alive(pid) {
+        // Last resort: kill every process running our managed frpc binary.
+        let _ = platform().terminate_processes_by_image_path(Path::new(recorded_image));
+        sleep(Duration::from_millis(200)).await;
+    }
+
     if platform().is_process_alive(pid) {
         return Err(AppError::Message(format!(
             "停止工作区 frpc 超时，PID {pid} 仍在运行。"

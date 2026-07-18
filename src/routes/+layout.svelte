@@ -15,6 +15,7 @@
   } from "$lib/api/workspaces";
   import { getLastWorkspaceId } from "$lib/api/settings";
   import { actionsRuntimeStates, mcpRuntimeStates, workspaces } from "$lib/stores/app";
+  import { showToast } from "$lib/stores/toast";
   import type { RuntimeState } from "$lib/types";
 
   let { children } = $props();
@@ -45,11 +46,19 @@
   }
 
   async function addWorkspace() {
-    const selected = await open({ directory: true, multiple: false });
-    if (!selected || Array.isArray(selected)) return;
-    const profile = await createWorkspace(selected);
-    await refreshWorkspaces();
-    goto(`/workspace/${profile.id}`);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (!selected || Array.isArray(selected)) return;
+      const profile = await createWorkspace(selected);
+      await refreshWorkspaces();
+      goto(`/workspace/${profile.id}`);
+    } catch (error) {
+      showToast(String(error), {
+        title: "添加工作区失败",
+        kind: "error",
+        duration: 8000,
+      });
+    }
   }
 
   function openWorkspace(id: string) {

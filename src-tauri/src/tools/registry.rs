@@ -794,6 +794,43 @@ pub fn input_schema(name: &str) -> Value {
             "required": ["path"],
             "additionalProperties": false
         }),
+        "request_permissions" => json!({
+            "type": "object",
+            "properties": {
+                "tool_name": {
+                    "type": "string",
+                    "enum": ["exec_command", "apply_patch"]
+                },
+                "permission": {
+                    "type": "string",
+                    "enum": [
+                        "network",
+                        "destructive_command",
+                        "long_timeout",
+                        "sensitive_env",
+                        "shell_expansion",
+                        "inline_script",
+                        "privileged_executable",
+                        "write_generated_or_ignored"
+                    ]
+                },
+                "reason": { "type": "string", "minLength": 1 },
+                "arguments": { "type": "object", "additionalProperties": true },
+                "scope": {
+                    "type": "string",
+                    "enum": ["once", "session"],
+                    "default": "once"
+                },
+                "ttl_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 3600,
+                    "default": 300
+                }
+            },
+            "required": ["tool_name", "permission", "reason", "arguments"],
+            "additionalProperties": false
+        }),
         "set_default_cwd" => json!({
             "type": "object",
             "properties": {
