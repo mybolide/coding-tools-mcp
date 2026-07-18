@@ -133,9 +133,14 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
         .as_str()
         .unwrap_or("")
         .contains("history_session_checkpoint"));
-    assert!(first["checkpoint_policy"]["required_before_final_response"]
-        .as_bool()
-        .unwrap_or(false));
+    assert!(!first["assistant_instructions"]
+        .as_str()
+        .unwrap_or("")
+        .contains("before the final response"));
+    assert_eq!(
+        first["checkpoint_policy"]["required_before_final_response"],
+        false
+    );
     assert_eq!(
         first["checkpoint_policy"]["tool"],
         "history_session_checkpoint"
@@ -146,8 +151,7 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
             "read_all_history_summary",
             "read_latest_handoff",
             "verify_workspace_state",
-            "execute_user_task",
-            "checkpoint_before_final_response"
+            "execute_user_task"
         ])
     );
     assert_eq!(first["session_summaries"].as_array().unwrap().len(), 2);

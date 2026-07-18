@@ -131,7 +131,8 @@ mod tests {
         let instructions = initialized["instructions"].as_str().expect("instructions");
         assert!(instructions.contains("history_session_bootstrap"));
         assert!(instructions.contains("history_session_checkpoint"));
-        assert!(instructions.contains("before every final response"));
+        assert!(!instructions.contains("before every final response"));
+        assert!(!instructions.contains("current ChatGPT conversation"));
         assert!(instructions.contains("not automatic background persistence"));
     }
 
