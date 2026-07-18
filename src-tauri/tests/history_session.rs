@@ -84,16 +84,14 @@ fn history_tools_are_exposed_with_public_schemas() {
         .expect("checkpoint descriptor")["description"]
         .as_str()
         .unwrap_or("");
-    assert!(checkpoint_description.contains("before every final response"));
+    assert!(!checkpoint_description.contains("before every final response"));
+    assert!(!checkpoint_description.contains("ChatGPT"));
 
     let checkpoint = tools
         .iter()
         .find(|tool| tool["name"] == "history_session_checkpoint")
         .expect("checkpoint schema");
-    assert!(checkpoint["inputSchema"]["required"]
-        .as_array()
-        .expect("required array")
-        .contains(&json!("turn_id")));
+    assert!(checkpoint["inputSchema"].get("required").is_none());
 }
 
 #[test]
@@ -264,6 +262,37 @@ fn checkpoint_rejects_sessions_that_were_not_bootstrapped() {
     );
     let payload = assert_err(&result);
     assert_eq!(payload["error"]["code"], "SESSION_NOT_BOOTSTRAPPED");
+}
+
+#[test]
+fn checkpoint_generates_a_stable_turn_id_when_the_client_omits_it() {
+    let (_workspace, _harness, ctx) = test_context();
+    let boot = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"session_key": "automatic-turn-id"}),
+    );
+    assert_ok(&boot);
+
+    let args = json!({
+        "session_key": "automatic-turn-id",
+        "user_intent": "保存当前进度",
+        "findings": ["工具目录缓存已确认"],
+        "next_actions": ["重新配置连接后新开会话"]
+    });
+    let first_result = invoke(
+        &ctx,
+        "history_session_checkpoint",
+        args.clone(),
+    );
+    let first = assert_ok(&first_result);
+    let turn_id = first["turn_id"].as_str().expect("generated turn id");
+    assert!(turn_id.starts_with("auto-"));
+
+    let duplicate_result = invoke(&ctx, "history_session_checkpoint", args);
+    let duplicate = assert_ok(&duplicate_result);
+    assert_eq!(duplicate["turn_id"], turn_id);
+    assert_eq!(duplicate["duplicate_ignored"], true);
 }
 
 #[test]

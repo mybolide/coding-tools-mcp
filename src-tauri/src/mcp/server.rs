@@ -136,10 +136,20 @@ mod tests {
     }
 
     #[test]
-    fn initialize_declares_that_the_tool_catalog_can_change() {
+    fn initialize_does_not_claim_tool_catalog_notifications_without_a_stream() {
         let initialized = initialize_result();
 
-        assert_eq!(initialized["capabilities"]["tools"]["listChanged"], true);
+        assert_eq!(initialized["capabilities"]["tools"]["listChanged"], false);
+    }
+
+    #[test]
+    fn workspace_prompt_explains_how_to_refresh_chatgpt_tools_after_an_upgrade() {
+        let component = include_str!("../../../src/lib/components/ChatGptSessionPrompt.svelte");
+
+        assert!(component.contains("不会按服务端版本号自动刷新工具"));
+        assert!(component.contains("https://chatgpt.com/#settings/Connectors"));
+        assert!(component.contains("重新配置连接"));
+        assert!(component.contains("新开会话"));
     }
 
     #[test]
