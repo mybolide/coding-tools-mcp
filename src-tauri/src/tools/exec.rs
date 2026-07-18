@@ -380,7 +380,7 @@ fn shell_command_with_dynamic_loader_env(
     #[cfg(not(target_os = "macos"))]
     {
         let _ = env;
-        return Ok(cmd.to_string());
+        Ok(cmd.to_string())
     }
 
     #[cfg(target_os = "macos")]

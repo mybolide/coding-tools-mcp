@@ -41,4 +41,4 @@ jobs:
           tool: cargo-audit
       - name: 审计 Rust 依赖
         working-directory: src-tauri
-        run: cargo audit --locked
+        run: cargo audit
