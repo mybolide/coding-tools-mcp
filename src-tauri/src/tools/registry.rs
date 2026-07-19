@@ -36,7 +36,7 @@ pub const P0_TOOLS: &[(&str, &str, &str, bool, bool, bool)] = &[
     (
         "history_session_checkpoint",
         "Save development checkpoint",
-        "Save or update one idempotent, redacted development handoff for a session that was initialized with history_session_bootstrap. The turn_id is optional and generated deterministically when omitted.",
+        "Save or update one idempotent, redacted development handoff. Pass session_key and expected_path exactly as returned by history_session_bootstrap so changing host metadata cannot redirect the checkpoint. The turn_id is optional and generated deterministically when omitted.",
         false,
         false,
         false,
@@ -509,9 +509,11 @@ pub fn input_schema(name: &str) -> Value {
         }),
         "history_session_checkpoint" => json!({
             "type": "object",
+            "required": ["session_key", "expected_path"],
             "properties": {
                 "workspace_root": { "type": "string", "minLength": 1 },
                 "session_key": { "type": "string", "minLength": 1 },
+                "expected_path": { "type": "string", "minLength": 1 },
                 "history_dir": { "type": "string", "default": "docs/history-session" },
                 "turn_id": { "type": "string", "minLength": 1 },
                 "timestamp": { "type": "string" },

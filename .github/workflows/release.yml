@@ -1,0 +1,119 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "要创建或更新的 Release 标签，例如 v0.1.22"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 检查前端
+        run: npm run check
+
+      - name: 运行 Rust 测试
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: 仅构建 Windows NSIS 安装程序
+        run: npm run tauri -- build --bundles nsis
+
+      - name: 上传 Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  build-universal-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 检查前端
+        run: npm run check
+
+      - name: 运行 Rust 测试
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: 仅构建通用版 macOS DMG
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+
+      - name: 上传 macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  publish-release:
+    needs:
+      - build-windows
+      - build-universal-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下载 Windows EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/windows
+
+      - name: 下载 macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/macos
+
+      - name: 创建 Release 并上传安装包
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          name: Coding Tools MCP ${{ inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/windows/*.exe
+            dist/macos/*.dmg

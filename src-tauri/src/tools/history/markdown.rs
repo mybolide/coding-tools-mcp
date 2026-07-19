@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use super::model::CheckpointRecord;
 
 const CHECKPOINT_HEADING: &str = "## 本轮检查点";
+const INHERITED_SUMMARY_HEADING: &str = "继承的历史摘要";
 
 pub fn metadata(content: &str, label: &str) -> Option<String> {
     let prefix = format!("**{label}:**");
@@ -122,6 +123,32 @@ pub fn render_document(
         output.push_str("\n```\n\n");
     }
     output
+}
+
+pub fn attach_inherited_summary(mut content: String, summary: &str) -> String {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return content;
+    }
+    let Some(status_start) = content.find("**Status:**") else {
+        return content;
+    };
+    let Some(relative_end) = content[status_start..].find("\n\n") else {
+        return content;
+    };
+    let insert_at = status_start + relative_end + 2;
+    content.insert_str(
+        insert_at,
+        &format!("## {INHERITED_SUMMARY_HEADING}\n\n{summary}\n\n"),
+    );
+    content
+}
+
+pub fn inherited_summary(content: &str) -> Option<String> {
+    section_body(content, INHERITED_SUMMARY_HEADING)
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .map(str::to_string)
 }
 
 fn push_section<'a>(output: &mut String, heading: &str, values: impl Iterator<Item = &'a str>) {

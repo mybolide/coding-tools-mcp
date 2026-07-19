@@ -13,6 +13,9 @@ use crate::tools::workspace::{tool_ok, WorkspaceError, WorkspaceResult};
 
 pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
     let (session_key, source) = resolve_session_key(args)?;
+    let host_session_key_mismatch = host_session_key(args)
+        .map(|host| host != session_key.as_str())
+        .unwrap_or(false);
     let history_dir = resolve_dir(ctx, args)?;
     storage::ensure_directory(&history_dir)?;
     let _lock = storage::lock_directory(&history_dir)?;
@@ -29,6 +32,11 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
     }
 
     let mut warnings = Vec::<String>::new();
+    if host_session_key_mismatch {
+        warnings.push(
+            "宿主会话标识与显式 session_key 不一致，已使用显式 session_key 保持会话连续。".into(),
+        );
+    }
     match storage::read_index(&history_dir) {
         Ok(Some(_)) => {}
         Ok(None) => warnings.push("历史索引缺失，已根据 Markdown 重建。".into()),
@@ -76,14 +84,18 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or("开发会话");
-        let content = markdown::render_document(
-            number,
-            title,
-            &session_key,
-            &timestamp,
-            &timestamp,
-            "active",
-            &[],
+        let inherited_summary = build_inherited_summary(&report.documents);
+        let content = markdown::attach_inherited_summary(
+            markdown::render_document(
+                number,
+                title,
+                &session_key,
+                &timestamp,
+                &timestamp,
+                "active",
+                &[],
+            ),
+            &inherited_summary,
         );
         storage::write_markdown(&history_dir.join(format!("{number}.md")), &content)?;
         (number, relative_path, true, false)
@@ -135,17 +147,27 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
 
     Ok(tool_ok(json!({
         "is_new_session": created,
+        "session_key": session_key.clone(),
         "session_key_source": source,
+        "host_session_key_mismatch": host_session_key_mismatch,
         "history_numbers": history_numbers,
         "history_count": prior.len(),
         "latest_completed_number": latest.map(|document| document.number),
         "latest_completed_path": latest.map(|document| document.path.clone()),
         "current_number": current_number,
-        "current_path": current_path,
+        "current_path": current_path.clone(),
         "created": created,
         "resumed": resumed,
         "sequence_valid": report.sequence_valid(),
         "all_history_summary": all_history_summary,
+        "inherited_summary": markdown::inherited_summary(
+            refreshed
+                .documents
+                .iter()
+                .find(|document| document.number == current_number)
+                .map(|document| document.content.as_str())
+                .unwrap_or_default()
+        ),
         "session_summaries": session_summaries,
         "latest_handoff": latest.map(|document| document.content.clone()),
         "history_read_mode": "all_summaries_plus_latest_full",
@@ -153,7 +175,7 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
         "full_history_included": false,
         "history_digest": format!("{:x}", digest.finalize()),
         "persistence_mode": "model_mediated_tool_calls",
-        "assistant_instructions": "Read all_history_summary and latest_handoff before continuing the project. After completing each user-requested task in this conversation, call history_session_checkpoint before the final response. Only state that progress was saved after checkpoint returns ok=true.",
+        "assistant_instructions": "Read all_history_summary, latest_handoff, and inherited_summary before continuing the project. Preserve the session_key and current_path returned by bootstrap, then pass them unchanged as session_key and expected_path to every history_session_checkpoint call. After completing each user-requested task, call history_session_checkpoint before the final response. Only state that progress was saved after checkpoint returns ok=true with the same session_key and path.",
         "required_next_actions": [
             "read_all_history_summary",
             "read_latest_handoff",
@@ -163,6 +185,9 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
         ],
         "checkpoint_policy": {
             "tool": "history_session_checkpoint",
+            "session_key": session_key,
+            "expected_path": current_path,
+            "stable_target_required": true,
             "required_before_final_response": true,
             "applies_after_bootstrap": true,
             "automatic_background_persistence": false
@@ -171,8 +196,36 @@ pub fn bootstrap(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
     })))
 }
 
+fn host_session_key(args: &Value) -> Option<&str> {
+    args.get("_host_session_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn required_checkpoint_argument(args: &Value, name: &str) -> WorkspaceResult<String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            history_error(
+                "CHECKPOINT_TARGET_REQUIRED",
+                "Pass session_key and expected_path exactly as returned by history_session_bootstrap.",
+                "validation",
+                false,
+                json!({"missing_argument": name}),
+            )
+        })
+}
+
 pub fn checkpoint(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
-    let (session_key, _) = resolve_session_key(args)?;
+    let session_key = required_checkpoint_argument(args, "session_key")?;
+    let expected_path = required_checkpoint_argument(args, "expected_path")?;
+    let host_session_key_mismatch = host_session_key(args)
+        .map(|host| host != session_key.as_str())
+        .unwrap_or(false);
     let history_dir = resolve_dir(ctx, args)?;
     if !history_dir.exists() {
         return Err(session_not_bootstrapped());
@@ -185,6 +238,19 @@ pub fn checkpoint(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
         .iter()
         .find(|document| document.session_key.as_deref() == Some(session_key.as_str()))
         .ok_or_else(session_not_bootstrapped)?;
+    if document.path != expected_path {
+        return Err(history_error(
+            "SESSION_TARGET_MISMATCH",
+            "The checkpoint target does not match the session initialized by bootstrap.",
+            "validation",
+            false,
+            json!({
+                "expected_path": expected_path,
+                "resolved_path": document.path,
+                "session_key": session_key
+            }),
+        ));
+    }
 
     let timestamp = now_timestamp();
     let mut record = markdown::checkpoint_from_args(args, &timestamp)
@@ -215,14 +281,18 @@ pub fn checkpoint(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
             .created_at
             .clone()
             .unwrap_or_else(|| timestamp.clone());
-        markdown::render_document(
-            document.number,
-            &markdown::document_title(&document.content, document.number),
-            &session_key,
-            &created_at,
-            &record.timestamp,
-            "active",
-            &records,
+        let inherited_summary = markdown::inherited_summary(&document.content);
+        markdown::attach_inherited_summary(
+            markdown::render_document(
+                document.number,
+                &markdown::document_title(&document.content, document.number),
+                &session_key,
+                &created_at,
+                &record.timestamp,
+                "active",
+                &records,
+            ),
+            inherited_summary.as_deref().unwrap_or_default(),
         )
     };
     if !duplicate_ignored {
@@ -233,14 +303,19 @@ pub fn checkpoint(ctx: &ToolContext, args: &Value) -> WorkspaceResult<Value> {
         let refreshed = storage::scan(&ctx.workspace, &history_dir)?;
         storage::write_index(&history_dir, &storage::rebuild_index(&refreshed))?;
     }
-    let warnings = if redacted {
-        vec!["检测到疑似敏感信息，归档内容已脱敏。"]
-    } else {
-        Vec::new()
-    };
+    let mut warnings = Vec::new();
+    if redacted {
+        warnings.push("检测到疑似敏感信息，归档内容已脱敏。");
+    }
+    if host_session_key_mismatch {
+        warnings.push("宿主会话标识已变化；本次仍使用 bootstrap 返回的稳定目标，未切换历史文件。");
+    }
     Ok(tool_ok(json!({
         "session_number": document.number,
         "path": document.path,
+        "session_key": session_key,
+        "expected_path": expected_path,
+        "host_session_key_mismatch": host_session_key_mismatch,
         "turn_id": record.turn_id,
         "created": false,
         "updated": updated,
@@ -310,20 +385,20 @@ fn resolve_dir(ctx: &ToolContext, args: &Value) -> WorkspaceResult<std::path::Pa
 
 fn resolve_session_key(args: &Value) -> WorkspaceResult<(String, &'static str)> {
     if let Some(value) = args
-        .get("_host_session_key")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Ok((value.to_string(), "platform_conversation_id"));
-    }
-    if let Some(value) = args
         .get("session_key")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         return Ok((value.to_string(), "explicit_session_key"));
+    }
+    if let Some(value) = args
+        .get("_host_session_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok((value.to_string(), "platform_conversation_id"));
     }
     Err(history_error(
         "SESSION_ID_UNAVAILABLE",
@@ -383,4 +458,44 @@ fn now_timestamp() -> String {
         .unwrap_or_default()
         .as_secs();
     format!("unix:{seconds}")
+}
+
+fn build_inherited_summary(documents: &[model::HistoryDocument]) -> String {
+    const MAX_TOTAL_CHARS: usize = 16_000;
+    const MAX_SESSION_CHARS: usize = 3_000;
+
+    let mut entries = Vec::new();
+    let mut used = 0_usize;
+    let mut omitted = 0_usize;
+    for document in documents.iter().rev() {
+        let compact = truncate_chars(&markdown::summary(&document.content), MAX_SESSION_CHARS);
+        let entry = format!(
+            "### 会话 {}（{}）\n\n{}",
+            document.number, document.path, compact
+        );
+        let entry_len = entry.chars().count();
+        if used + entry_len > MAX_TOTAL_CHARS {
+            omitted += 1;
+            continue;
+        }
+        used += entry_len;
+        entries.push(entry);
+    }
+    entries.reverse();
+    if omitted > 0 {
+        entries.insert(
+            0,
+            format!("> 另有 {omitted} 个较早会话未展开，可通过 all_history_summary 读取。"),
+        );
+    }
+    entries.join("\n\n")
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(max_chars).collect::<String>();
+    truncated.push_str("…（摘要已截断）");
+    truncated
 }

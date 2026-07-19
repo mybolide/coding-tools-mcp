@@ -46,11 +46,11 @@ Three tools work together:
 
 | Tool | Purpose |
 | --- | --- |
-| `history_session_bootstrap` | Initialize or restore a project session when a conversation starts; create history on first use, or return the full summary and latest detailed handoff |
-| `history_session_checkpoint` | Save structured progress after a task, including goals, findings, decisions, changed files, tests, remaining issues, and next steps |
+| `history_session_bootstrap` | Initialize or restore a project session; a new file embeds a compressed summary of prior sessions and returns a stable `session_key` and `current_path` |
+| `history_session_checkpoint` | Save structured progress to the stable target returned by bootstrap; reject mismatched targets instead of writing to another history file |
 | `history_session_validate` | Validate numbering, history files, and session mappings; rebuild derived indexes when needed without deleting existing history |
 
-History uses readable Markdown that can be backed up or committed with the project. Checkpoints are idempotent, and progress should only be reported as saved after the tool returns `ok=true`.
+History uses readable Markdown that can be backed up or committed with the project. Every new file starts with a bounded inherited summary that is not recursively copied into later summaries. Checkpoints are idempotent, and progress should only be reported as saved after the tool returns `ok=true` with the same session target.
 
 > History persistence is performed when the AI calls the MCP tools; the desktop app does not record chat content in the background. If the client does not invoke a tool, the server cannot infer that a new conversation or task has happened.
 

@@ -16,6 +16,131 @@ fn test_context() -> (tempfile::TempDir, tempfile::TempDir, ToolContext) {
     (workspace, harness, ctx)
 }
 
+#[test]
+fn checkpoint_keeps_bootstrap_target_when_host_session_metadata_changes() {
+    let (workspace, _harness, ctx) = test_context();
+    let boot = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({
+            "session_key": "stable-bootstrap-key",
+            "_host_session_key": "host-before"
+        }),
+    );
+    let boot = assert_ok(&boot);
+    assert_eq!(boot["session_key"], "stable-bootstrap-key");
+    assert_eq!(boot["current_path"], "docs/history-session/1.md");
+    assert_eq!(boot["host_session_key_mismatch"], true);
+
+    let checkpoint = invoke(
+        &ctx,
+        "history_session_checkpoint",
+        json!({
+            "session_key": boot["session_key"],
+            "expected_path": boot["current_path"],
+            "_host_session_key": "host-after",
+            "turn_id": "stable-turn",
+            "user_intent": "不能串写"
+        }),
+    );
+    let checkpoint = assert_ok(&checkpoint);
+    assert_eq!(checkpoint["path"], boot["current_path"]);
+    assert_eq!(checkpoint["session_key"], boot["session_key"]);
+    assert_eq!(checkpoint["host_session_key_mismatch"], true);
+    assert!(!workspace.path().join("docs/history-session/2.md").exists());
+}
+
+#[test]
+fn checkpoint_rejects_a_path_from_another_session() {
+    let (_workspace, _harness, ctx) = test_context();
+    assert_ok(&invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"session_key": "session-a"}),
+    ));
+    assert_ok(&invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"session_key": "session-b"}),
+    ));
+
+    let result = invoke(
+        &ctx,
+        "history_session_checkpoint",
+        json!({
+            "session_key": "session-a",
+            "expected_path": "docs/history-session/2.md",
+            "turn_id": "wrong-target"
+        }),
+    );
+    assert_eq!(
+        assert_err(&result)["error"]["code"],
+        "SESSION_TARGET_MISMATCH"
+    );
+}
+
+#[test]
+fn inherited_summary_is_preserved_without_recursive_growth() {
+    let (workspace, _harness, ctx) = test_context();
+    prepare_history(workspace.path());
+    let boot = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"session_key": "summary-session"}),
+    );
+    let boot = assert_ok(&boot);
+    assert_ok(&invoke(
+        &ctx,
+        "history_session_checkpoint",
+        json!({
+            "session_key": boot["session_key"],
+            "expected_path": boot["current_path"],
+            "turn_id": "summary-turn",
+            "user_intent": "继续实现"
+        }),
+    ));
+    let content = fs::read_to_string(workspace.path().join("docs/history-session/3.md"))
+        .expect("read preserved inherited summary");
+    assert_eq!(content.matches("## 继承的历史摘要").count(), 1);
+    assert!(content.contains("目标-第一阶段"));
+    assert!(content.contains("继续实现"));
+
+    let next = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"session_key": "next-summary-session"}),
+    );
+    assert_ok(&next);
+    let next_content = fs::read_to_string(workspace.path().join("docs/history-session/4.md"))
+        .expect("read next inherited summary");
+    assert_eq!(next_content.matches("## 继承的历史摘要").count(), 1);
+    assert!(next_content.contains("### 会话 3（docs/history-session/3.md）"));
+}
+
+#[test]
+fn inherited_summary_is_bounded_and_reports_omitted_sessions() {
+    let (workspace, _harness, ctx) = test_context();
+    let dir = workspace.path().join("docs/history-session");
+    fs::create_dir_all(&dir).expect("create history dir");
+    let large_marker = "X".repeat(4_000);
+    for number in 1..=12 {
+        fs::write(
+            dir.join(format!("{number}.md")),
+            history_file(number, &format!("session-{number}"), &large_marker),
+        )
+        .expect("write large history");
+    }
+    let boot = invoke(
+        &ctx,
+        "history_session_bootstrap",
+        json!({"session_key": "bounded-summary"}),
+    );
+    assert_ok(&boot);
+    let content = fs::read_to_string(dir.join("13.md")).expect("read bounded summary");
+    assert!(content.contains("个较早会话未展开"));
+    assert!(content.chars().count() < 20_000);
+}
+
 fn history_file(number: u64, session_key: &str, marker: &str) -> String {
     format!(
         "# 会话 {number}：{marker}\n\n\
@@ -91,7 +216,10 @@ fn history_tools_are_exposed_with_public_schemas() {
         .iter()
         .find(|tool| tool["name"] == "history_session_checkpoint")
         .expect("checkpoint schema");
-    assert!(checkpoint["inputSchema"].get("required").is_none());
+    assert_eq!(
+        checkpoint["inputSchema"]["required"],
+        json!(["session_key", "expected_path"])
+    );
 }
 
 #[test]
@@ -148,6 +276,7 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
     );
     let first = assert_ok(&first);
     assert_eq!(first["is_new_session"], true);
+    assert_eq!(first["session_key"], "current-chat");
     assert_eq!(first["session_key_source"], "explicit_session_key");
     assert_eq!(first["history_numbers"], json!([1, 2]));
     assert_eq!(first["history_count"], 2);
@@ -187,6 +316,12 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
         first["checkpoint_policy"]["tool"],
         "history_session_checkpoint"
     );
+    assert_eq!(first["checkpoint_policy"]["session_key"], "current-chat");
+    assert_eq!(
+        first["checkpoint_policy"]["expected_path"],
+        "docs/history-session/3.md"
+    );
+    assert_eq!(first["checkpoint_policy"]["stable_target_required"], true);
     assert_eq!(
         first["required_next_actions"],
         json!([
@@ -213,6 +348,15 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
         history_file(2, "old-session-2", "第二阶段")
     );
     assert!(workspace.path().join("docs/history-session/3.md").is_file());
+    let inherited = fs::read_to_string(workspace.path().join("docs/history-session/3.md"))
+        .expect("read inherited summary");
+    assert!(inherited.contains("## 继承的历史摘要"));
+    assert!(inherited.contains("### 会话 1（docs/history-session/1.md）"));
+    assert!(inherited.contains("### 会话 2（docs/history-session/2.md）"));
+    assert!(first["inherited_summary"]
+        .as_str()
+        .unwrap_or("")
+        .contains("目标-第一阶段"));
 
     let second = invoke(
         &ctx,
@@ -238,6 +382,7 @@ fn checkpoint_is_idempotent_updates_changed_turn_and_redacts_secrets() {
 
     let args = json!({
         "session_key": "checkpoint-chat",
+        "expected_path": "docs/history-session/1.md",
         "turn_id": "turn-0001",
         "timestamp": "2026-07-17T11:00:00+08:00",
         "user_intent": "实现归档",
@@ -254,6 +399,8 @@ fn checkpoint_is_idempotent_updates_changed_turn_and_redacts_secrets() {
     let first = assert_ok(&first);
     assert_eq!(first["session_number"], 1);
     assert_eq!(first["path"], "docs/history-session/1.md");
+    assert_eq!(first["session_key"], "checkpoint-chat");
+    assert_eq!(first["expected_path"], "docs/history-session/1.md");
     assert_eq!(first["turn_id"], "turn-0001");
     assert_eq!(first["duplicate_ignored"], false);
     assert_eq!(first["content_hash"].as_str().unwrap_or("").len(), 64);
@@ -286,6 +433,7 @@ fn checkpoint_is_idempotent_updates_changed_turn_and_redacts_secrets() {
         "history_session_checkpoint",
         json!({
             "session_key": "checkpoint-chat",
+            "expected_path": "docs/history-session/1.md",
             "turn_id": "turn-0002",
             "user_intent": "second turn",
             "next_actions": ["deliver"]
@@ -305,7 +453,11 @@ fn checkpoint_rejects_sessions_that_were_not_bootstrapped() {
     let result = invoke(
         &ctx,
         "history_session_checkpoint",
-        json!({"session_key": "unknown-chat", "turn_id": "turn-1"}),
+        json!({
+            "session_key": "unknown-chat",
+            "expected_path": "docs/history-session/99.md",
+            "turn_id": "turn-1"
+        }),
     );
     let payload = assert_err(&result);
     assert_eq!(payload["error"]["code"], "SESSION_NOT_BOOTSTRAPPED");
@@ -323,6 +475,7 @@ fn checkpoint_generates_a_stable_turn_id_when_the_client_omits_it() {
 
     let args = json!({
         "session_key": "automatic-turn-id",
+        "expected_path": "docs/history-session/1.md",
         "user_intent": "保存当前进度",
         "findings": ["工具目录缓存已确认"],
         "next_actions": ["重新配置连接后新开会话"]

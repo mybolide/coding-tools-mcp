@@ -6,8 +6,8 @@
   const sessionPrompt = `请初始化或恢复当前项目会话，先调用 history_session_bootstrap。
 如果没有历史记录，则创建首个 history-session；
 如果已有历史记录，则读取 all_history_summary 和 latest_handoff 后继续工作。
-本会话每轮任务完成后调用 history_session_checkpoint，
-只有 checkpoint 返回 ok=true 后才能确认进度已保存。`;
+本会话每轮任务完成后调用 history_session_checkpoint，并原样传入 bootstrap 返回的 session_key 和 current_path；
+只有 checkpoint 返回 ok=true 且会话目标一致后才能确认进度已保存。`;
 
   let copying = $state(false);
   let copied = $state(false);

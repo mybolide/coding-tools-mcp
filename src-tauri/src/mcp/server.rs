@@ -51,7 +51,7 @@ fn initialize_result() -> Value {
             "title": "Coding Tools MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use these tools only for local coding operations inside the configured workspace. At the start of every new ChatGPT conversation, before answering the user's first request, call history_session_bootstrap exactly once, even if the user did not explicitly ask to restore or resume. Treat bootstrap as required conversation initialization: when no history exists it creates the first history session; when history exists, read all_history_summary and latest_handoff before acting. Repeated successful bootstrap calls in the same conversation resume the same session and must not create duplicates. After completing each user-requested task in the conversation, call history_session_checkpoint before the final response. Only state that progress was saved after checkpoint returns ok=true. Persistence requires a successful tool call and is not automatic background persistence."
+        "instructions": "Use these tools only for local coding operations inside the configured workspace. At the start of every new ChatGPT conversation, before answering the user's first request, call history_session_bootstrap exactly once, even if the user did not explicitly ask to restore or resume. Treat bootstrap as required conversation initialization: when no history exists it creates the first history session; when history exists, read all_history_summary, latest_handoff, and inherited_summary before acting. Repeated successful bootstrap calls in the same conversation resume the same session and must not create duplicates. Preserve session_key and current_path returned by bootstrap, then pass them unchanged as session_key and expected_path to every history_session_checkpoint call. After completing each user-requested task in the conversation, call history_session_checkpoint before the final response. Only state that progress was saved after checkpoint returns ok=true with the same session_key and path. Persistence requires a successful tool call and is not automatic background persistence."
     })
 }
 
@@ -136,6 +136,8 @@ mod tests {
         assert!(instructions.contains("required conversation initialization"));
         assert!(instructions.contains("must not create duplicates"));
         assert!(instructions.contains("history_session_checkpoint"));
+        assert!(instructions.contains("session_key and current_path returned by bootstrap"));
+        assert!(instructions.contains("session_key and expected_path"));
         assert!(instructions.contains("After completing each user-requested task"));
         assert!(instructions.contains("before the final response"));
         assert!(instructions.contains("checkpoint returns ok=true"));
@@ -177,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn chatgpt_session_metadata_has_priority_over_explicit_session_key() {
+    fn explicit_session_key_prevents_changed_chatgpt_metadata_from_redirecting_history() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let harness = tempfile::tempdir().expect("harness tempdir");
         let state = Arc::new(
@@ -199,11 +201,13 @@ mod tests {
         );
         let structured = &response["result"]["structuredContent"];
         assert_eq!(structured["ok"], true);
-        assert_eq!(structured["session_key_source"], "platform_conversation_id");
+        assert_eq!(structured["session_key_source"], "explicit_session_key");
+        assert_eq!(structured["session_key"], "explicit-session");
+        assert_eq!(structured["host_session_key_mismatch"], true);
         let content = fs::read_to_string(workspace.path().join("docs/history-session/1.md"))
             .expect("read history file");
-        assert!(content.contains("**Session key:** chatgpt-session"));
-        assert!(!content.contains("explicit-session"));
+        assert!(content.contains("**Session key:** explicit-session"));
+        assert!(!content.contains("**Session key:** chatgpt-session"));
     }
 
     #[test]
