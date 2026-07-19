@@ -51,7 +51,7 @@ fn initialize_result() -> Value {
             "title": "Coding Tools MCP",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use these tools only for local coding operations inside the configured workspace. When the user asks to restore, resume, or continue previous project work, use history_session_bootstrap and read all_history_summary plus latest_handoff before acting. Use history_session_checkpoint when the user or active workflow requests a persisted handoff. Persistence requires a successful tool call and is not automatic background persistence."
+        "instructions": "Use these tools only for local coding operations inside the configured workspace. At the start of every new ChatGPT conversation, before answering the user's first request, call history_session_bootstrap exactly once, even if the user did not explicitly ask to restore or resume. Treat bootstrap as required conversation initialization: when no history exists it creates the first history session; when history exists, read all_history_summary and latest_handoff before acting. Repeated successful bootstrap calls in the same conversation resume the same session and must not create duplicates. After completing each user-requested task in the conversation, call history_session_checkpoint before the final response. Only state that progress was saved after checkpoint returns ok=true. Persistence requires a successful tool call and is not automatic background persistence."
     })
 }
 
@@ -130,9 +130,15 @@ mod tests {
         let initialized = initialize_result();
         let instructions = initialized["instructions"].as_str().expect("instructions");
         assert!(instructions.contains("history_session_bootstrap"));
+        assert!(instructions.contains("At the start of every new ChatGPT conversation"));
+        assert!(instructions.contains("before answering the user's first request"));
+        assert!(instructions.contains("even if the user did not explicitly ask"));
+        assert!(instructions.contains("required conversation initialization"));
+        assert!(instructions.contains("must not create duplicates"));
         assert!(instructions.contains("history_session_checkpoint"));
-        assert!(!instructions.contains("before every final response"));
-        assert!(!instructions.contains("current ChatGPT conversation"));
+        assert!(instructions.contains("After completing each user-requested task"));
+        assert!(instructions.contains("before the final response"));
+        assert!(instructions.contains("checkpoint returns ok=true"));
         assert!(instructions.contains("not automatic background persistence"));
     }
 
@@ -144,13 +150,15 @@ mod tests {
     }
 
     #[test]
-    fn workspace_prompt_explains_how_to_refresh_chatgpt_tools_after_an_upgrade() {
+    fn workspace_prompt_initializes_or_restores_a_chatgpt_session() {
         let component = include_str!("../../../src/lib/components/ChatGptSessionPrompt.svelte");
 
-        assert!(component.contains("不会按服务端版本号自动刷新工具"));
-        assert!(component.contains("https://chatgpt.com/#settings/Connectors"));
-        assert!(component.contains("重新配置连接"));
-        assert!(component.contains("新开会话"));
+        assert!(component.contains("ChatGPT 新会话启动提示词"));
+        assert!(component.contains("请初始化或恢复当前项目会话"));
+        assert!(component.contains("如果没有历史记录"));
+        assert!(component.contains("all_history_summary"));
+        assert!(component.contains("history_session_checkpoint"));
+        assert!(!component.contains("打开连接器设置"));
     }
 
     #[test]

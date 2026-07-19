@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-为 ChatGPT 网页版新增跨会话开发状态归档能力。用户在新聊天中添加现有插件并输入“恢复会话”后，ChatGPT 调用 `history_session_bootstrap`，服务端依据工具调用元数据 `_meta["openai/session"]` 识别当前聊天，读取 `docs/history-session/` 中的历史并返回累计摘要、逐会话摘要和最新完整 handoff。功能支持 Windows、macOS 和 Linux，复用现有 Streamable HTTP `/mcp` 与隧道，不引入 OpenAI SDK，不改变任何现有工具的输入、输出或业务语义。
+为 ChatGPT 网页版新增跨会话开发状态归档能力。每个新聊天首次使用插件时，ChatGPT 先调用 `history_session_bootstrap`；服务端依据工具调用元数据 `_meta["openai/session"]` 识别当前聊天。没有历史时创建首个会话文件，已有历史时读取 `docs/history-session/` 并返回累计摘要、逐会话摘要和最新完整 handoff。功能支持 Windows、macOS 和 Linux，复用现有 Streamable HTTP `/mcp` 与隧道，不引入 OpenAI SDK，不改变任何现有工具的输入、输出或业务语义。
 
 ## 历史经验与坑（来自记忆库）
 
@@ -33,7 +33,7 @@
 ### FR-1: 新会话恢复与编号
 
 **优先级:** Must
-**用户故事:** 作为 ChatGPT 网页版开发者，我想在新聊天中输入“恢复会话”后恢复完整开发交接，以便继续上一会话而不重复排查。
+**用户故事:** 作为 ChatGPT 网页版开发者，我希望新聊天首次使用插件时自动初始化或恢复完整开发交接，以便不必手工输入“恢复会话”。
 
 #### 验收标准（EARS）
 
@@ -125,9 +125,9 @@
 
 #### 验收标准（EARS）
 
-1. WHEN ChatGPT 初始化 MCP 连接 THEN 系统 SHALL 在 `initialize.result.instructions` 中说明恢复时使用 bootstrap、需要持久化交接时使用 checkpoint，不得在工具元数据中注入“每次最终回复前必须调用”一类全局行为控制。
-2. WHEN `history_session_bootstrap` 成功 THEN 系统 SHALL 返回结构化 `assistant_instructions`、`required_next_actions` 和 `checkpoint_policy`，说明 checkpoint 能力可用但不会后台自动执行。
-3. WHEN客户端调用 `tools/list` THEN bootstrap 与 checkpoint 描述 SHALL 使用纯能力说明；强制每轮 checkpoint 的规则只保留在用户主动复制到会话中的提示词里。
+1. WHEN ChatGPT 初始化 MCP 连接 THEN 系统 SHALL 在 `initialize.result.instructions` 中要求每个新 ChatGPT 对话在首次回复前调用一次 bootstrap，即使用户未明确要求恢复；每轮用户任务完成后、最终回复前调用 checkpoint。
+2. WHEN `history_session_bootstrap` 成功 THEN 系统 SHALL 返回结构化 `assistant_instructions`、`required_next_actions` 和 `checkpoint_policy`，要求每轮任务完成后调用 checkpoint，并将 `required_before_final_response` 设为 `true`。
+3. WHEN客户端调用 `tools/list` THEN bootstrap 描述 SHALL 重申新对话首次回复前必须初始化；checkpoint 描述 SHALL 清楚说明其保存能力；每轮 checkpoint 规则同时存在于初始化指令、bootstrap 返回值和页面提示词中。
 4. WHEN模型未执行 checkpoint THEN 服务端 SHALL 不宣称已自动持久化；第一版不修改或拦截现有工具，也不具备脱离模型调用的后台自动写入能力。
 5. WHEN用户打开任一工作区的 MCP 配置 THEN 页面 SHALL 展示完整会话恢复提示词和一键复制按钮，并提供复制成功或失败反馈。
 

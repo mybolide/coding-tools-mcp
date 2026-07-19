@@ -167,13 +167,21 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
         .as_str()
         .unwrap_or("")
         .contains("history_session_checkpoint"));
-    assert!(!first["assistant_instructions"]
+    assert!(first["assistant_instructions"]
+        .as_str()
+        .unwrap_or("")
+        .contains("After completing each user-requested task"));
+    assert!(first["assistant_instructions"]
         .as_str()
         .unwrap_or("")
         .contains("before the final response"));
+    assert!(first["assistant_instructions"]
+        .as_str()
+        .unwrap_or("")
+        .contains("checkpoint returns ok=true"));
     assert_eq!(
         first["checkpoint_policy"]["required_before_final_response"],
-        false
+        true
     );
     assert_eq!(
         first["checkpoint_policy"]["tool"],
@@ -185,7 +193,8 @@ fn bootstrap_creates_next_file_returns_all_summaries_and_is_idempotent() {
             "read_all_history_summary",
             "read_latest_handoff",
             "verify_workspace_state",
-            "execute_user_task"
+            "execute_user_task",
+            "checkpoint_after_each_completed_task"
         ])
     );
     assert_eq!(first["session_summaries"].as_array().unwrap().len(), 2);
