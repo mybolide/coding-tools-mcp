@@ -25,34 +25,22 @@ Coding Tools MCP is a Rust + Tauri 2 desktop application. Select a project direc
 
 *One desktop app manages workspaces, MCP services, connection details, and the session-recovery prompt.*
 
-## Why use it
+## Understand the workflow in 30 seconds
 
-- **Built for real development**: files, commands, Git, tests, and retained processes live in one Workspace.
-- **Cross-conversation continuity**: a new conversation can recover the complete history summary and the latest detailed handoff.
-- **Auditable progress**: structured checkpoints preserve decisions, changed files, test results, remaining issues, and next steps inside the project.
-- **Multiple workspaces**: one desktop client stores multiple projects and manages their MCP, Actions, and public endpoints.
-- **Direct ChatGPT connectivity**: Streamable HTTP, OAuth, Bearer tokens, OpenAPI, FRP, and Cloudflare are built in.
-- **A focused default tool surface**: stable core tools are available by default; advanced Harness capabilities are opt-in.
+```text
+Install the desktop app
+  → add a project directory
+  → start MCP and a public tunnel
+  → copy the Public MCP URL
+  → enable ChatGPT developer mode
+  → create an MCP plugin and paste the URL
+  → authorize it and start developing in a new conversation
+```
 
-## Let the project remember every conversation
+For a first connection, remember only this: **the desktop app turns the project into an MCP workspace, and ChatGPT connects to it through the public `/mcp` URL.**
 
-Chat transcripts are useful for rereading a discussion, but they are a poor long-term development handoff. Coding Tools MCP stores progress in `docs/history-session/` under the current project, so context follows the repository instead of staying trapped in one chat window.
-
-![ChatGPT new-conversation startup prompt](docs/images/history-session-prompt.png)
-
-*Paste the full prompt into a new conversation to initialize or restore history, then save a checkpoint after each completed task.*
-
-Three tools work together:
-
-| Tool | Purpose |
-| --- | --- |
-| `history_session_bootstrap` | Initialize or restore a project session; a new file embeds a compressed summary of prior sessions and returns a stable `session_key` and `current_path` |
-| `history_session_checkpoint` | Save structured progress to the stable target returned by bootstrap; reject mismatched targets instead of writing to another history file |
-| `history_session_validate` | Validate numbering, history files, and session mappings; rebuild derived indexes when needed without deleting existing history |
-
-History uses readable Markdown that can be backed up or committed with the project. Every new file starts with a bounded inherited summary that is not recursively copied into later summaries. Checkpoints are idempotent, and progress should only be reported as saved after the tool returns `ok=true` with the same session target.
-
-> History persistence is performed when the AI calls the MCP tools; the desktop app does not record chat content in the background. If the client does not invoke a tool, the server cannot infer that a new conversation or task has happened.
+- [See the complete desktop setup](#get-started-in-five-minutes)
+- [Go directly to the ChatGPT plugin setup](#mcp-connector)
 
 ## Get started in five minutes
 
@@ -136,10 +124,60 @@ This gives the agent explicit project and capability state instead of guessing f
 
 ### MCP Connector
 
-1. Start the workspace MCP service and public tunnel.
-2. Create a connection in ChatGPT's Connector/MCP settings.
-3. Paste the public MCP URL shown by the desktop app.
-4. Complete None, Bearer, or OAuth authentication as configured.
+Before configuring ChatGPT, make sure that:
+
+1. The workspace MCP service and public tunnel are both running.
+2. The public MCP endpoint passes the desktop health check. If OAuth is enabled, also verify the protected-resource document and authorization metadata.
+3. You have copied the **Public MCP URL** from the desktop **GPT configuration** card. For OAuth, also have the OAuth Client ID, OAuth Client Secret, and authorization password ready.
+
+> ChatGPT must use the public HTTPS `/mcp` URL. A local address such as `http://127.0.0.1:28766/mcp` is not reachable from ChatGPT. Menu names may vary slightly by ChatGPT version and language.
+
+#### 1. Enable ChatGPT developer mode
+
+Open ChatGPT settings, go to **Account security and sign-in**, and enable **Developer mode**. This allows unverified MCP connectors to be added.
+
+![Enable developer mode in ChatGPT](docs/images/gpt-config-1.png)
+
+*Developer mode grants powerful access. Only connect MCP servers that you operate or explicitly trust.*
+
+#### 2. Create the MCP plugin
+
+Open **Plugins** from the ChatGPT sidebar, click the `+` button, select the MCP beta option, and enter:
+
+| ChatGPT field | Value |
+| --- | --- |
+| Name | A recognizable name such as `Coding Tools MCP` |
+| Description | A short description of the connected project or purpose |
+| Connection | The public MCP URL from the desktop **GPT configuration** card; it should end in `/mcp` |
+| Authentication | The same mode configured in the desktop app; the screenshot uses OAuth |
+
+![Create an MCP plugin and enter its connection details](docs/images/gpt-config-2-detail.png)
+
+For OAuth, open the advanced OAuth settings, select static/manual OAuth credentials, and enter the Client ID and Client Secret shown by the desktop app. CIMD is not required. When ChatGPT opens the authorization page, enter the authorization password from the desktop **GPT configuration** card.
+
+> Client Secrets, authorization passwords, and Bearer tokens are sensitive. Never paste them into chats, issues, or public screenshots. If the desktop app uses Bearer or no authentication, select the matching option currently offered by ChatGPT.
+
+#### 3. Verify the connection
+
+Start a new conversation with the plugin enabled and ask:
+
+```text
+Use Coding Tools MCP to call server_info, get_default_cwd, and git_status.
+Tell me which workspace is connected, its default directory, and its Git status.
+```
+
+If ChatGPT returns information from the current project, the desktop app, public tunnel, authentication, ChatGPT, and MCP tool chain are connected end to end. Before real development, call `history_session_bootstrap` to initialize or restore project history.
+
+If ChatGPT still shows an old tool list, disconnect and reconnect the plugin or verify again in a new conversation.
+
+#### Troubleshooting
+
+| Symptom | Check first |
+| --- | --- |
+| ChatGPT cannot connect | Confirm that the URL is the public HTTPS `/mcp` endpoint rather than `127.0.0.1`, and that the public MCP health check passes |
+| OAuth authorization fails | Confirm that the Client ID, Client Secret, and authorization password come from the same workspace, and check the OAuth metadata results |
+| New tools are missing | Disconnect and reconnect the plugin, then start a new conversation |
+| A tool call fails | Open **Logs** and **Health checks** in the desktop app and confirm that the request reached the MCP service |
 
 ### GPT Actions
 
@@ -149,6 +187,35 @@ This gives the agent explicit project and capability state instead of guessing f
 4. Select None, API Key, or OAuth to match the desktop configuration.
 
 MCP and Actions can run together for the same workspace, with separate ports and subdomains when needed.
+
+## Why use it
+
+- **Built for real development**: files, commands, Git, tests, and retained processes live in one Workspace.
+- **Cross-conversation continuity**: a new conversation can recover the complete history summary and the latest detailed handoff.
+- **Auditable progress**: structured checkpoints preserve decisions, changed files, test results, remaining issues, and next steps inside the project.
+- **Multiple workspaces**: one desktop client stores multiple projects and manages their MCP, Actions, and public endpoints.
+- **Direct ChatGPT connectivity**: Streamable HTTP, OAuth, Bearer tokens, OpenAPI, FRP, and Cloudflare are built in.
+- **A focused default tool surface**: stable core tools are available by default; advanced Harness capabilities are opt-in.
+
+## Let the project remember every conversation
+
+Chat transcripts are useful for rereading a discussion, but they are a poor long-term development handoff. Coding Tools MCP stores progress in `docs/history-session/` under the current project, so context follows the repository instead of staying trapped in one chat window.
+
+![ChatGPT new-conversation startup prompt](docs/images/history-session-prompt.png)
+
+*Paste the full prompt into a new conversation to initialize or restore history, then save a checkpoint after each completed task.*
+
+Three tools work together:
+
+| Tool | Purpose |
+| --- | --- |
+| `history_session_bootstrap` | Initialize or restore a project session; a new file embeds a compressed summary of prior sessions and returns a stable `session_key` and `current_path` |
+| `history_session_checkpoint` | Save structured progress to the stable target returned by bootstrap; reject mismatched targets instead of writing to another history file |
+| `history_session_validate` | Validate numbering, history files, and session mappings; rebuild derived indexes when needed without deleting existing history |
+
+History uses readable Markdown that can be backed up or committed with the project. Every new file starts with a bounded inherited summary that is not recursively copied into later summaries. Checkpoints are idempotent, and progress should only be reported as saved after the tool returns `ok=true` with the same session target.
+
+> History persistence is performed when the AI calls the MCP tools; the desktop app does not record chat content in the background. If the client does not invoke a tool, the server cannot infer that a new conversation or task has happened.
 
 ## What an agent can do
 
