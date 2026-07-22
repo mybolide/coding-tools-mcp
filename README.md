@@ -294,6 +294,9 @@ Windows 也可以双击 `dev-desktop.cmd`。不要只用 `npm run dev` 验证桌
 | `src/` | SvelteKit 桌面界面 |
 | `old/` | Python 参考实现和兼容性基线 |
 
+## 致谢
+感谢 [Linux.do](https://linux.do/) 社区对项目推广与反馈的支持。
+
 ## License
 
 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)
