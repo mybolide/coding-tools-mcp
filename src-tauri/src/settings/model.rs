@@ -9,7 +9,7 @@ pub struct FrpProfile {
     pub id: String,
     pub name: String,
     pub server: String,
-    #[serde(default = "default_frp_server_port")]
+    #[serde(default = "default_frp_server_port", alias = "serverPort")]
     pub server_port: u16,
 }
 
@@ -144,5 +144,36 @@ impl FrpProfile {
             server: server.trim().to_string(),
             server_port,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FrpProfile;
+
+    #[test]
+    fn accepts_frontend_camel_case_server_port() {
+        let profile: FrpProfile = serde_json::from_value(serde_json::json!({
+            "id": "p1",
+            "name": "公司 FRP",
+            "server": "frp.example.com",
+            "serverPort": 7004
+        }))
+        .expect("FRP profile should deserialize");
+
+        assert_eq!(profile.server_port, 7004);
+    }
+
+    #[test]
+    fn keeps_legacy_snake_case_server_port_compatible() {
+        let profile: FrpProfile = serde_json::from_value(serde_json::json!({
+            "id": "p1",
+            "name": "公司 FRP",
+            "server": "frp.example.com",
+            "server_port": 7005
+        }))
+        .expect("legacy FRP profile should deserialize");
+
+        assert_eq!(profile.server_port, 7005);
     }
 }
