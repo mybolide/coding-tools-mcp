@@ -247,6 +247,12 @@ async fn run_command(
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONLEGACYWINDOWSSTDIO", "0");
 
+    #[cfg(windows)]
+    if !tty {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    }
+
     let child = command.spawn().map_err(|e| WorkspaceError::ToolDetails {
         code: "COMMAND_SPAWN_FAILED",
         message: format!("Failed to start command: {e}"),
