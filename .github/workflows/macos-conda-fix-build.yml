@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  build-universal-macos:
+  build-apple-silicon-macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -37,14 +37,14 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
-      - name: Build universal macOS app and DMG
-        run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg
+      - name: Build Apple Silicon macOS app and DMG
+        run: npm run tauri -- build --target aarch64-apple-darwin --bundles app,dmg
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: coding-tools-mcp-macos-conda-fix-universal
+          name: coding-tools-mcp-macos-conda-fix-arm64
           path: |
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
