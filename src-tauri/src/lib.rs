@@ -35,6 +35,70 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
+#[cfg(target_os = "macos")]
+fn bootstrap_macos_process_path() {
+    let Some(path) = macos_augmented_path(std::env::var_os("PATH"), dirs::home_dir()) else {
+        return;
+    };
+    std::env::set_var("PATH", path);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn bootstrap_macos_process_path() {}
+
+#[cfg(target_os = "macos")]
+fn macos_augmented_path(
+    current_path: Option<std::ffi::OsString>,
+    home_dir: Option<std::path::PathBuf>,
+) -> Option<std::ffi::OsString> {
+    let mut paths = current_path
+        .as_deref()
+        .map(std::env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    let mut push_unique = |path: std::path::PathBuf| {
+        if !paths.iter().any(|existing| existing == &path) {
+            paths.push(path);
+        }
+    };
+
+    // Finder/LaunchServices starts GUI apps with a minimal PATH. Keep the
+    // inherited entries first, then add the conventional package-manager and
+    // Conda locations used on macOS so exec_command and its child processes
+    // resolve the same tools that are normally available in Terminal.
+    for path in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/opt/local/bin",
+        "/opt/anaconda3/bin",
+        "/opt/anaconda3/condabin",
+    ] {
+        push_unique(std::path::PathBuf::from(path));
+    }
+
+    if let Some(home) = home_dir {
+        for suffix in [
+            ".local/bin",
+            "miniconda3/bin",
+            "miniconda3/condabin",
+            "anaconda3/bin",
+            "anaconda3/condabin",
+            "miniforge3/bin",
+            "miniforge3/condabin",
+            "mambaforge/bin",
+            "mambaforge/condabin",
+        ] {
+            push_unique(home.join(suffix));
+        }
+    }
+
+    std::env::join_paths(paths).ok().or(current_path)
+}
+
 #[cfg(target_os = "windows")]
 fn signal_existing_instance() -> bool {
     use windows::core::w;
@@ -151,6 +215,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    bootstrap_macos_process_path();
     if !acquire_single_instance() {
         return;
     }
@@ -240,4 +305,26 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_gui_path_includes_common_conda_locations() {
+        let home = std::path::PathBuf::from("/Users/tester");
+        let path = macos_augmented_path(
+            Some(std::ffi::OsString::from("/usr/bin:/bin")),
+            Some(home.clone()),
+        )
+        .expect("path should be created");
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+
+        assert_eq!(entries[0], std::path::PathBuf::from("/usr/bin"));
+        assert!(entries.contains(&std::path::PathBuf::from("/opt/homebrew/bin")));
+        assert!(entries.contains(&home.join("miniconda3/bin")));
+        assert!(entries.contains(&home.join("miniforge3/condabin")));
+        assert!(entries.contains(&home.join("anaconda3/bin")));
+    }
 }
