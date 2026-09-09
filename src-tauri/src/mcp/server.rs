@@ -7,8 +7,14 @@ use crate::tools::{
     Workspace,
 };
 use crate::workspace::AuthConfig;
+use crate::mcp::upstream::UpstreamMcpManager;
 
-pub type SharedState = SharedToolContext;
+pub struct McpState {
+    pub tools: SharedToolContext,
+    pub upstream: Arc<UpstreamMcpManager>,
+}
+
+pub type SharedState = Arc<McpState>;
 
 pub fn handle_request(state: &SharedState, body: &Value) -> Value {
     let method = body.get("method").and_then(Value::as_str).unwrap_or("");
@@ -23,7 +29,8 @@ pub fn handle_request(state: &SharedState, body: &Value) -> Value {
         "initialize" => Ok(initialize_result()),
         "ping" => Ok(serde_json::json!({})),
         "tools/list" => {
-            let tools = list_tools_for_profile(&state.tool_profile);
+            let mut tools = list_tools_for_profile(&state.tools.tool_profile);
+            tools.extend(state.upstream.public_tools().iter().cloned());
             Ok(serde_json::json!({ "tools": tools }))
         }
         "tools/call" => handle_tools_call(state, &params),
@@ -62,8 +69,13 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         .ok_or_else(|| serde_json::json!({ "code": -32602, "message": "Missing tool name" }))?;
     let args = tool_arguments(name, params);
 
+    if state.upstream.owns_tool(name) {
+        let result = tauri::async_runtime::block_on(state.upstream.call_tool(name, args));
+        return Ok(normalize_upstream_result(result));
+    }
+
     let canonical_name = crate::tools::registry::canonical_tool_name(name);
-    let known = crate::tools::registry::exposed_tool_names(&state.tool_profile);
+    let known = crate::tools::registry::exposed_tool_names(&state.tools.tool_profile);
     if !known.iter().any(|n| n == &canonical_name) {
         return Err(serde_json::json!({
             "code": -32602,
@@ -72,8 +84,31 @@ fn handle_tools_call(state: &SharedState, params: &Value) -> Result<Value, Value
         }));
     }
 
-    let structured = call_tool(state.as_ref(), canonical_name, &args);
+    let structured = call_tool(state.tools.as_ref(), canonical_name, &args);
     Ok(wrap_mcp_tool_result(canonical_name, &args, structured))
+}
+
+fn normalize_upstream_result(result: Result<Value, String>) -> Value {
+    match result {
+        Ok(result) if result.get("content").is_some() => result,
+        Ok(result) => serde_json::json!({
+            "content": [{ "type": "text", "text": result.to_string() }],
+            "structuredContent": result,
+            "isError": false
+        }),
+        Err(message) => serde_json::json!({
+            "content": [{ "type": "text", "text": message }],
+            "structuredContent": {
+                "ok": false,
+                "status": "error",
+                "error": {
+                    "category": "upstream_mcp",
+                    "message": "本地 MCP 工具调用失败"
+                }
+            },
+            "isError": true
+        }),
+    }
 }
 
 fn tool_arguments(name: &str, params: &Value) -> Value {
@@ -104,14 +139,18 @@ pub fn new_state(
     policy: crate::tools::policy::PolicySettings,
     tool_profile: String,
     permission_mode: String,
+    upstream: Arc<UpstreamMcpManager>,
 ) -> SharedState {
-    Arc::new(ToolContext::from_workspace(
-        workspace,
-        auth,
-        policy,
-        tool_profile,
-        permission_mode,
-    ))
+    Arc::new(McpState {
+        tools: Arc::new(ToolContext::from_workspace(
+            workspace,
+            auth,
+            policy,
+            tool_profile,
+            permission_mode,
+        )),
+        upstream,
+    })
 }
 
 #[cfg(test)]
@@ -123,7 +162,8 @@ mod tests {
 
     use crate::tools::ToolContext;
 
-    use super::{handle_request, initialize_result, tool_arguments};
+    use super::{handle_request, initialize_result, tool_arguments, McpState};
+    use crate::mcp::upstream::UpstreamMcpManager;
 
     #[test]
     fn initialize_instructions_define_the_history_persistence_workflow() {
@@ -188,10 +228,13 @@ mod tests {
     fn host_session_key_takes_precedence_over_explicit_session_key() {
         let workspace = tempfile::tempdir().expect("workspace tempdir");
         let harness = tempfile::tempdir().expect("harness tempdir");
-        let state = Arc::new(
-            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
-                .expect("tool context"),
-        );
+        let state = Arc::new(McpState {
+            tools: Arc::new(
+                ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                    .expect("tool context"),
+            ),
+            upstream: Arc::new(UpstreamMcpManager::empty()),
+        });
         let response = handle_request(
             &state,
             &json!({
@@ -225,10 +268,13 @@ mod tests {
         let harness = tempfile::tempdir().expect("harness tempdir");
         fs::write(workspace.path().join("sample.txt"), "catalog needle")
             .expect("write sample file");
-        let state = Arc::new(
-            ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
-                .expect("tool context"),
-        );
+        let state = Arc::new(McpState {
+            tools: Arc::new(
+                ToolContext::for_test(workspace.path().to_path_buf(), harness.path().to_path_buf())
+                    .expect("tool context"),
+            ),
+            upstream: Arc::new(UpstreamMcpManager::empty()),
+        });
 
         let response = handle_request(
             &state,

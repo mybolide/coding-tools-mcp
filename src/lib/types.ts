@@ -29,6 +29,32 @@ export interface RuntimeConfig {
   allowed_commands?: string;
   workspace_local_entries?: boolean;
   workspace_script_extensions?: string;
+  upstream_mcps?: UpstreamMcpConfig[];
+}
+
+export interface UpstreamMcpConfig {
+  id: string;
+  name: string;
+  enabled: boolean;
+  type: "stdio" | "streamableHttp";
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  /** Streamable HTTP endpoint; required when type is streamableHttp. */
+  url: string;
+  /** Optional headers sent only to the configured HTTP endpoint. */
+  headers: Record<string, string>;
+  tool_prefix: string;
+  /** New visibility model: every discovered tool is public unless listed here. */
+  disabled_tools?: string[];
+  /** Legacy visibility model. A non-empty value stays restrictive until saved. */
+  allowed_tools: string[];
+}
+
+export interface DiscoveredUpstreamTool {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
 }
 
 export interface ActionsConfig {

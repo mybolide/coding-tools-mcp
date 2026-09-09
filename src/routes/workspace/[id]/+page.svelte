@@ -11,6 +11,7 @@
   import RuntimePolicyForm, {
     type RuntimePolicyDraft,
   } from "$lib/components/RuntimePolicyForm.svelte";
+  import UpstreamMcpForm from "$lib/components/UpstreamMcpForm.svelte";
   import ChatGptSessionPrompt from "$lib/components/ChatGptSessionPrompt.svelte";
   import ServicePanel from "$lib/components/ServicePanel.svelte";
   import GptQuickCopy from "$lib/components/GptQuickCopy.svelte";
@@ -53,6 +54,7 @@
     type AuthConfig,
     type ActionsAuthDraft,
     type RuntimeState,
+    type UpstreamMcpConfig,
     type WorkspaceProfile,
   } from "$lib/types";
 
@@ -422,6 +424,23 @@
     await promptServiceRestart(mcpStatus === "running", "MCP 服务");
   }
 
+  async function saveUpstreamMcps(configs: UpstreamMcpConfig[]) {
+    if (!profile) return;
+    const next: WorkspaceProfile = {
+      ...profile,
+      runtime: { ...profile.runtime, upstream_mcps: configs },
+    };
+    await updateWorkspace(next);
+    profile = next;
+    await load();
+    showToast(
+      mcpStatus === "running"
+        ? "本地 MCP 配置已保存，运行中的服务已重新加载工具目录。"
+        : "本地 MCP 配置已保存；启动 MCP 服务后将加载这些工具。",
+      { kind: "success" },
+    );
+  }
+
   async function saveActionsPolicy(draft: ActionsPolicyDraft) {
     if (!profile) return;
     const current = actionsConfig(profile);
@@ -653,6 +672,13 @@
                 workspaceLocalEntries={profile.runtime.workspace_local_entries ?? true}
                 workspaceScriptExtensions={profile.runtime.workspace_script_extensions ?? ".exe,.bat,.cmd,.ps1"}
                 onSave={saveMcpPolicy}
+              />
+            </div>
+            <div>
+              <p class="tx-section-label">本地 MCP</p>
+              <UpstreamMcpForm
+                configs={profile.runtime.upstream_mcps ?? []}
+                onSave={saveUpstreamMcps}
               />
             </div>
           </div>

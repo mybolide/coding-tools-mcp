@@ -33,5 +33,6 @@ pub use software::{
 };
 pub use tunnel::{get_frp_snippet, restart_tunnel, start_tunnel, stop_tunnel, test_tunnel};
 pub use workspace::{
-    create_workspace, delete_workspace, list_workspaces, open_workspace_directory, update_workspace,
+    create_workspace, delete_workspace, discover_upstream_tools, list_workspaces,
+    open_workspace_directory, update_workspace,
 };

@@ -1,5 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { RuntimeStatus, WorkspaceProfile } from "$lib/types";
+import type {
+  DiscoveredUpstreamTool,
+  RuntimeStatus,
+  UpstreamMcpConfig,
+  WorkspaceProfile,
+} from "$lib/types";
 
 export async function listWorkspaces(): Promise<WorkspaceProfile[]> {
   return invoke<WorkspaceProfile[]>("list_workspaces");
@@ -14,6 +19,12 @@ export async function createWorkspace(
 
 export async function updateWorkspace(profile: WorkspaceProfile): Promise<void> {
   return invoke("update_workspace", { profile });
+}
+
+export async function discoverUpstreamTools(
+  config: UpstreamMcpConfig,
+): Promise<DiscoveredUpstreamTool[]> {
+  return invoke<DiscoveredUpstreamTool[]>("discover_upstream_tools", { config });
 }
 
 export async function openWorkspaceDirectory(path: string): Promise<void> {

@@ -179,6 +179,40 @@ If ChatGPT still shows an old tool list, disconnect and reconnect the plugin or 
 | New tools are missing | Disconnect and reconnect the plugin, then start a new conversation |
 | A tool call fails | Open **Logs** and **Health checks** in the desktop app and confirm that the request reached the MCP service |
 
+### Expose configured local MCP servers
+
+In addition to the app's built-in development tools, a workspace can proxy MCP servers that an administrator explicitly configures. It supports **stdio** for local processes and **Streamable HTTP** for local or reachable services. ChatGPT and cloud Codex continue to connect only to this app's public `/mcp` endpoint; the desktop app forwards calls to the saved upstreams.
+
+In the workspace's **MCP → Configuration → Local MCP** area, click **+ Add**:
+
+1. Choose **Quick create**, then select the `stdio` or `Streamable HTTP` transport.
+2. Or choose **Import from JSON** and paste a single configuration, an array of configurations, or a conventional `mcpServers` object. Imports create drafts only; review and save them before use.
+3. For `stdio`, provide the command, arguments, and environment variables. For `Streamable HTTP`, provide the endpoint URL and optional request headers.
+4. Enable the local MCP and click **Fetch tools**.
+5. All discovered tools are exposed by default; turn off any high-privilege tools that should stay private.
+6. Save. The desktop app reloads a running MCP service, or applies the configuration the next time it starts.
+
+Example Streamable HTTP import:
+
+```json
+{
+  "mcpServers": {
+    "local-service": {
+      "type": "streamableHttp",
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer your-token"
+      },
+      "tool_prefix": "local-service"
+    }
+  }
+}
+```
+
+Remote clients see tools with the workspace-configured prefix, for example `local__tool_name`. Existing manual allowlists retain their current exposure until they are saved through the per-tool toggles in the new interface.
+
+> Security boundary: environment variables are injected only into local stdio processes, and HTTP request headers are sent only to their saved endpoints. Neither appears in the `/mcp` tool directory, tool responses, or ordinary request logs. Automatically exposing tools grants remote clients every capability offered by that local service; turn off unwanted tools before saving, and do not configure untrusted MCP servers or environment variables containing sensitive credentials.
+
 ### GPT Actions
 
 1. Start the workspace Actions service.

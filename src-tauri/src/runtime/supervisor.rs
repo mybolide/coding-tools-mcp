@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::async_runtime::JoinHandle;
@@ -7,6 +8,7 @@ use tauri::async_runtime::JoinHandle;
 use crate::actions;
 use crate::error::AppResult;
 use crate::mcp;
+use crate::mcp::upstream::UpstreamMcpManager;
 use crate::platform::platform;
 use crate::runtime::port::{
     is_own_process, port_busy_message, try_reclaim_previous_macos_app_port,
@@ -55,22 +57,19 @@ impl RuntimeSupervisor {
         self.status(profile, ServiceKind::Actions)
     }
 
-    pub fn start_mcp(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
-        self.start(profile, ServiceKind::Mcp)
+    /// Starts the listener after the async command layer has completed stdio
+    /// initialization. Keeping that await out of this synchronous supervisor
+    /// avoids nesting a runtime `block_on` while a Tauri command is executing.
+    pub fn start_prepared_mcp(
+        &mut self,
+        profile: &WorkspaceProfile,
+        upstream: Arc<UpstreamMcpManager>,
+    ) -> AppResult<RuntimeStatusDto> {
+        self.start(profile, ServiceKind::Mcp, Some(upstream))
     }
 
     pub fn start_actions(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
-        self.start(profile, ServiceKind::Actions)
-    }
-
-    #[allow(dead_code)] // Kept for sync callers (tests / teardown helpers).
-    pub fn restart_mcp(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
-        self.restart(profile, ServiceKind::Mcp)
-    }
-
-    #[allow(dead_code)] // Kept for sync callers (tests / teardown helpers).
-    pub fn restart_actions(&mut self, profile: &WorkspaceProfile) -> AppResult<RuntimeStatusDto> {
-        self.restart(profile, ServiceKind::Actions)
+        self.start(profile, ServiceKind::Actions, None)
     }
 
     /// True when the service for this workspace is currently running.
@@ -94,6 +93,20 @@ impl RuntimeSupervisor {
     pub fn drop_workspace(&mut self, profile: &WorkspaceProfile) {
         self.sync_stop_and_wait(profile, ServiceKind::Mcp);
         self.sync_stop_and_wait(profile, ServiceKind::Actions);
+    }
+
+    pub fn set_mcp_error(&mut self, profile: &WorkspaceProfile, message: String) {
+        self.entries.insert(
+            (profile.id.clone(), ServiceKind::Mcp),
+            RuntimeEntry {
+                phase: RuntimePhase::Error,
+                shutdown: None,
+                handle: None,
+                error_message: Some(message),
+                started_at: None,
+                missing_port_checks: 0,
+            },
+        );
     }
 
     pub fn active_tunnel_service_keys(&self) -> HashSet<(String, TunnelServiceKind)> {
@@ -196,6 +209,7 @@ impl RuntimeSupervisor {
         &mut self,
         profile: &WorkspaceProfile,
         kind: ServiceKind,
+        prepared_upstream: Option<Arc<UpstreamMcpManager>>,
     ) -> AppResult<RuntimeStatusDto> {
         let key = (profile.id.clone(), kind);
         if matches!(
@@ -269,6 +283,8 @@ impl RuntimeSupervisor {
                 } else {
                     None
                 };
+                let upstream = prepared_upstream
+                    .unwrap_or_else(|| Arc::new(UpstreamMcpManager::empty()));
                 mcp::spawn_listener(
                     port,
                     PathBuf::from(&profile.path),
@@ -279,6 +295,7 @@ impl RuntimeSupervisor {
                     oauth_password,
                     oauth_token_secret,
                     profile.runtime.clone(),
+                    upstream,
                 )
             }
             ServiceKind::Actions => {
@@ -384,24 +401,6 @@ impl RuntimeSupervisor {
         }
 
         Ok(self.status(profile, kind))
-    }
-
-    /// Stop the current service (if running), then immediately start a new one.
-    /// This is the canonical "restart" — used when the user regenerates a key or
-    /// toggles the shared-secret switch, so the listener picks up the new value.
-    ///
-    /// stop_internal sends the graceful-shutdown signal but the OS port may not
-    /// be freed instantly (the old listener's socket is closed on the tokio
-    /// event loop). We retry `start` with a short back-off to smooth over this
-    /// window.
-    #[allow(dead_code)]
-    fn restart(
-        &mut self,
-        profile: &WorkspaceProfile,
-        kind: ServiceKind,
-    ) -> AppResult<RuntimeStatusDto> {
-        self.sync_stop_and_wait(profile, kind);
-        self.start(profile, kind)
     }
 
     fn sync_stop_and_wait(&mut self, profile: &WorkspaceProfile, kind: ServiceKind) {
@@ -616,5 +615,17 @@ mod tests {
         assert!(!should_mark_runtime_error(&mut runtime, false));
         assert!(!should_mark_runtime_error(&mut runtime, true));
         assert!(!should_mark_runtime_error(&mut runtime, false));
+    }
+
+    #[test]
+    fn upstream_preflight_failure_is_visible_as_runtime_error() {
+        let profile = WorkspaceProfile::new("C:/workspace/test".into(), Some("test".into()));
+        let mut supervisor = RuntimeSupervisor::default();
+
+        supervisor.set_mcp_error(&profile, "本地 MCP 上游初始化失败：连接超时".into());
+
+        let status = supervisor.mcp_status(&profile);
+        assert_eq!(status.state, "error");
+        assert!(status.local_message.contains("上游初始化失败"));
     }
 }
