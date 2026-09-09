@@ -20,7 +20,7 @@ mod workspace;
 
 use app_state::AppState;
 use commands::{
-    check_app_update, create_workspace, delete_frp_profile, delete_workspace,
+    check_app_update, create_workspace, delete_frp_profile, delete_workspace, discover_upstream_tools,
     get_actions_runtime_status, get_app_settings, get_download_config, get_frp_snippet,
     get_last_workspace_id, get_proxy, get_runtime_status, get_shared_secret, get_webview_memory_sample,
     get_workspace_secret, hide_to_tray, install_software, list_frp_profiles, list_software,
@@ -171,6 +171,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_workspaces,
             create_workspace,
+            discover_upstream_tools,
             update_workspace,
             open_workspace_directory,
             open_url,
