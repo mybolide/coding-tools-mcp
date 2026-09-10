@@ -39,6 +39,12 @@ pub fn read_file(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> 
         .max(1) as usize;
     let end_line = args.get("end_line").and_then(Value::as_u64).map(|v| v as usize);
 
+    let file_len = fs::metadata(&resolved.path)
+        .map_err(|_| WorkspaceError::not_found("File not found"))?
+        .len();
+    if file_len > STREAMING_READ_THRESHOLD {
+        return read_file_streaming(&resolved.path, &resolved.display, max_bytes, start_line, end_line);
+    }
     let data = fs::read(&resolved.path).map_err(|_| WorkspaceError::not_found("File not found"))?;
     if data.iter().take(4096).any(|b| *b == 0) {
         return Err(WorkspaceError::Tool {
@@ -85,6 +91,196 @@ pub fn read_file(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> 
         "truncated_by": truncated_by,
         "warnings": warnings
     })))
+}
+
+/// Files above this size take the bounded-memory streaming path: output
+/// semantics are identical to the in-memory path, but peak memory is the
+/// 64 KiB read buffer plus at most `max_bytes` of selected content instead
+/// of two full copies of the file plus a whole-file line index.
+const STREAMING_READ_THRESHOLD: u64 = 4 * 1024 * 1024;
+
+#[allow(clippy::too_many_arguments)]
+fn read_file_streaming(
+    path: &Path,
+    display: &str,
+    max_bytes: usize,
+    start_line: usize,
+    end_line: Option<usize>,
+) -> Result<Value, WorkspaceError> {
+    let unsupported_encoding = || WorkspaceError::Tool {
+        code: "UNSUPPORTED_ENCODING",
+        message: "File is not valid utf-8.".into(),
+        category: "validation",
+        retryable: false,
+    };
+    let not_found = || WorkspaceError::not_found("File not found");
+
+    let mut file = File::open(path).map_err(|_| not_found())?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut utf8_carry: Vec<u8> = Vec::new();
+    let mut seen: usize = 0;
+    let mut last_byte: u8 = 0;
+    let mut total_lines: usize = 0;
+    let mut selected: Vec<u8> = Vec::new();
+    let mut line_pending: Vec<u8> = Vec::new();
+    let mut overflow = false;
+
+    loop {
+        let read = file.read(&mut buf).map_err(|_| not_found())?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buf[..read];
+        if seen < 4096 {
+            let peek_end = (4096 - seen).min(read);
+            if chunk[..peek_end].contains(&0) {
+                return Err(WorkspaceError::Tool {
+                    code: "BINARY_FILE",
+                    message: "Binary file read blocked for text tool.".into(),
+                    category: "validation",
+                    retryable: false,
+                });
+            }
+        }
+        seen += read;
+        last_byte = chunk[read - 1];
+
+        // Incremental UTF-8 validation: only an incomplete trailing sequence
+        // is carried across chunks, so memory stays O(chunk).
+        let mut window = Vec::with_capacity(utf8_carry.len() + chunk.len());
+        window.extend_from_slice(&utf8_carry);
+        window.extend_from_slice(chunk);
+        utf8_carry.clear();
+        let valid_len = match std::str::from_utf8(&window) {
+            Ok(_) => window.len(),
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if error.error_len().is_some() {
+                    return Err(unsupported_encoding());
+                }
+                utf8_carry.extend_from_slice(&window[valid_up_to..]);
+                valid_up_to
+            }
+        };
+
+        consume_stream_lines(
+            &window[..valid_len],
+            &mut total_lines,
+            &mut selected,
+            &mut line_pending,
+            &mut overflow,
+            start_line,
+            end_line,
+            max_bytes,
+        );
+    }
+
+    // Trailing line without a final newline still counts (split_inclusive
+    // semantics) and flushes any buffered selection bytes.
+    if seen > 0 && last_byte != b'\n' {
+        let line_no = total_lines + 1;
+        if line_no >= start_line && end_line.map_or(true, |end| line_no <= end) {
+            append_capped(&mut selected, &line_pending, max_bytes, &mut overflow);
+        }
+        total_lines += 1;
+    }
+
+    let end = end_line.unwrap_or(total_lines).min(total_lines);
+    let truncated = overflow;
+    let (content, truncated_by) = if truncated {
+        let mut cut = selected.len();
+        while cut > 0 && std::str::from_utf8(&selected[..cut]).is_err() {
+            cut -= 1;
+        }
+        (
+            String::from_utf8(selected[..cut].to_vec()).map_err(|_| unsupported_encoding())?,
+            Some("bytes"),
+        )
+    } else {
+        (
+            String::from_utf8(selected).map_err(|_| unsupported_encoding())?,
+            None,
+        )
+    };
+    let actual_end = if truncated && !content.is_empty() {
+        start_line + content.lines().count().saturating_sub(1)
+    } else {
+        end
+    };
+    let mut warnings = Vec::new();
+    if truncated {
+        warnings.push("content truncated".to_string());
+    }
+    Ok(tool_ok(json!({
+        "path": display,
+        "content": content,
+        "encoding": "utf-8",
+        "start_line": start_line,
+        "end_line": actual_end,
+        "total_lines": total_lines,
+        "total_bytes": seen,
+        "bytes_read": content.len(),
+        "truncated": truncated,
+        "truncated_by": truncated_by,
+        "warnings": warnings
+    })))
+}
+
+/// Feed one validated chunk through the line selector. A line ends at '\n'
+/// (never split by the utf-8 carry, which cannot contain ASCII), and only
+/// in-range line bytes are ever retained, capped at `max_bytes`.
+#[allow(clippy::too_many_arguments)]
+fn consume_stream_lines(
+    window: &[u8],
+    total_lines: &mut usize,
+    selected: &mut Vec<u8>,
+    line_pending: &mut Vec<u8>,
+    overflow: &mut bool,
+    start_line: usize,
+    end_line: Option<usize>,
+    max_bytes: usize,
+) {
+    let mut idx = 0;
+    while idx < window.len() {
+        let line_no = *total_lines + 1;
+        let in_range = line_no >= start_line && end_line.map_or(true, |end| line_no <= end);
+        match window[idx..].iter().position(|&b| b == b'\n') {
+            Some(rel) => {
+                let line_end = idx + rel + 1;
+                if in_range {
+                    append_capped(line_pending, &window[idx..line_end], max_bytes, overflow);
+                    append_capped(selected, line_pending, max_bytes, overflow);
+                    line_pending.clear();
+                }
+                *total_lines += 1;
+                idx = line_end;
+            }
+            None => {
+                if in_range {
+                    append_capped(line_pending, &window[idx..], max_bytes, overflow);
+                }
+                idx = window.len();
+            }
+        }
+    }
+}
+
+/// Append `src` to `dst` but never let `dst` exceed `max_bytes`; mark
+/// `overflow` when bytes are discarded, mirroring whole-selection truncation.
+fn append_capped(dst: &mut Vec<u8>, src: &[u8], max_bytes: usize, overflow: &mut bool) {
+    if dst.len() >= max_bytes {
+        if !src.is_empty() {
+            *overflow = true;
+        }
+        return;
+    }
+    let room = max_bytes - dst.len();
+    if src.len() > room {
+        dst.extend_from_slice(&src[..room]);
+        *overflow = true;
+    } else {
+        dst.extend_from_slice(src);
+    }
 }
 
 pub fn list_dir(ws: &Workspace, args: &Value) -> Result<Value, WorkspaceError> {
@@ -686,4 +882,85 @@ fn format_mtime(st: Option<SystemTime>) -> Option<String> {
             .unwrap_or_default();
         format!("{}.{:03}Z", d.as_secs(), d.subsec_millis())
     })
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    /// Reference (pre-fix) semantics reimplemented compactly, used as the
+    /// oracle for the streaming path on inputs above the threshold.
+    fn legacy_reference(content: &str, max_bytes: usize, start_line: usize, end_line: Option<usize>) -> Value {
+        let lines: Vec<&str> = content.split_inclusive('\n').collect();
+        let total_lines = lines.len();
+        let end = end_line.unwrap_or(total_lines).min(total_lines);
+        let selected: String = if end < start_line {
+            String::new()
+        } else {
+            lines[(start_line - 1)..end].concat()
+        };
+        let (content, truncated, truncated_by) = {
+            let bytes = selected.as_bytes();
+            if bytes.len() <= max_bytes {
+                (selected.clone(), false, None)
+            } else {
+                let mut cut = max_bytes;
+                while cut > 0 && !selected.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                (selected[..cut].to_string(), true, Some("bytes"))
+            }
+        };
+        let actual_end = if truncated && !content.is_empty() {
+            start_line + content.lines().count().saturating_sub(1)
+        } else {
+            end
+        };
+        json!({
+            "content": content,
+            "start_line": start_line,
+            "end_line": actual_end,
+            "total_lines": total_lines,
+            "bytes_read": content.len(),
+            "truncated": truncated,
+            "truncated_by": truncated_by,
+        })
+    }
+
+    fn compare(body: String, max_bytes: usize, start_line: usize, end_line: Option<usize>) {
+        let dir = std::env::temp_dir().join(format!("ctm-stream-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.txt");
+        std::fs::write(&path, &body).unwrap();
+        let streamed = read_file_streaming(&path, "big.txt", max_bytes, start_line, end_line).unwrap();
+        let expect = legacy_reference(&body, max_bytes, start_line, end_line);
+        for key in [
+            "content", "start_line", "end_line", "total_lines",
+            "bytes_read", "truncated", "truncated_by",
+        ] {
+            assert_eq!(
+                streamed.get(key).unwrap(),
+                expect.get(key).unwrap(),
+                "mismatch on {key} (max={max_bytes}, start={start_line}, end={end_line:?})"
+            );
+        }
+        assert_eq!(streamed.get("total_bytes").unwrap().as_u64().unwrap(), body.len() as u64);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn streaming_matches_legacy_semantics() {
+        let mut body = String::new();
+        for i in 0..200_000 {
+            body.push_str(&format!("line-{i:06} with some ASCII content plus 中文与 emoji 🌬\n"));
+        }
+        body.push_str("final line without newline");
+        // Exercise: full read, ranges, truncation at ascii and multibyte boundaries.
+        compare(body.clone(), 131_072, 1, None);
+        compare(body.clone(), 131_072, 50_000, Some(150_000));
+        compare(body.clone(), 7, 1, None);
+        compare(body.clone(), 131_072, 200_000, None);
+        compare(body.clone(), 131_072, 5, Some(3)); // end < start
+        compare("no newline at all".repeat(1000), 64, 1, None); // single giant line
+    }
 }

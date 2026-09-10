@@ -491,20 +491,20 @@ pub fn capture_baseline(root: &Path) -> ProjectBaseline {
         if path == root || should_skip(path, root) || !item.file_type().is_file() {
             continue;
         }
-        let Ok(bytes) = fs::read(path) else { continue };
+        let Some((sha256, is_binary, byte_len)) = hash_file_bounded(path) else {
+            continue;
+        };
         let rel = path
             .strip_prefix(root)
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
         entries.push(BaselineEntry {
             path: rel,
             exists: true,
-            is_binary: bytes.contains(&0),
-            sha256: format!("{:x}", hasher.finalize()),
-            bytes: bytes.len() as u64,
+            is_binary,
+            sha256,
+            bytes: byte_len,
         });
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
@@ -523,6 +523,31 @@ pub fn capture_baseline(root: &Path) -> ProjectBaseline {
     }
 }
 
+/// Stream a file in fixed 64 KiB chunks: O(buffer) memory regardless of file
+/// size, so a multi-GB file inside a large workspace cannot spike RSS during
+/// baseline capture. Returns (sha256, is_binary, total_bytes).
+fn hash_file_bounded(path: &Path) -> Option<(String, bool, u64)> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut is_binary = false;
+    let mut total: u64 = 0;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buf).ok()?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buf[..read];
+        if !is_binary && chunk.contains(&0) {
+            is_binary = true;
+        }
+        hasher.update(chunk);
+        total += read as u64;
+    }
+    Some((format!("{:x}", hasher.finalize()), is_binary, total))
+}
+
 fn should_skip(path: &Path, root: &Path) -> bool {
     path.strip_prefix(root)
         .ok()
@@ -539,6 +564,24 @@ fn should_skip(path: &Path, root: &Path) -> bool {
                     | "dist"
                     | "build"
                     | ".svelte-kit"
+                    | "Library"
+                    | ".cache"
+                    | "__pycache__"
+                    | ".venv"
+                    | "venv"
+                    | ".next"
+                    | ".turbo"
+                    | "coverage"
+                    | "OneDrive"
+                    | "OneDriveTemp"
+                    | "AppData"
+                    | "Application Data"
+                    | "Windows"
+                    | "Program Files"
+                    | "Program Files (x86)"
+                    | "ProgramData"
+                    | "$Recycle.Bin"
+                    | "System Volume Information"
             )
         })
 }
