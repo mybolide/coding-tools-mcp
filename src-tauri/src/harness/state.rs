@@ -572,6 +572,16 @@ fn should_skip(path: &Path, root: &Path) -> bool {
                     | ".next"
                     | ".turbo"
                     | "coverage"
+                    | "OneDrive"
+                    | "OneDriveTemp"
+                    | "AppData"
+                    | "Application Data"
+                    | "Windows"
+                    | "Program Files"
+                    | "Program Files (x86)"
+                    | "ProgramData"
+                    | "$Recycle.Bin"
+                    | "System Volume Information"
             )
         })
 }
