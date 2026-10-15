@@ -46,7 +46,7 @@ jobs:
       - name: 上传 Actions 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          name: coding-tools-mcp-${{ github.sha }}-macos-universal
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
@@ -62,7 +62,7 @@ jobs:
       - name: 下载 macOS 构建产物
         uses: actions/download-artifact@v4
         with:
-          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          name: coding-tools-mcp-${{ github.sha }}-macos-universal
           path: dist/macos
 
       - name: 上传 DMG 到指定 Release
