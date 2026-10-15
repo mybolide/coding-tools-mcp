@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>当你把工作区放在「文稿」中时，Coding Tools MCP 需要访问该文件夹以读写项目文件。允许一次后即可继续使用，无需反复授权。</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>当你把工作区放在桌面时，Coding Tools MCP 需要访问桌面文件夹以读写项目文件。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>当你把工作区放在下载文件夹时，Coding Tools MCP 需要访问该文件夹以读写项目文件。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>当你选择外置磁盘上的工作区时，Coding Tools MCP 需要访问该卷以读写项目文件。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>当你选择网络卷上的工作区时，Coding Tools MCP 需要访问该卷以读写项目文件。</string>
+</dict>
+</plist>

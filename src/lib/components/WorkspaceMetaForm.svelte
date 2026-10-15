@@ -1,7 +1,7 @@
 <script lang="ts">
   import { FolderInput, FolderOpen } from "@lucide/svelte";
-  import { open } from "@tauri-apps/plugin-dialog";
   import { openWorkspaceDirectory } from "$lib/api/workspaces";
+  import { pickWorkspaceDirectory } from "$lib/pick-workspace-directory";
   import { showToast } from "$lib/stores/toast";
 
   interface Props {
@@ -57,12 +57,8 @@
     if (updatingPath) return;
     updatingPath = true;
     try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        defaultPath: path.trim() || undefined,
-      });
-      if (!selected || Array.isArray(selected)) return;
+      const selected = await pickWorkspaceDirectory(path);
+      if (!selected) return;
       const nextPath = normalizePath(selected);
       if (!nextPath || nextPath === normalizePath(path)) return;
       await onUpdatePath(nextPath);
