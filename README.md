@@ -53,7 +53,10 @@ Coding Tools MCP 是一个 Rust + Tauri 2 桌面应用。选择项目目录并�
 | Windows 10/11 x64 | `Coding.Tools.MCP_*_x64-setup.exe` |
 | macOS Apple Silicon | `Coding Tools MCP_*_aarch64.dmg` |
 
-macOS 安装包目前未签名。如果系统阻止首次打开，请在“系统设置 → 隐私与安全性”中确认打开。
+macOS 安装包使用 ad-hoc 签名。如果系统阻止首次打开，请右键「打开」，或在“系统设置 → 隐私与安全性”中确认打开。
+
+> 工作区位于「文稿 / 桌面 / 下载」时，macOS 会要求授权一次；点「允许」后即持久生效。
+> 若遇到反复弹窗，见 [疑难解决方案](./docs/troubleshooting.md)。
 
 ### 2. 添加项目工作区
 
@@ -329,6 +332,10 @@ Windows 也可以双击 `dev-desktop.cmd`。不要只用 `npm run dev` 验证桌
 | `src-tauri/src/tunnel/` | FRP / Cloudflare 隧道和进程管理 |
 | `src/` | SvelteKit 桌面界面 |
 | `old/` | Python 参考实现和兼容性基线 |
+
+## 遇到问题
+
+常见问题的排查步骤见 [疑难解决方案](./docs/troubleshooting.md)。
 
 ## 致谢
 感谢 [Linux.do](https://linux.do/) 社区对项目推广与反馈的支持。
