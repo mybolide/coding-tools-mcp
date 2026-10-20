@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Coding Tools MCP",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "identifier": "com.codingtools.mcp.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -35,7 +35,10 @@
     ],
     "macOS": {
       "entitlements": "Entitlements.plist",
-      "minimumSystemVersion": "12.0"
+      "infoPlist": "Info.plist",
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-",
+      "hardenedRuntime": false
     }
   }
 }

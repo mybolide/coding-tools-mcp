@@ -164,6 +164,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             app.manage(AppState::new().expect("failed to load app state"));
+            // 上一次异常退出可能留下仍在运行的隧道子进程；先按镜像路径清理，
+            // 避免它们继续持有工作区目录并触发系统授权弹窗。
+            tauri::async_runtime::spawn(async {
+                let _ = tunnel::terminate_recorded_tunnel_children_on_startup().await;
+            });
             // Recover FRP clients that stay alive while the public proxy dies
             // (common after install/restart network blips).
             tunnel::ensure_frp_health_loop();
@@ -241,6 +246,12 @@ pub fn run() {
                 if commands::ui_memory::should_prevent_exit() {
                     api.prevent_exit();
                 }
+            }
+            tauri::RunEvent::Exit => {
+                // 隧道子进程必须随应用一起退出。macOS 上残留的 frpc / cloudflared
+                // 仍以工作区目录为 cwd 存活，会持续触发文件夹授权弹窗，且用户
+                // 关掉界面后依然反复出现。
+                tunnel::terminate_children_on_exit();
             }
             tauri::RunEvent::WindowEvent { label, event, .. } => {
                 if label != "main" {

@@ -277,9 +277,9 @@ pub async fn spawn_frpc(
     routes: &[(&WorkspaceProfile, TunnelServiceKind)],
     settings: &crate::settings::AppSettings,
 ) -> AppResult<FrpcHandle> {
-    let Some((first_profile, _)) = routes.first() else {
+    if routes.is_empty() {
         return Err(AppError::Message("没有可启动的 FRP 线路。".into()));
-    };
+    }
     let frpc = ensure_frpc().await?;
 
     let configs: Vec<FrpServerConfig> = routes
@@ -311,7 +311,12 @@ pub async fn spawn_frpc(
     cmd.args(["-c", config_path.to_string_lossy().as_ref()]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.current_dir(&first_profile.path);
+    // 子进程的工作目录绝不能落在工作区里：macOS 的 TCC 会按进程 cwd 判定
+    // 是否触碰「文稿 / 桌面 / 下载」等受保护目录，frpc 常驻数小时，一旦 cwd
+    // 停在 ~/Documents 下就会持续触发文件夹授权弹窗（应用退出后仍会重弹）。
+    // frpc 的配置和日志都是绝对路径，cwd 只影响未写全路径的读取，因此改用
+    // 应用自己的配置目录。
+    cmd.current_dir(managed_frpc_dir(workspace_id)?);
 
     #[cfg(windows)]
     {
@@ -927,10 +932,31 @@ fn frp_release_asset() -> AppResult<(&'static str, &'static str)> {
 mod tests {
     use super::{
         aggregate_uses_proxy, classify_public_mcp_body, frpc_reconnect_loop_detected,
-        managed_frpc_config_path, managed_frpc_pid_path, successful_proxy_names, PublicMcpProbe,
+        managed_frpc_config_path, managed_frpc_dir, managed_frpc_pid_path,
+        successful_proxy_names, PublicMcpProbe,
     };
     use crate::tunnel::TunnelServiceKind;
     use crate::workspace::WorkspaceProfile;
+
+    /// frpc 常驻数小时，一旦 cwd 落在工作区里，macOS 会按进程 cwd 判定它正在
+    /// 触碰「文稿 / 桌面 / 下载」，从而反复弹出文件夹授权。cwd 必须是应用
+    /// 自己的目录，且绝不能等于工作区路径。
+    #[test]
+    fn frpc_working_directory_never_equals_workspace_path() {
+        let workspace = "/tmp/example-workspace";
+        let cwd = managed_frpc_dir("ws-1").expect("managed frpc dir");
+
+        assert!(cwd.is_absolute(), "cwd must be absolute: {cwd:?}");
+        assert_ne!(cwd, std::path::Path::new(workspace));
+        assert!(
+            !cwd.starts_with(workspace),
+            "frpc cwd must stay outside the workspace: {cwd:?}"
+        );
+        assert!(
+            cwd.ends_with(std::path::Path::new("frpc").join("ws-1")),
+            "frpc cwd must live under the app config dir: {cwd:?}"
+        );
+    }
 
     #[test]
     fn login_success_alone_is_not_a_ready_proxy() {

@@ -2,6 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::LazyLock;
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration};
@@ -100,6 +101,37 @@ pub async fn drop_workspace(workspace_id: &str) -> AppResult<()> {
     guard.drop_workspace(workspace_id).await
 }
 
+/// 应用退出前的最后一道清理：杀掉所有受管隧道子进程。
+///
+/// 退出回调是同步上下文，这里用 `try_lock` 抢一次锁；抢不到也不能阻塞退出，
+/// 否则应用会卡在关闭流程里。抢不到时说明隧道正在被其它操作改动，此时
+/// 兜底路径由下次启动的孤儿清理负责。
+pub fn terminate_children_on_exit() {
+    if let Ok(mut guard) = supervisor().try_lock() {
+        guard.terminate_all_children_now();
+    }
+}
+
+/// 启动时清理上次异常退出遗留的受管隧道进程（macOS 上会以应用身份存活）。
+pub async fn terminate_recorded_tunnel_children_on_startup() -> usize {
+    let mut terminated = 0usize;
+    for image in managed_tunnel_images() {
+        if let Ok(count) = platform().terminate_processes_by_image_path(&image) {
+            terminated += count;
+        }
+    }
+    terminated
+}
+
+fn managed_tunnel_images() -> Vec<PathBuf> {
+    let mut images = Vec::new();
+    if let Ok(dir) = platform().app_config_dir() {
+        images.push(dir.join("bin").join("frpc"));
+        images.push(dir.join("bin").join("cloudflared"));
+    }
+    images
+}
+
 pub async fn sync_managed_runtime_routes(
     active_runtime_keys: HashSet<(String, TunnelServiceKind)>,
 ) -> AppResult<()> {
@@ -137,6 +169,11 @@ mod tests {
         HOST_OFFLINE_STREAK_TO_MARK,
     };
     use std::sync::atomic::Ordering;
+    use std::sync::Mutex;
+
+    /// 这两个测试共享进程级原子状态，并行执行会互相覆盖 `reset_network_state`
+    /// 的结果，导致间歇性失败。用互斥锁让它们串行。
+    static NETWORK_STATE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_network_state() {
         HOST_NETWORK_MARKED_OFFLINE.store(false, Ordering::SeqCst);
@@ -145,6 +182,9 @@ mod tests {
 
     #[test]
     fn network_recovery_requires_sustained_offline() {
+        let _guard = NETWORK_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_network_state();
         assert!(!update_host_network_state(false));
         assert!(!HOST_NETWORK_MARKED_OFFLINE.load(Ordering::SeqCst));
@@ -160,6 +200,9 @@ mod tests {
 
     #[test]
     fn single_offline_probe_does_not_mark_outage() {
+        let _guard = NETWORK_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         reset_network_state();
         assert!(!update_host_network_state(false));
         assert!(!HOST_NETWORK_MARKED_OFFLINE.load(Ordering::SeqCst));
