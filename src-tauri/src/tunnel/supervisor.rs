@@ -558,6 +558,31 @@ impl TunnelSupervisor {
         Ok(())
     }
 
+    /// 应用退出时的同步兜底清理。
+    ///
+    /// Tauri 退出回调不是 async 上下文，且 tokio 运行时可能已经开始收尾，
+    /// 因此这里只做同步信号：直接杀掉所有已记录的子进程 PID，并清空内部状态。
+    /// macOS 上残留的 frpc / cloudflared 会继续以工作区目录为 cwd 存活，
+    /// 触发系统文件夹授权弹窗，必须在进程退出前清理。
+    pub fn terminate_all_children_now(&mut self) {
+        for (_, mut frpc) in self.frpc.drain() {
+            if let Some(pid) = frpc.pid {
+                let _ = platform().terminate_process_tree(pid);
+            }
+            let _ = frpc.child.start_kill();
+        }
+        for (_, mut session) in self.sessions.drain() {
+            if let Some(pid) = session.pid {
+                let _ = platform().terminate_process_tree(pid);
+            }
+            if let Some(child) = session.child.as_mut() {
+                let _ = child.start_kill();
+            }
+        }
+        self.frp_routes.clear();
+        self.frpc_health.clear();
+    }
+
     pub async fn drop_workspace(&mut self, workspace_id: &str) -> AppResult<()> {
         let settings = AppSettings::load_or_default();
         let keys = [

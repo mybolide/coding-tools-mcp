@@ -42,6 +42,17 @@ pub(crate) fn cached_cloudflared_path() -> Option<PathBuf> {
         .map(|dir| dir.join("bin").join(cloudflared_binary_name()))
 }
 
+/// Directory used as the working directory for spawned cloudflared processes.
+///
+/// It must never be a user workspace: macOS TCC classifies a long-lived
+/// process by its cwd, so a tunnel parked inside ~/Documents keeps re-raising
+/// the protected-folder prompt.
+pub(crate) fn cached_cloudflared_dir() -> AppResult<PathBuf> {
+    let dir = platform().app_config_dir()?.join("cloudflare");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 pub(crate) fn cloudflared_binary_name() -> &'static str {
     #[cfg(windows)]
     {
@@ -251,7 +262,11 @@ pub async fn spawn_cloudflare_tunnel(
     }
 
     let mut cmd = Command::new(&cloudflared);
-    cmd.current_dir(cwd);
+    // 不要把 cloudflared 的工作目录设在用户工作区：macOS TCC 会按进程 cwd
+    // 判定是否触碰「文稿 / 桌面 / 下载」，常驻隧道进程停在受保护目录里会持续
+    // 触发文件夹授权弹窗。日志和参数都已是绝对路径，cwd 用应用自己的目录。
+    let _ = cwd;
+    cmd.current_dir(cached_cloudflared_dir()?);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -471,8 +486,20 @@ fn push_cloudflare_protocol_args(cmd: &mut Command, use_http2: bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_trycloudflare_url, push_cloudflare_protocol_args};
+    use super::{cached_cloudflared_dir, extract_trycloudflare_url, push_cloudflare_protocol_args};
     use tokio::process::Command;
+
+    /// cloudflared 同样是常驻进程；cwd 落在工作区会让 macOS 持续判定它正在
+    /// 访问受保护目录，从而反复弹出文件夹授权。
+    #[test]
+    fn cloudflared_working_directory_stays_outside_workspaces() {
+        let dir = cached_cloudflared_dir().expect("cloudflared runtime dir");
+        assert!(dir.is_absolute(), "cwd must be absolute: {dir:?}");
+        assert!(
+            dir.ends_with("cloudflare"),
+            "cloudflared cwd must live under the app config dir: {dir:?}"
+        );
+    }
 
     fn command_args(use_http2: bool) -> Vec<String> {
         let mut cmd = Command::new("cloudflared");

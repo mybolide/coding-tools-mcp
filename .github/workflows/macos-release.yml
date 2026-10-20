@@ -43,10 +43,34 @@ jobs:
       - name: 构建通用 macOS 应用与 DMG
         run: npm run tauri -- build --target universal-apple-darwin --bundles app,dmg
 
+      # macOS TCC 只认带有效 code requirement 的 bundle。未签名（仅 linker-signed）
+      # 的应用点「允许」后仍会反复弹窗，因此签名必须作为构建门禁。
+      - name: 验证 macOS 签名
+        run: |
+          APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/Coding Tools MCP.app"
+          echo "--- codesign 详情 ---"
+          codesign -dv --verbose=4 "$APP" 2>&1 || true
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | grep -q "Sealed Resources" \
+            || { echo "::error::bundle 未封存资源，签名无效"; exit 1; }
+          codesign -dv "$APP" 2>&1 | grep -q "Info.plist entries" \
+            || { echo "::error::Info.plist 未绑定到签名"; exit 1; }
+          # 签名 identifier 必须与 CFBundleIdentifier 一致，否则 TCC 记录会错乱。
+          SIGN_ID=$(codesign -dv "$APP" 2>&1 | sed -n 's/^Identifier=//p' | head -1)
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist")
+          echo "sign=$SIGN_ID bundle=$BUNDLE_ID"
+          [ "$SIGN_ID" = "$BUNDLE_ID" ] \
+            || { echo "::error::签名 identifier ($SIGN_ID) 与 CFBundleIdentifier ($BUNDLE_ID) 不一致"; exit 1; }
+          # 已安装到 /Applications 的 DMG 载荷也要能通过校验。
+          for plist in NSDocumentsFolderUsageDescription NSDesktopFolderUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$plist" "$APP/Contents/Info.plist" >/dev/null \
+              || { echo "::error::Info.plist 缺少 $plist"; exit 1; }
+          done
+
       - name: 上传 Actions 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          name: coding-tools-mcp-${{ github.sha }}-macos-universal
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
@@ -62,7 +86,7 @@ jobs:
       - name: 下载 macOS 构建产物
         uses: actions/download-artifact@v4
         with:
-          name: coding-tools-mcp-${{ github.ref_name }}-macos-universal
+          name: coding-tools-mcp-${{ github.sha }}-macos-universal
           path: dist/macos
 
       - name: 上传 DMG 到指定 Release

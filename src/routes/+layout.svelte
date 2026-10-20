@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { pickWorkspaceDirectory } from "$lib/pick-workspace-directory";
   import AppShell from "$lib/components/AppShell.svelte";
   import ToastHost from "$lib/components/ToastHost.svelte";
   import WorkspaceNavItem from "$lib/components/WorkspaceNavItem.svelte";
@@ -51,8 +51,8 @@
 
   async function addWorkspace() {
     try {
-      const selected = await open({ directory: true, multiple: false });
-      if (!selected || Array.isArray(selected)) return;
+      const selected = await pickWorkspaceDirectory();
+      if (!selected) return;
       const profile = await createWorkspace(selected);
       await refreshWorkspaces();
       goto(`/workspace/${profile.id}`);
