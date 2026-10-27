@@ -82,6 +82,43 @@ jobs:
       - name: 仅构建通用版 macOS DMG
         run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
 
+      # 只构建 dmg 时 Tauri 会清理中间 .app，因此必须挂载 DMG 校验。
+      # 单架构包在 Intel Mac 上会显示禁止符号无法打开（issue #22），
+      # 签名不合格则会导致 TCC 授权反复弹窗，两类问题都在这里拦住。
+      - name: 校验 DMG 架构、签名与 Info.plist
+        run: |
+          set -euo pipefail
+          DMG="$(ls src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)"
+          echo "校验 $DMG"
+          MOUNT="$(mktemp -d)"
+          hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -quiet
+          trap 'hdiutil detach "$MOUNT" -quiet || true' EXIT
+          APP="$MOUNT/Coding Tools MCP.app"
+          BIN="$APP/Contents/MacOS/coding-tools-mcp-desktop"
+
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "archs=$ARCHS"
+          for want in x86_64 arm64; do
+            case " $ARCHS " in
+              *" $want "*) ;;
+              *) echo "::error::缺少 $want 架构，这不是 Intel + Apple Silicon 通用包"; exit 1 ;;
+            esac
+          done
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv "$APP" 2>&1 | grep -q "Sealed Resources" \
+            || { echo "::error::bundle 未封存资源，签名无效"; exit 1; }
+          SIGN_ID=$(codesign -dv "$APP" 2>&1 | sed -n 's/^Identifier=//p' | head -1)
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Contents/Info.plist")
+          echo "sign=$SIGN_ID bundle=$BUNDLE_ID"
+          [ "$SIGN_ID" = "$BUNDLE_ID" ] \
+            || { echo "::error::签名 identifier ($SIGN_ID) 与 CFBundleIdentifier ($BUNDLE_ID) 不一致"; exit 1; }
+
+          for plist in NSDocumentsFolderUsageDescription NSDesktopFolderUsageDescription NSDownloadsFolderUsageDescription; do
+            /usr/libexec/PlistBuddy -c "Print :$plist" "$APP/Contents/Info.plist" >/dev/null \
+              || { echo "::error::Info.plist 缺少 $plist"; exit 1; }
+          done
+
       - name: 上传 macOS DMG
         uses: actions/upload-artifact@v4
         with:

@@ -11,7 +11,7 @@
 <p align="center">
   <a href="https://github.com/mybolide/coding-tools-mcp/releases/latest"><img src="https://img.shields.io/github/v/release/mybolide/coding-tools-mcp?label=Release" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/Windows-x64-0078D4?logo=windows" alt="Windows x64">
-  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/macOS-Universal%20(Intel%20%2B%20Apple%20Silicon)-000000?logo=apple" alt="macOS Universal (Intel + Apple Silicon)">
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0"></a>
 </p>
 
@@ -51,7 +51,7 @@ Open [Releases](https://github.com/mybolide/coding-tools-mcp/releases/latest) an
 | Platform | Package |
 | --- | --- |
 | Windows 10/11 x64 | `Coding.Tools.MCP_*_x64-setup.exe` |
-| macOS Apple Silicon | `Coding Tools MCP_*_aarch64.dmg` |
+| macOS Intel + Apple Silicon | `Coding.Tools.MCP_*_universal.dmg` |
 
 The macOS build is currently unsigned. If macOS blocks the first launch, allow it from System Settings → Privacy & Security.
 
