@@ -48,6 +48,15 @@ jobs:
       - name: 验证 macOS 签名
         run: |
           APP="src-tauri/target/universal-apple-darwin/release/bundle/macos/Coding Tools MCP.app"
+          # 单架构包在 Intel Mac 上会显示禁止符号无法打开（issue #22）。
+          ARCHS="$(lipo -archs "$APP/Contents/MacOS/coding-tools-mcp-desktop")"
+          echo "archs=$ARCHS"
+          for want in x86_64 arm64; do
+            case " $ARCHS " in
+              *" $want "*) ;;
+              *) echo "::error::缺少 $want 架构，这不是 Intel + Apple Silicon 通用包"; exit 1 ;;
+            esac
+          done
           echo "--- codesign 详情 ---"
           codesign -dv --verbose=4 "$APP" 2>&1 || true
           codesign --verify --deep --strict --verbose=2 "$APP"

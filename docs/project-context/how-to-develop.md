@@ -86,9 +86,17 @@ pnpm dev
 构建后必须：
 
 1. 校验 App 内部版本（macOS 为 `CFBundleShortVersionString`）。
-2. 校验安装包文件名包含当前版本，例如 `Coding Tools MCP_<version>_aarch64.dmg`。
-3. 校验已安装应用显示的版本与安装包一致；不得把旧包误报为新包。
-4. 清理同一构建目录中旧版本的安装包和临时构建日志，但保留当前版本产物。
+2. 校验安装包文件名包含当前版本，例如 `Coding.Tools.MCP_<version>_universal.dmg`。
+3. 校验 macOS 包同时包含 Intel 与 Apple Silicon 架构：
+
+   ```bash
+   lipo -archs "Coding Tools MCP.app/Contents/MacOS/coding-tools-mcp-desktop"
+   # 必须同时输出 x86_64 与 arm64
+   ```
+
+   只有 `arm64` 的单架构包会导致 Intel Mac 上 App 图标显示禁止符号、无法打开。
+4. 校验已安装应用显示的版本与安装包一致；不得把旧包误报为新包。
+5. 清理同一构建目录中旧版本的安装包和临时构建日志，但保留当前版本产物。
 
 若移动了 macOS 源码目录，Rust/Tauri 的 `target` 缓存会保留旧绝对路径；首次在新目录构建前必须执行 `cd src-tauri && cargo clean`，再重新构建。
 
