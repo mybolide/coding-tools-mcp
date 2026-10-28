@@ -751,16 +751,34 @@ mod tests {
             "dangerous".into(),
             harness_root.path().to_path_buf(),
         );
-        let out = call_tool(
+        let mut out = call_tool(
             &dangerous_ctx,
             "exec_command",
             &json!({
                 "cmd": format!("{python} -c \"import os; print(os.environ.get('PGPASSWORD', 'MISSING'))\""),
                 "env": {"PGPASSWORD": "secret-db-password"},
-                "yield_time_ms": 500
+                "yield_time_ms": 100
             }),
         );
         assert_eq!(out["ok"], true, "{out}");
+        // CI 机器启动 Python 可能超过 1s，命令仍在 running 时轮询等它退出再断言。
+        let session_id = out["session_id"].as_str().expect("session id").to_string();
+        let mut final_out = out.clone();
+        for _ in 0..100 {
+            let running = final_out["status"].as_str() == Some("running")
+                && final_out["termination_reason"].as_str() == Some("running");
+            if !running {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            // write_stdin 空轮询会刷新会话状态并回传最新快照。
+            final_out = call_tool(
+                &dangerous_ctx,
+                "write_stdin",
+                &json!({"session_id": session_id, "chars": "", "yield_time_ms": 100}),
+            );
+        }
+        out = final_out;
         assert_eq!(out["command_ok"], true, "{out}");
         assert_eq!(
             out["stdout"].as_str().map(str::trim),
