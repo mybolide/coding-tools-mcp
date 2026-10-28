@@ -1,0 +1,57 @@
+# Manual republish to official MCP Registry only (workflow_dispatch).
+# Tag/push no longer auto-publishes npm or MCP Registry.
+
+name: Publish MCP Registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Stable server.json / npm version to republish (e.g. 4.0.0; prereleases are rejected)"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-mcp-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sync server.json version from tag or input
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          fi
+          if [[ "${VERSION}" == *-* ]]; then
+            echo "Prerelease ${VERSION} must not be published to the stable MCP Registry" >&2
+            exit 1
+          fi
+          export VERSION
+          node -e "
+            const fs = require('fs');
+            const j = JSON.parse(fs.readFileSync('server.json', 'utf8'));
+            j.version = process.env.VERSION;
+            if (Array.isArray(j.packages)) {
+              for (const pkg of j.packages) pkg.version = process.env.VERSION;
+            }
+            fs.writeFileSync('server.json', JSON.stringify(j, null, 2) + '\n');
+          "
+          echo "Publishing MCP Registry metadata for version ${VERSION}"
+
+      - name: Install MCP Publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Login to MCP Registry (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish
