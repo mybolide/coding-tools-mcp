@@ -1,0 +1,16 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.mybolide/coding-tools-mcp",
+  "description": "Desktop (Rust + Tauri 2) MCP workspace that turns a local project into an AI-developable area: file read/edit, command and test execution, Git status, plus project-local history sessions that restore context in a new conversation.",
+  "repository": {
+    "url": "https://github.com/mybolide/coding-tools-mcp",
+    "source": "github"
+  },
+  "version": "0.2.5",
+  "websiteUrl": "https://github.com/mybolide/coding-tools-mcp",
+  "licenses": [
+    {
+      "type": "Apache-2.0"
+    }
+  ]
+}
