@@ -1,5 +1,5 @@
 <!-- mcp-probe:context begin — auto-generated; re-run init_project_context updates this block only -->
-<!-- mcp-probe:context-version: 4.0.1 -->
+<!-- mcp-probe:context-version: 4.1.1 -->
 ## MCP（必须先调）
 需已配置 mcp-probe-kit。写代码前先读 Skill：@.agents/skills/mcp-probe-kit/SKILL.md（或 [MCP 调用时机](.agents/skills/mcp-probe-kit/SKILL.md)）（首次 MCP 调用自动创建 Skill 文件）。
 
@@ -15,6 +15,11 @@
 
 上下文：写代码前先读 [project-context](./docs/project-context.md)（链到 `docs/project-context/` 各文档）
 图谱：大改前读 [latest](./docs/graph-insights/latest.md)；过期 `code_insight` mode=auto save_to_docs=true
+会话历史（默认开启；`MCP_HISTORY_SESSION=0|false|off` 关闭；详见 Skill「History Session 读写规则」）：
+- **写**：新对话先 `history_session_bootstrap`（无宿主 key 时服务器铸 `hs_<uuid>` 开新档，禁止写入共享 `project-active`）；每轮最终回复前 `history_session_checkpoint`（必须回传上次 `session_key`/`expected_path` + `raw_user_input`/`user_intent`）
+- **检查点最低清单**：`findings`/`decisions`/`files_changed`/`tests`/`runtime_state`/`next_actions` 须写满（无内容用明确占位句，禁止空数组交差）
+- **读**：先用 bootstrap 有界 state；精确旧上下文再 `history_session_search` → `history_session_read`；不要全量灌历史
+- 档案在 `docs/history-session/`（应 `.gitignore`，勿提交）；超行数/字节软轮转；与 Memory/Qdrant 分离；“继续”有 Plan → 仍先 `resume_plan`
 记忆（需 MEMORY_QDRANT_URL 等已配置）：
 - 检索：`start_*` 命中后**自动注入**历史经验全文；中途补查可用 `search_memory`；单条精读仍可用 `read_memory_asset`
 - 沉淀：跨仓库共享**勿填** source_project/source_path；路径写进 content；summary 写检索关键词

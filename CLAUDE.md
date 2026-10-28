@@ -1,7 +1,7 @@
 <!-- mcp-probe:harness begin — auto-generated; do not edit -->
 ## MCP (mcp-probe-kit)
 
-> mcp-probe-kit-harness-adapter-version: 4.0.1
+> mcp-probe-kit-harness-adapter-version: 4.1.1
 
 - If the user says only “continue”, “start”, or “keep going”, call `resume_plan` first. Pass `plan_id` when known; otherwise pass only `project_root` to recover the latest active/blocked Plan.
 - Before confirming there is no resumable Plan, do not inspect the workspace with Bash, call `workflow`, or restart with `start_*`.

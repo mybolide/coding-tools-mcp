@@ -2,7 +2,7 @@
 name: mcp-probe-kit
 description: >-
   在已配置 mcp-probe-kit 的项目中，于新功能、Bug、UI、重构或提交前读取；区分独立能力与完整交付编排，汇总当前对话构造完整参数，并在不确定首工具时提供 workflow 兜底。完整新功能由 start_feature 选择 flat 或 parent-child Spec；Skill 不承担中央意图识别，start_* 只组合当前场景实际需要的能力。
-mcp-probe-kit-version: "4.0.1"
+mcp-probe-kit-version: "4.1.1"
 ---
 
 # MCP 调用时机 — mcp-probe-kit
@@ -13,10 +13,11 @@ mcp-probe-kit-version: "4.0.1"
 ## 总规则
 
 1. **先判断目标**：明确单项能力直接调用对应工具；需要从分析到验证完整交付时才调用 `start_*`
-2. **独立能力不是必须被编排**：`code_insight`、`fix_bug`、`gentest`、`code_review`、Memory 等均可直接调用
-3. **只有拿不准该调用哪个工具时**才调用 `workflow`。`workflow` 是兜底选择指南，不做自然语言意图识别；默认 `scenario=auto` 不会根据 `intent` 猜 `firstTool`。Agent 阅读指南和 tool descriptions 后自行判断，缺关键事实时再澄清用户
-4. `start_*` 只组合当前场景实际需要的能力；按返回的 Delegated Plan 逐步执行，不要额外塞入无关工具
-5. 在写代码或改文件前，先完成当前目标真正需要的理解、规格或根因步骤
+2. **独立能力不是必须被编排**：`code_insight`、`fix_bug`、`gentest`、`code_review`、Memory、History Session 等均可直接调用
+3. **新对话默认先 `history_session_bootstrap`**（History 开启时）：传 `initial_user_input`；无宿主 key 时服务器铸 handle，后续必须回传 `session_key`（漏传开新档、不合并）；每轮结束前 `history_session_checkpoint`；跨会话用 search/read。关闭：`MCP_HISTORY_SESSION=0|false|off`
+4. **只有拿不准该调用哪个工具时**才调用 `workflow`。`workflow` 是兜底选择指南，不做自然语言意图识别；默认 `scenario=auto` 不会根据 `intent` 猜 `firstTool`。Agent 阅读指南和 tool descriptions 后自行判断，缺关键事实时再澄清用户
+5. `start_*` 只组合当前场景实际需要的能力；按返回的 Delegated Plan 逐步执行，不要额外塞入无关工具
+6. 在写代码或改文件前，先完成当前目标真正需要的理解、规格或根因步骤
 
 ## 执行通道与自动降级
 
@@ -42,7 +43,7 @@ macOS / Linux：
 
 CLI 返回 JSON；读取 `structuredContent`、`content` 和 `isError`，继续执行与原生 MCP 相同的工具链。
 
-CLI 降级通道不会继承 IDE `mcp.json` 里的 `env`。若需 Memory 等能力，在项目根复制 `.mcp-probe-kit/local.env.example` 为 `.mcp-probe-kit/local.env` 并填写 `MEMORY_*`；已有 shell 环境变量优先。
+CLI 降级通道不会继承 IDE `mcp.json` 里的 `env`。若需 Memory 等能力，在项目根复制 `.mcp-probe-kit/local.env.example` 为 `.mcp-probe-kit/local.env` 并填写 `MEMORY_*`；已有 shell 环境变量优先。History Session 默认开启；可用 `MCP_HISTORY_SESSION=0|false|off` 关闭，并用 `MCP_HISTORY_MAX_LINES` / `MCP_HISTORY_MAX_BYTES` 调整软轮转阈值。
 
 ### 启动器缺失时自修复
 
@@ -51,16 +52,34 @@ CLI 降级通道不会继承 IDE `mcp.json` 里的 `env`。若需 Memory 等能�
 Windows：
 
 ```powershell
-npx.cmd --yes mcp-probe-kit@4.0.1 install-agent --project-root .
+npx.cmd --yes mcp-probe-kit@4.1.1 install-agent --project-root .
 ```
 
 macOS / Linux：
 
 ```bash
-npx --yes mcp-probe-kit@4.0.1 install-agent --project-root .
+npx --yes mcp-probe-kit@4.1.1 install-agent --project-root .
 ```
 
-安装后立即改用项目内启动器。不得使用 `@latest` 或 `@next`，不得全局安装，也不得修改用户项目的 `package.json`。Skill、CLI 启动器和 MCP 必须保持同一精确版本 `4.0.1`。
+安装后立即改用项目内启动器。不得使用 `@latest` 或 `@next`，不得全局安装，也不得修改用户项目的 `package.json`。Skill、CLI 启动器和 MCP 必须保持同一精确版本 `4.1.1`。
+
+### 未发布精确版本与本地入口
+
+`runtime.json` 的 `packageSpec` 即使尚未出现在 npm registry，也必须与 MCP / Skill / AGENTS.md 保持同一精确版本 `4.1.1`。禁止把启动器改成 `@latest` 或 `@next`，也禁止为了“能 npx 成功”而改钉已发布的旧版本。
+
+启动器按以下顺序解析 CLI 入口，失败则立即退出并打印路径，不得长时间重试错误版本：
+
+1. `MCP_PROBE_LOCAL_ENTRY`（指向本机 `build/index.js`）
+2. 源码仓库检出：项目根 `build/index.js`（仅当 `package.json` 的 name 为 `mcp-probe-kit` 且 version 与 pin 一致）
+3. `.mcp-probe-kit/local-verify/node_modules/mcp-probe-kit/build/index.js`
+4. `node_modules/mcp-probe-kit/build/index.js`
+5. `npx --yes mcp-probe-kit@4.1.1`（`NPM_CONFIG_FETCH_RETRIES=0`）
+
+若自修复 `install-agent` 遇到 ETARGET，改用本地入口，例如：
+
+```powershell
+node ./build/index.js install-agent --project-root .
+```
 
 ### GitNexus 托管运行时
 
@@ -84,6 +103,61 @@ macOS / Linux：
 
 ---
 
+## History Session（默认开启）读写规则
+
+档案目录：`docs/history-session/`。默认开启；关闭：`MCP_HISTORY_SESSION=0|false|off`。与 Memory/Qdrant **分离**。
+档案是**项目本地交接材料**，应写入仓库 `.gitignore`（忽略整个 `docs/history-session/`），**不要提交**到 Git。
+
+### 何时写
+
+1. **新对话开始、回答用户第一问之前**：调用 `history_session_bootstrap`  
+   - 传 `initial_user_input=<用户首条原话>`  
+   - 无宿主 session 时**第一次**可省略 `session_key`：服务器会铸 `hs_<uuid>` 并开新档（不会写入共享 `project-active`）  
+   - **禁止**自行编造 UUID；同一对话后续轮次必须回传上次 bootstrap 的 `session_key`，漏传会再开一本而不是合并  
+   - 需要刻意开新档时用 `mode=fresh`
+2. **每轮任务结束、给出最终回复之前**：调用 `history_session_checkpoint`  
+   - 必须回传 bootstrap（或上轮轮转）返回的 `session_key` + `expected_path`  
+   - 必须带本轮 `raw_user_input`（服务端读不到未作为参数传入的聊天原文）  
+   - 超 `MCP_HISTORY_MAX_LINES` / `MCP_HISTORY_MAX_BYTES` 会软轮转；以返回的新 `expected_path` 为准  
+   - 必须按下方「检查点最低填写清单」写满，禁止只写空数组交差
+
+### 何时读
+
+1. **bootstrap 的有界 `state` / `continuity`**：先读完即可开工；**不要**一上来全量加载历史  
+2. **需要精确旧结论 / 旧用户原话 / 旧决策**：`history_session_search` → `history_session_read`（按 `next_cursor` 分页）  
+3. **编号缺口或派生状态异常**：`history_session_validate`（必要时 `repair=true`）
+
+### 检查点最低填写清单（合格标准）
+
+每轮 `history_session_checkpoint` **至少**包含：
+
+| 字段 | 要求 |
+|---|---|
+| `raw_user_input` | **必填**：本轮用户原话（逐字） |
+| `user_intent` | **必填**：一句话意图摘要 |
+| `findings` | 本轮关键事实/现象；无则写 `["本轮无新发现"]` |
+| `decisions` | 本轮关键决定；无则写 `["本轮无新决定"]` |
+| `files_changed` | 改动路径列表；无改文件写 `["本轮未改文件"]` |
+| `tests` | 跑过的命令与结果；未跑写 `["本轮未跑测试"]` |
+| `runtime_state` | 分支/HEAD/服务状态等关键运行事实；无可写 `["无额外运行状态"]` |
+| `remaining_issues` | 未解决问题；无则 `[]` |
+| `next_actions` | **必填至少 1 条**：下一会话应做什么 |
+| `notes` | 可选；证据路径、截图、报告引用 |
+
+说明：空数组 `[]` 只允许用在「确实没有」的 `remaining_issues`；其他列表字段不要留空糊弄。目标是像旧 ChatGPT 厚档案那样**信息可交接**，但结构落在检查点 JSON，而不是把全量摘要堆进 Markdown 文首。
+
+### 与 Plan / Memory 的边界
+
+| 层 | 用途 | 典型工具 |
+|---|---|---|
+| History Session | 本项目会话交接、用户原话、检查点 | `history_session_*` |
+| Delegated Plan | 可恢复步骤与证据收敛 | `plan_heartbeat` / `resume_plan` / `converge` |
+| Memory | 跨仓库可复用经验（需 MEMORY_*） | `search_memory` / `memorize_asset` |
+
+用户只说“继续”且存在未完成 Plan → **先** `resume_plan`；History bootstrap 用于会话档案交接，不替代 Plan 恢复。
+
+---
+
 ## 参数构造纪律
 
 - 用户只说“继续 / 开始 / 往下做”且存在最近的 Delegated Plan 或已知 plan_id 时，直接调用 `resume_plan` 恢复检查点并从 nextStepId 继续；`mustContinue=true` 时禁止只汇报恢复结果，必须立即执行 nextStep/nextTool 并逐步 heartbeat；plan_id 丢失时只传 project_root，由工具自动选择最近的 active/blocked Plan；只有不存在可恢复 Plan 时，才结合当前对话、已有 Spec 和用户已确认决定下一工具。不要先调用 `workflow` 做意图识别。
@@ -93,6 +167,7 @@ macOS / Linux：
 - 工具参数必须表达当前任务事实，不要只复制用户最后一条消息；当前项目代码和已落盘 Spec 优先于历史记忆。
 - 只有需要持续状态、跨会话恢复或正式交付的 Delegated Plan 才要求 `plan_heartbeat`；单次只读分析不强制创建 Plan。
 - 拿到托管 Delegated Plan 后首次调用 `plan_heartbeat` 时附完整 plan；每完成、跳过或阻塞步骤后更新检查点。
+- History Session 默认开启：新对话先 `history_session_bootstrap`（传 `initial_user_input`；无宿主 session 可不传 `session_key`，落到项目当前档）；每轮最终回复前 `history_session_checkpoint`（回传 `session_key`/`expected_path`，必须带 `raw_user_input`）。检查点须按 Skill「最低填写清单」写满 findings/decisions/files_changed/tests/runtime_state/next_actions，禁止空数组交差。精确旧上下文用 `history_session_search` → `history_session_read`，不要把全量历史塞进 bootstrap。
 
 ---
 
@@ -122,6 +197,7 @@ macOS / Linux：
 | 需求本身不清楚，缺关键事实，需要向用户提问 | `ask_user / interview` |
 | 工作报告、周报或 Git 工作汇总 | `git_work_report` |
 | 用户只说继续/开始/往下做且可能存在未完成 Plan | `resume_plan` |
+| 新对话开始需要会话交接，或跨会话找回历史结论/用户原话 | `history_session_bootstrap` |
 
 ---
 
@@ -191,6 +267,16 @@ macOS / Linux：
 | `delete_memory_asset` | 硬删除未关联的错误/重复/无价值资产（需 `confirm: true`）；参与 supersede 链的资产只能用 update_memory_asset 撤回 |
 | `scan_and_extract_patterns` | 从代码库**批量提取**可复用模式并建议沉淀 |
 
+### 会话历史档案（默认开启；MCP_HISTORY_SESSION=0|false|off 关闭）
+
+| MCP | 何时调用 |
+|-----|----------|
+| `history_session_bootstrap` | 新对话开始时**先 bootstrap**（可传 initial_user_input；无宿主 session 可不传 session_key，落到项目当前档）；返回有界状态与 checkpoint_policy；档案在 docs/history-session/（应 gitignore，勿提交） |
+| `history_session_checkpoint` | 每轮最终回复前写入检查点；必须回传 session_key/expected_path + raw_user_input/user_intent；按 Skill 最低清单填 findings/decisions/files_changed/tests/runtime_state/next_actions，禁止空数组交差；超行数/字节会软轮转 |
+| `history_session_validate` | 编号缺口、重复 key 或派生状态损坏时校验；`repair=true` 可重建 state/manifest |
+| `history_session_search` | 跨会话需要定位旧档时按关键词搜索；再配合 history_session_read 取原文 |
+| `history_session_read` | `history_session_search` 命中后按 number/path **分页读取**无损 Markdown 原文 |
+
 ### 长任务状态、恢复与正式收敛（按需）
 
 | MCP | 何时调用 |
@@ -226,6 +312,8 @@ macOS / Linux：
 
 **会话中断后继续**：`resume_plan → 执行 nextStepId → plan_heartbeat → 最终 converge`
 
+**会话历史交接**：`history_session_bootstrap → …工作… → history_session_checkpoint；跨会话 search → read`
+
 ---
 
 ## 不要
@@ -239,8 +327,13 @@ macOS / Linux：
 - 长流程执行步骤后**不** `plan_heartbeat`，导致中断后无法恢复
 - 托管交付流程在 `converge` 未通过时就把候选经验正式写入 `memorize_asset`
 - `delete_memory_asset` 不带 `confirm: true`
+- History 开启时跳过 `history_session_bootstrap` / 最终回复前不 `history_session_checkpoint`
+- 自行编造 `session_key`（只回传服务器铸出的 handle；漏传会开新档而不是合并）
+- 把 History Session 当成 Memory/Qdrant；跨仓库可复用经验仍走 `search_memory` / `memorize_asset`
+- 忽略 bootstrap/轮转后返回的新 `expected_path`，继续用旧路径 checkpoint
+- `history_session_checkpoint` 只填空数组或省略 `raw_user_input`/`user_intent`/`next_actions`（不满足最低填写清单）
 
 ---
 
-*mcp-probe-kit 按版本自动同步（当前 `4.0.1`）。路径：`.agents/skills/mcp-probe-kit/SKILL.md`*
+*mcp-probe-kit 按版本自动同步（当前 `4.1.1`）。路径：`.agents/skills/mcp-probe-kit/SKILL.md`*
 

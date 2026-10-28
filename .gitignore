@@ -16,8 +16,11 @@ _tauri-scaffold
 # Rust
 src-tauri/target
 
-# MCP Probe 临时图谱快照
-.mcp-probe-kit/graph-snapshots/
+# MCP Probe 本地运行时（wrapper、plan、env、图谱快照），勿提交
+.mcp-probe-kit/
+
+# Cursor 自动生成的 mcp-probe-kit 规则
+.cursor/rules/mcp-probe-kit.mdc
 
 # 当前桌面版不使用的 Tauri 移动端及中间图标资源
 src-tauri/icons/64x64.png
