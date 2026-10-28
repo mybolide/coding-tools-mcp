@@ -71,6 +71,7 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
         .min(30_000);
     let tty = args.get("tty").and_then(Value::as_bool).unwrap_or(false);
     let stdin_text = args.get("stdin").and_then(Value::as_str).unwrap_or("");
+    let env_vars = parse_env_vars(args);
 
     let result = tauri::async_runtime::block_on(async {
         run_command(
@@ -82,6 +83,7 @@ pub fn exec_command(ctx: &ToolContext, args: &Value) -> Result<Value, WorkspaceE
             max_output,
             tty,
             stdin_text,
+            env_vars,
         )
         .await
     });
@@ -225,6 +227,24 @@ fn list_directory(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn parse_env_vars(args: &Value) -> Vec<(String, String)> {
+    args.get("env")
+        .and_then(Value::as_object)
+        .map(|env| {
+            env.iter()
+                .filter_map(|(key, value)| {
+                    let value = value.as_str()?;
+                    if key.is_empty() || key.contains('=') || key.contains('\0') {
+                        return None;
+                    }
+                    Some((key.clone(), value.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_command(
     ctx: &ToolContext,
     cmd: &str,
@@ -234,6 +254,7 @@ async fn run_command(
     max_output: usize,
     tty: bool,
     stdin_text: &str,
+    env_vars: Vec<(String, String)>,
 ) -> Result<Value, WorkspaceError> {
     let (program, args) = parse_and_resolve(cmd, cwd, ctx.workspace.root(), &ctx.policy)?;
     let start = Instant::now();
@@ -244,6 +265,10 @@ async fn run_command(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    for (key, value) in env_vars {
+        command.env(key, value);
+    }
 
     #[cfg(windows)]
     command
@@ -379,6 +404,7 @@ pub fn exec_health_check(ctx: &ToolContext) -> Result<Value, WorkspaceError> {
         16_384,
         false,
         "",
+        Vec::new(),
     ));
 
     let mut response = json!({
@@ -698,6 +724,78 @@ mod tests {
             windows_hidden_creation_flags(),
             0x0000_0200 | 0x0800_0000,
             "must keep CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW"
+        );
+    }
+
+    /// 端到端验证：完全放开模式下，ChatGPT 调用链路（call_tool）可以传 env
+    /// 并让子进程真实读到环境变量；受信任模式下同样的调用被拒绝。
+    #[test]
+    fn 环境变量按权限模式注入或拒绝() {
+        let workspace = tempdir().expect("workspace");
+        let harness_root = tempdir().expect("harness root");
+        let python = if cfg!(windows) { "python" } else { "python3" };
+
+        // 完全放开：env 真正注入子进程。
+        let dangerous_ctx = crate::tools::context::ToolContext::from_workspace_with_harness_root(
+            crate::tools::workspace::Workspace::new(workspace.path().to_path_buf())
+                .expect("workspace"),
+            crate::workspace::AuthConfig {
+                auth_type: "noauth".into(),
+                ..Default::default()
+            },
+            crate::tools::policy::PolicySettings {
+                permission_mode: "dangerous".into(),
+                ..Default::default()
+            },
+            "full".into(),
+            "dangerous".into(),
+            harness_root.path().to_path_buf(),
+        );
+        let out = call_tool(
+            &dangerous_ctx,
+            "exec_command",
+            &json!({
+                "cmd": format!("{python} -c \"import os; print(os.environ.get('PGPASSWORD', 'MISSING'))\""),
+                "env": {"PGPASSWORD": "secret-db-password"},
+                "yield_time_ms": 500
+            }),
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["command_ok"], true, "{out}");
+        assert_eq!(
+            out["stdout"].as_str().map(str::trim),
+            Some("secret-db-password"),
+            "env must reach the child process: {out}"
+        );
+
+        // 受信任：同样带 env 的调用直接被拒。
+        let trusted_ctx = crate::tools::context::ToolContext::from_workspace_with_harness_root(
+            crate::tools::workspace::Workspace::new(workspace.path().to_path_buf())
+                .expect("workspace"),
+            crate::workspace::AuthConfig {
+                auth_type: "noauth".into(),
+                ..Default::default()
+            },
+            crate::tools::policy::PolicySettings::default(),
+            "full".into(),
+            "trusted".into(),
+            harness_root.path().to_path_buf(),
+        );
+        let out = call_tool(
+            &trusted_ctx,
+            "exec_command",
+            &json!({
+                "cmd": format!("{python} --version"),
+                "env": {"PGPASSWORD": "secret-db-password"}
+            }),
+        );
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(
+            out["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Environment variables"),
+            "expected env rejection, got: {out}"
         );
     }
 

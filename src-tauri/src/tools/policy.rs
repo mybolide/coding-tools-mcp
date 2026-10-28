@@ -247,6 +247,11 @@ pub fn validate_command_for_workspace(
             "Shell chaining, redirection and expansion are not allowed".into(),
         ));
     }
+    // dangerous 模式由用户在桌面端显式开启，视为对工作区内执行的完全授权；
+    // 仅保留工作区边界与 shell 链接/重定向拦截，其余门禁（白名单、网络、危险命令确认）不再重复检查。
+    if policy.skip_permission_gates() {
+        return Ok(());
+    }
     if (dangerous_command_pattern().is_match(command)
         || interpreter_mutation_pattern().is_match(command))
         && command_targets_protected_repository_asset(command)
@@ -301,7 +306,7 @@ pub fn validate_command_for_workspace(
         return Err(PolicyError(format!("Command is not allowlisted: {stem}")));
     }
 
-    if arguments.get("env").is_some() {
+    if arguments.get("env").is_some() && !policy.skip_permission_gates() {
         return Err(PolicyError(
             "Environment variables cannot be supplied by GPT".into(),
         ));
@@ -578,5 +583,30 @@ mod tests {
         )
         .is_err());
         assert!(validate_command(&json!({"cmd": "echo hello > output.txt"}), &policy).is_err());
+    }
+
+    #[test]
+    fn env_arguments_are_rejected_outside_dangerous_mode() {
+        let policy = PolicySettings::default();
+        assert!(validate_command(
+            &json!({"cmd": "python --version", "env": {"PGPASSWORD": "x"}}),
+            &policy
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn dangerous_mode_allows_env_and_non_allowlisted_programs() {
+        let policy = PolicySettings {
+            permission_mode: "dangerous".into(),
+            ..PolicySettings::default()
+        };
+        validate_command(
+            &json!({"cmd": "psql --version", "env": {"PGPASSWORD": "x"}}),
+            &policy,
+        )
+        .unwrap_or_else(|err| panic!("dangerous mode should allow psql with env: {err}"));
+        // 工作区边界与 shell 注入拦截在 dangerous 模式下仍然生效。
+        assert!(validate_command(&json!({"cmd": "pwd && echo nope"}), &policy).is_err());
     }
 }

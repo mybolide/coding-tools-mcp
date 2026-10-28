@@ -102,6 +102,9 @@
     </select>
   </label>
   <p class="text-xs text-[var(--color-text-muted)]">
+    「完全放开」模式下，命令白名单、环境变量（env）、网络命令等限制全部解除，可直接运行 psql/mysql 等数据库客户端并传入凭据；仅保留工作区边界与命令注入拦截。普通模式（受信任/安全受限）下这些限制仍然生效。
+  </p>
+  <p class="text-xs text-[var(--color-text-muted)]">
     Workspace 本地入口按当前工作目录解析；系统命令与脚本类型均可按项目配置。当前执行边界仍为 policy_only。
   </p>
   <div class="flex justify-end pt-1">

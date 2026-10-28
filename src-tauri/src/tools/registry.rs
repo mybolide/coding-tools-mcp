@@ -758,6 +758,11 @@ pub fn input_schema(name: &str) -> Value {
                 "tty": { "type": "boolean", "default": false },
                 "stdin": { "type": "string", "default": "" },
                 "confirm": { "type": "boolean", "default": false },
+                "env": {
+                    "type": "object",
+                    "description": "Additional environment variables for the command. Rejected unless the workspace permission mode is 'dangerous' (完全放开), where the user explicitly opted in. Prefer passing secrets here instead of command arguments.",
+                    "additionalProperties": { "type": "string" }
+                },
                 "filesystem_scope": { "type": "string", "enum": ["workspace"], "default": "workspace" },
                 "reason": { "type": "string", "default": "" }
             },
